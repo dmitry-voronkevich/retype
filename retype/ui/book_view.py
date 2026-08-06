@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 from retype.extras import splittext, isspaceorempty, ManifoldStr
 from retype.ui.modeline import Modeline
 from retype.ui.chord_hint_bar import ChordHintBar
+from retype.services.chords import chordable_spans
 from retype.services import Autosave
 from retype.stats import StatsDock
 from retype.services.theme import theme, C, Theme
@@ -167,6 +168,7 @@ class BookDisplay(QTextBrowser):
 @keymap('BookView.zoomOut', K([QKeySequence.StandardKey.ZoomOut]))
 @theme('BookView.Highlighting.Highlight', C(bg='#30ffff00'))
 @theme('BookView.Highlighting.Mistake', C(fg='white', bg='red'))
+@theme('BookView.Highlighting.Chordable', C(fg='#1a7f37'))
 class BookView(QWidget):
     def __init__(
             self,  # type: BookView
@@ -188,7 +190,7 @@ class BookView(QWidget):
         self.autosave = None  # type: Autosave | None
         self.chords = chords or {}
 
-        self.c_highlight, self.c_mistake = self._loadTheme()
+        self.c_highlight, self.c_mistake, self.c_chordable = self._loadTheme()
 
         bookview_settings = bookview_settings or {}
         self.display = BookDisplay(
@@ -216,8 +218,10 @@ class BookView(QWidget):
         self.tobetyped_list = []  # type: list[str]
 
         self.mistake_format = QTextCharFormat()  # type: QTextCharFormat
+        self.chord_format = QTextCharFormat()  # type: QTextCharFormat
 
         self.c_mistake.changed.connect(self.themeUpdate)
+        self.c_chordable.changed.connect(self.themeUpdate)
         self.themeUpdate()
 
         Keymap.notifier.changed.connect(
@@ -226,12 +230,21 @@ class BookView(QWidget):
     def _loadTheme(self):
         # type: (BookView) -> tuple[C, ...]
         return (Theme.get('BookView.Highlighting.Highlight'),
-                Theme.get('BookView.Highlighting.Mistake'))
+                Theme.get('BookView.Highlighting.Mistake'),
+                Theme.get('BookView.Highlighting.Chordable'))
 
     def themeUpdate(self):
         # type: (BookView) -> None
         self.mistake_format.setForeground(self.c_mistake.fg())
         self.mistake_format.setBackground(self.c_mistake.bg())
+        # Chordable words get a subtle dotted underline in the accent colour,
+        #  so they read as an "ambient map" without obscuring the text.
+        self.chord_format.setUnderlineStyle(
+            QTextCharFormat.UnderlineStyle.DotLine)
+        self.chord_format.setUnderlineColor(self.c_chordable.fg())
+        # Re-apply to the currently displayed chapter so a live theme change
+        #  (or chord reload) is reflected immediately.
+        self.applyChordHighlighting()
 
     def _initUI(self):
         # type: (BookView) -> None
@@ -468,6 +481,7 @@ class BookView(QWidget):
         if bar is not None:
             bar.setChords(self.chords)
             self.updateChordHints()
+        self.applyChordHighlighting()
 
     def highlight(self, full=False):
         # type: (BookView, bool) -> None
@@ -486,6 +500,29 @@ class BookView(QWidget):
                                  QUrl(image['link']), pixmap)
 
         self.display.setDocument(document)
+        self.applyChordHighlighting()
+
+    def applyChordHighlighting(self):
+        # type: (BookView) -> None
+        """Give every chordable word in the current chapter a dotted underline.
+
+        Applied once per chapter (positions index the freshly set document);
+         the formats then travel with their characters as the mistake-tracker
+         inserts and removes text, so it needn't run on every keystroke."""
+        display = getattr(self, 'display', None)
+        if display is None or not self.chords:
+            return
+        document = display.document()
+        spans = chordable_spans(document.toPlainText(), self.chords)
+        if not spans:
+            return
+        cursor = QTextCursor(document)
+        cursor.beginEditBlock()
+        for start, end in spans:
+            cursor.setPosition(start)
+            cursor.setPosition(end, QTextCursor.MoveMode.KeepAnchor)
+            cursor.mergeCharFormat(self.chord_format)
+        cursor.endEditBlock()
 
     def anchorClicked(self, link):
         # type: (BookView, QUrl) -> None
