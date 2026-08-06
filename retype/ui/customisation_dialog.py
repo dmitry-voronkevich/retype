@@ -184,6 +184,18 @@ class CustomisationDialog(QDialog):
         self.selectors['library_paths'].changed.connect(
             lambda paths: self.update_("library_paths", paths))
         lyt.addRow(self.selectors['library_paths'])
+        lyt.addRow(hline())
+        # chords_path
+        lyt.addRow(QLabel("CharaChorder device backup (JSON) for chord hints."))
+        self.selectors['chords_path'] = PathSelector(
+            self.config_edited['chords_path'],
+            window_title="Select CharaChorder backup JSON",
+            pick_file=True, name_filter="JSON files (*.json);;All files (*)")
+        self.selectors['chords_path'].changed.connect(
+            lambda t: self.update_("chords_path", t))
+        lyt.addRow("Chords JSON:", self.selectors['chords_path'])
+        lyt.addRow(descl("Leave empty to disable chord hints. A --chords\
+ command-line argument overrides this for a single run."))
 
         return plib
 
@@ -559,10 +571,13 @@ class CheckBox(QCheckBox):
 class PathSelector(QWidget):
     changed = pyqtSignal(str)
 
-    def __init__(self, path, parent=None, window_title="Select path"):
-        # type: (PathSelector, str, QWidget | None, str) -> None
+    def __init__(self, path, parent=None, window_title="Select path",
+                 pick_file=False, name_filter=""):
+        # type: (PathSelector, str, QWidget | None, str, bool, str) -> None
         QWidget.__init__(self, parent)
         self.window_title = window_title
+        self.pick_file = pick_file
+        self.name_filter = name_filter
 
         lyt = QHBoxLayout(self)
         lyt.setContentsMargins(0, 0, 0, 0)
@@ -585,7 +600,11 @@ class PathSelector(QWidget):
         #  application to crash after the QFileDialog is invoked from a
         #  delegate editor
         self.browse_button.setFocus()
-        path = QFileDialog.getExistingDirectory(self, self.window_title)
+        if self.pick_file:
+            path, _ = QFileDialog.getOpenFileName(
+                self, self.window_title, "", self.name_filter)
+        else:
+            path = QFileDialog.getExistingDirectory(self, self.window_title)
         self.browse_button.setFocus()
 
         if path:

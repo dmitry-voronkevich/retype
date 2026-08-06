@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 
 from retype.extras import splittext, isspaceorempty, ManifoldStr
 from retype.ui.modeline import Modeline
+from retype.ui.chord_hint_bar import ChordHintBar
 from retype.services import Autosave
 from retype.stats import StatsDock
 from retype.services.theme import theme, C, Theme
@@ -174,6 +175,7 @@ class BookView(QWidget):
             sdict=None,  # type: SDict | None
             rdict=None,  # type: RDict | None
             bookview_settings=None,  # type: BookViewSettings | None
+            chords=None,  # type: dict[str, str] | None
             parent=None  # type: QWidget | None
     ):
         # type: (...) -> None
@@ -184,6 +186,7 @@ class BookView(QWidget):
         self._library = self._controller.library
         self._console = self._controller.console
         self.autosave = None  # type: Autosave | None
+        self.chords = chords or {}
 
         self.c_highlight, self.c_mistake = self._loadTheme()
 
@@ -254,9 +257,12 @@ class BookView(QWidget):
         self.splitter.addWidget(self.stats_dock)
         self._main_win.maybeRestoreSplitterState('bookview')
 
+        self.chord_hint_bar = ChordHintBar(self.chords, self)
+
         self.layout_.addWidget(self.toolbar)
         self.layout_.addWidget(self.splitter)
         self.layout_.addWidget(self.modeline)
+        self.layout_.addWidget(self.chord_hint_bar)
         self.setLayout(self.layout_)
 
     def _initToolbar(self):
@@ -439,6 +445,29 @@ class BookView(QWidget):
         pos = to_pos or self.cursor_pos
         self._cursor.setPosition(pos)
         self.highlight(full=False)
+        self.updateChordHints()
+
+    def updateChordHints(self):
+        # type: (BookView) -> None
+        """Refresh the chord hint bar for the word about to be typed."""
+        bar = getattr(self, 'chord_hint_bar', None)
+        if bar is None:
+            return
+        line = getattr(self, 'current_line', None)
+        if line is None or self.cursor_pos is None or \
+           self.persistent_pos is None:
+            bar.update_('', 0)
+            return
+        offset = max(0, self.cursor_pos - self.persistent_pos)
+        bar.update_(str(line), offset)
+
+    def setChords(self, chords):
+        # type: (BookView, dict[str, str]) -> None
+        self.chords = chords or {}
+        bar = getattr(self, 'chord_hint_bar', None)
+        if bar is not None:
+            bar.setChords(self.chords)
+            self.updateChordHints()
 
     def highlight(self, full=False):
         # type: (BookView, bool) -> None
@@ -645,6 +674,8 @@ class BookView(QWidget):
             if isspaceorempty(self.current_line):
                 logger.debug("Skipping empty line")
                 self.advanceLine()
+            else:
+                self.updateChordHints()
         else:
             logger.error("Bad tobetyped_list; {}".format(self.tobetyped_list))
 

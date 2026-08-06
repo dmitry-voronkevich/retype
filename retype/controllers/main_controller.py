@@ -13,6 +13,7 @@ from retype.controllers import SafeConfig, MenuController, LibraryController
 from retype.console import Console
 from retype.constants import iswindows
 from retype.services.icon_set import Icons
+from retype.services import load_chords
 from retype.resource_handler import getIconsPath
 
 logger = logging.getLogger(__name__)
@@ -34,10 +35,11 @@ class MainController(QObject):
     customisationDialogRequested = pyqtSignal()
     aboutDialogRequested = pyqtSignal(str)
 
-    def __init__(self):
-        # type: (MainController) -> None
+    def __init__(self, chords_path=None):
+        # type: (MainController, str | None) -> None
         super().__init__()
         self.config = SafeConfig()
+        self._chords_path_override = chords_path
 
         Icons.populateSets(
             getIconsPath(), getIconsPath(self.config['user_dir']))
@@ -69,6 +71,22 @@ class MainController(QObject):
         self._populateLibrary()
         self._verifyUserDir()
 
+    def _loadChordMap(self):
+        # type: (MainController) -> dict[str, str]
+        """Resolve the chords JSON path (CLI override wins over config) and
+         load it. Returns an empty map when no path is set or it can't be
+         read."""
+        path = self._chords_path_override or self.config['chords_path']
+        if not path:
+            return {}
+        if not os.path.isfile(path):
+            logger.warning("chords_path '%s' does not exist; no chord hints",
+                           path)
+            return {}
+        chords = load_chords(path)
+        logger.info("Loaded %d chords from '%s'", len(chords), path)
+        return chords
+
     def _instantiateViews(self):
         # type: (MainController) -> None
         self.views[View.shelf_view] = ShelfView(self._window, self)
@@ -76,8 +94,9 @@ class MainController(QObject):
         sdict = self.config['sdict']
         rdict = self.config['rdict']
         bookview_settings = self.config['bookview']
+        chords = self._loadChordMap()
         self.views[View.book_view] = BookView(self._window, self, sdict, rdict,
-                                              bookview_settings)
+                                              bookview_settings, chords)
 
         self.customisation_dialog = CustomisationDialog(
             self.config.raw, self._window,
@@ -229,6 +248,9 @@ class MainController(QObject):
 
         # Update rdict
         self.views[View.book_view].setRdict(config['rdict'])
+
+        # Update chords (the CLI override, if any, keeps precedence)
+        self.views[View.book_view].setChords(self._loadChordMap())
 
         # Update steno kdict
         if View.steno_view in self.views:
