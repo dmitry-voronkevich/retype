@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "commit": "434f90e423f6d75937660941efac8897946a04ed",
+  "commit": "25f68abe504a3fd4cff8caf4100b7d0ae63eea70",
   "python": "3.14.6 (main, Jun 10 2026, 10:03:53) [Clang 21.0.0 (clang-2100.0.123.102)]",
   "python_implementation": "CPython",
   "qt": "5.15.14",
