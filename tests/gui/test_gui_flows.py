@@ -89,6 +89,29 @@ def test_likely_chord_feedback_count_and_chart_segment(make_controller, qtbot):
     assert not book_view.chord_feedback.isVisible()
 
 
+def test_non_printable_input_clears_pending_likely_segment(make_controller, qtbot):
+    controller = make_controller()
+    controller.loadBookRequested.emit(0)
+    qtbot.wait(20)
+
+    book_view = controller.views[View.book_view]
+    stats = book_view.stats_dock
+    stats.resetSession()
+
+    for position, (character, timestamp) in enumerate(
+            zip("abc", (1, 11, 21)), start=1):
+        book_view.cursor_pos = position
+        stats._onKeyPress(_TimedKeyEvent(character, timestamp))
+        stats.onUpdate(character)
+
+    stats._onKeyPress(_TimedKeyEvent("", 22))
+    book_view.cursor_pos = 4
+    stats._onKeyPress(_TimedKeyEvent("d", 23))
+    stats.onUpdate("d")
+
+    assert stats.wpms_likely_chords[-1] is False
+
+
 def test_loads_chords_and_updates_hint_state(make_controller, qtbot, tmp_path):
     chords_path = tmp_path / "chords.json"
     chords_path.write_text(

@@ -78,10 +78,12 @@ class StatsDock(QWidget):
         v = self.book_view
         if not v.isVisible() or v.cursor_pos is None:
             self.chord_detector.reset()
+            self._pending_likely_segment = False
             return
 
         observation = self.chord_detector.observe_event(event)
         if observation is None:
+            self._pending_likely_segment = False
             return
 
         if observation.is_new:
