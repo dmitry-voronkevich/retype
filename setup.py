@@ -1,21 +1,16 @@
-import re
+import os
+import sys
+
 from setuptools import setup
-from setup.build import b
+
+# PEP 517 build isolation does not always put the project root on sys.path.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from setup.build import b  # noqa: E402
 
 
-pkg_file = open("retype/__init__.py").read()
-metadata = dict(re.findall(r"__([a-z]+)__\s*=\s*'([^']+)'", pkg_file))
-
-
-setup(name='retype',
-      version=metadata['version'],
-      package_data={"retype": ["py.typed"]},
+setup(package_data={"retype": ["py.typed"]},
       packages=['qt', 'retype'],
       zip_safe=False,
-      install_requires=[
-          'PyQt5',
-          'ebooklib',
-      ],
       cmdclass={
           'b': b,  # custom build command for building retype with pyinstaller
       },)

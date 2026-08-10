@@ -5,3 +5,4 @@ build
 dist
 builddate.txt
 *.egg-info
+.venv/
