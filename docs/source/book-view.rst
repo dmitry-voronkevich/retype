@@ -91,9 +91,12 @@ Keyboard-only chord feedback
 The likely-chord prototype watches the ordinary Qt keyboard events that retype
 already receives. It classifies a burst when at least three printable
 characters arrive no more than 35 milliseconds apart and the burst lasts no
-more than 120 milliseconds. After a reported burst, rapid Backspace cleanup
-output is treated as part of that burst rather than as a second burst; a later
-event outside the timing window starts a new candidate. The thresholds are a
+more than 120 milliseconds. After a reported burst, the encouragement
+``Likely chord burst - nice!`` is shown for exactly three seconds; another
+reported burst restarts that timer. Rapid Backspace cleanup output is treated as part
+of the burst rather than as a second burst; a later event outside the timing
+window starts a new candidate. Session/reset cleanup hides the encouragement
+and cancels its timer. The thresholds are a
 timing heuristic inspired by short generated output; they do not identify a
 device or prove that a CharaChorder produced the text. This also covers the
 setup where a device is not connected to CCIO as a device and emits only
