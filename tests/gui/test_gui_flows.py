@@ -52,7 +52,14 @@ def test_opens_customisation_dialog_without_blocking(controller, qtbot):
 def test_loads_chords_and_updates_hint_state(make_controller, qtbot, tmp_path):
     chords_path = tmp_path / "chords.json"
     chords_path.write_text(
-        json.dumps({"chords": [[[116, 104, 101], [116, 104, 101]]]}),
+        json.dumps({"history": [[
+            {"type": "chords", "chords": [
+                [[116, 104, 101], [116, 104, 101]],
+            ]},
+            {"type": "layout", "layout": [[
+                606, 116, 608, 104, 607, 101,
+            ]]},
+        ]]}),
         encoding="utf-8",
     )
     controller = make_controller(chords_path)
@@ -61,5 +68,8 @@ def test_loads_chords_and_updates_hint_state(make_controller, qtbot, tmp_path):
 
     book_view = controller.view()
     assert book_view.chords == {"the": "t+h+e"}
+    assert book_view.chords["the"].device_order == "t+h+e"
     assert book_view.chord_hint_bar.isVisible()
     assert book_view.chord_hint_bar.objectName() == "chord-hint-bar"
+    book_view.chord_hint_bar.update_("the", 0)
+    assert "device order:" in book_view.chord_hint_bar.text()

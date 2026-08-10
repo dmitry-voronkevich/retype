@@ -55,8 +55,37 @@ def parser() -> argparse.ArgumentParser:
 
 
 def write_chords(path: Path) -> None:
+    """Create a deterministic multi-hint backup with authoritative layout data."""
+    chords = [
+        [[111, 102], [111, 102]],              # of
+        [[116, 104, 101], [116, 104, 101]],    # the
+        [[110, 97, 116, 117, 114, 101],
+         [110, 97, 116, 117, 114, 101]],       # nature
+        [[102, 108, 97, 116, 110, 100],
+         [102, 108, 97, 116, 108, 97, 110, 100]],  # flatland
+        [[119, 111, 114, 108, 100],
+         [119, 111, 114, 108, 100]],            # world
+        [[115, 116, 114, 97, 110, 103, 101],
+         [115, 116, 114, 97, 110, 103, 101]],   # strange
+        [[99, 97, 115, 101], [99, 97, 115, 101]],  # case
+        [[100, 114], [100, 114]],                # dr
+        [[106, 101, 107, 121, 108, 108],
+         [106, 101, 107, 121, 108, 108]],        # jekyll
+        [[97, 110, 100], [97, 110, 100]],        # and
+        [[109, 114], [109, 114]],                # mr
+        [[104, 121, 100, 101],
+         [104, 121, 100, 101]],                  # hyde
+    ]
+    layout = [[
+        606, *map(ord, "abcdefghi"),
+        608, *map(ord, "jklmnopqr"),
+        607, *map(ord, "stuvwxyz"),
+    ]]
     path.write_text(
-        json.dumps({"chords": [[[116, 104, 101], [116, 104, 101]]]}),
+        json.dumps({"history": [[
+            {"type": "chords", "chords": chords},
+            {"type": "layout", "layout": layout},
+        ]]}),
         encoding="utf-8",
     )
 

@@ -26,6 +26,23 @@ QToolButton {
 
 /* retype-specific selectors */
 
+BookView.ChordHintBar {
+  color: #4a4a4a;
+  background-color: #eae5d2;
+}
+
+BookView.ChordHintBar.WordOrder {
+  color: #4a4a4a;
+}
+
+BookView.ChordHintBar.DeviceOrder {
+  color: #777777;
+}
+
+BookView.ChordHintBar.Active {
+  color: #1a7f37;
+}
+
 BookView.Modeline.InnerSegment {
   color: #ffff00;
   background-color: #8b7500;

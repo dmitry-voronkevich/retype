@@ -178,7 +178,7 @@ class BookView(QWidget):
             sdict=None,  # type: SDict | None
             rdict=None,  # type: RDict | None
             bookview_settings=None,  # type: BookViewSettings | None
-            chords=None,  # type: dict[str, str] | None
+            chords=None,  # type: dict[str, object] | None
             parent=None  # type: QWidget | None
     ):
         # type: (...) -> None
@@ -480,7 +480,7 @@ class BookView(QWidget):
         bar.update_(str(line), offset)
 
     def setChords(self, chords):
-        # type: (BookView, dict[str, str]) -> None
+        # type: (BookView, dict[str, object]) -> None
         self.chords = chords or {}
         bar = getattr(self, 'chord_hint_bar', None)
         if bar is not None:

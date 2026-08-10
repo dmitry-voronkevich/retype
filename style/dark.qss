@@ -1,3 +1,20 @@
+BookView.ChordHintBar {
+  color: #d6d6d6;
+  background-color: #0d0d0d;
+}
+
+BookView.ChordHintBar.WordOrder {
+  color: #d6d6d6;
+}
+
+BookView.ChordHintBar.DeviceOrder {
+  color: #a9a9a9;
+}
+
+BookView.ChordHintBar.Active {
+  color: #8fd19e;
+}
+
 BookView.Modeline.InnerSegment {
   color: #ffff00;
   background-color: #000000;

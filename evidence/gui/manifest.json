@@ -1,44 +1,44 @@
 {
   "schema_version": 1,
-  "commit": "c50d577bae8a6dbdb3b2b76db4e658fc507bbccd",
+  "commit": "74fef6f0ef4f5fb5d0fc88eb733090ff33895f8a",
   "python": "3.14.6 (main, Jun 10 2026, 10:03:53) [Clang 21.0.0 (clang-2100.0.123.102)]",
   "python_implementation": "CPython",
   "qt": "5.15.14",
   "pyqt": "5.15.11",
   "platform": "macOS-26.5.2-arm64-arm-64bit-Mach-O",
   "system": "darwin",
-  "qt_platform": "offscreen",
+  "qt_platform": "cocoa",
   "output_directory": "/Users/zloy/.treehouse/retype-f275f7/1/retype/evidence/gui",
   "scenarios": [
     {
       "scenario": "shelf",
       "dimensions": {
-        "width": 960,
-        "height": 720
+        "width": 1920,
+        "height": 1440
       },
       "output_path": "/Users/zloy/.treehouse/retype-f275f7/1/retype/evidence/gui/shelf.png"
     },
     {
       "scenario": "book",
       "dimensions": {
-        "width": 960,
-        "height": 720
+        "width": 1920,
+        "height": 1440
       },
       "output_path": "/Users/zloy/.treehouse/retype-f275f7/1/retype/evidence/gui/book.png"
     },
     {
       "scenario": "customisation",
       "dimensions": {
-        "width": 700,
-        "height": 600
+        "width": 1400,
+        "height": 1200
       },
       "output_path": "/Users/zloy/.treehouse/retype-f275f7/1/retype/evidence/gui/customisation.png"
     },
     {
       "scenario": "chords",
       "dimensions": {
-        "width": 960,
-        "height": 720
+        "width": 1920,
+        "height": 1440
       },
       "output_path": "/Users/zloy/.treehouse/retype-f275f7/1/retype/evidence/gui/chords.png"
     }

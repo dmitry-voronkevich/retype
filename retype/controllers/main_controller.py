@@ -76,7 +76,7 @@ class MainController(QObject):
         self._verifyUserDir()
 
     def _loadChordMap(self):
-        # type: (MainController) -> dict[str, str]
+        # type: (MainController) -> dict[str, object]
         """Resolve the chords JSON path (CLI override wins over config) and
          load it. Returns an empty map when no path is set or it can't be
          read."""
