@@ -7,44 +7,20 @@
   "platform": "macOS-26.5.2-arm64-arm-64bit-Mach-O",
   "system": "darwin",
   "qt_platform": "cocoa",
-  "output_directory": "/Users/zloy/.treehouse/retype-f275f7/1/retype/evidence/gui",
+  "output_directory": "/Users/zloy/.treehouse/retype-f275f7/3/retype/evidence/gui",
   "scenarios": [
     {
-      "scenario": "shelf",
+      "scenario": "chord-detection",
       "dimensions": {
-        "width": 1920,
-        "height": 1440
+        "width": 960,
+        "height": 720
       },
-      "output_path": "/Users/zloy/.treehouse/retype-f275f7/1/retype/evidence/gui/shelf.png"
-    },
-    {
-      "scenario": "book",
-      "dimensions": {
-        "width": 1920,
-        "height": 1440
-      },
-      "output_path": "/Users/zloy/.treehouse/retype-f275f7/1/retype/evidence/gui/book.png"
-    },
-    {
-      "scenario": "customisation",
-      "dimensions": {
-        "width": 1400,
-        "height": 1200
-      },
-      "output_path": "/Users/zloy/.treehouse/retype-f275f7/1/retype/evidence/gui/customisation.png"
-    },
-    {
-      "scenario": "chords",
-      "dimensions": {
-        "width": 1920,
-        "height": 1440
-      },
-      "output_path": "/Users/zloy/.treehouse/retype-f275f7/1/retype/evidence/gui/chords.png"
+      "output_path": "/Users/zloy/.treehouse/retype-f275f7/3/retype/evidence/gui/chord-detection.png"
     }
   ],
   "failures": [],
   "diagnostics": {
-    "log_path": "/Users/zloy/.treehouse/retype-f275f7/1/retype/evidence/gui/capture.log"
+    "log_path": "/Users/zloy/.treehouse/retype-f275f7/3/retype/evidence/gui/capture.log"
   },
-  "manifest_path": "/Users/zloy/.treehouse/retype-f275f7/1/retype/evidence/gui/manifest.json"
+  "manifest_path": "/Users/zloy/.treehouse/retype-f275f7/3/retype/evidence/gui/manifest.json"
 }

@@ -92,6 +92,15 @@ While practicing, words found in the loaded chord library are highlighted with a
 
 More information on the user interface and available features can be found in the documentation_.
 
+Keyboard-only likely-chord feedback
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+retype also provides keyboard-only likely-chord feedback in the Stats Dock and
+an encouragement message. The detailed timing heuristic, device-attribution
+limits, and false-positive/false-negative considerations are documented in the
+Book View reference in the documentation_; it uses no USB, serial, or
+device-companion access.
+
 -----------------------------
 Influences & acknowledgements
 -----------------------------

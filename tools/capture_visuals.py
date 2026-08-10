@@ -21,17 +21,38 @@ from PyQt5.QtCore import PYQT_VERSION_STR, QT_VERSION_STR
 from qt import QApplication
 
 from retype.controllers import MainController
+from retype.services.chord_detection import BACKSPACE_KEY
 
 ROOT = Path(__file__).resolve().parents[1]
 LIBRARY = ROOT / "library"
-SCENARIOS = ("shelf", "book", "customisation", "chords")
+SCENARIOS = (
+    "shelf", "book", "customisation", "chords", "chord-detection",
+)
+
+
+class _TimedKeyEvent:
+    """Small Qt-event stand-in for deterministic heuristic evidence."""
+
+    def __init__(self, text: str, timestamp: float, key: int | None = None):
+        self._text = text
+        self._timestamp = timestamp
+        self._key = key if key is not None else (ord(text) if text else 0)
+
+    def text(self) -> str:
+        return self._text
+
+    def timestamp(self) -> float:
+        return self._timestamp
+
+    def key(self) -> int:
+        return self._key
 
 
 def parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument(
         "--scenario", choices=SCENARIOS, default=None,
-        help="Capture one scenario; the default captures all four.",
+        help="Capture one scenario; the default captures all five.",
     )
     p.add_argument(
         "--output-dir", type=Path, default=ROOT / "evidence" / "gui",
@@ -97,9 +118,39 @@ def capture_scenario(app: QApplication, scenario: str, output: Path) -> dict:
         app.processEvents()
 
         try:
-            if scenario in ("book", "chords"):
+            if scenario in ("book", "chords", "chord-detection"):
                 controller.loadBook(0)
                 app.processEvents()
+                if scenario == "chord-detection":
+                    book_view = controller.view()
+                    stats = book_view.stats_dock
+                    stats.resetSession()
+                    events = [
+                        _TimedKeyEvent(character, timestamp)
+                        for character, timestamp in zip(
+                            "what", (1, 11, 21, 31))
+                    ] + [
+                        _TimedKeyEvent("\b", timestamp, BACKSPACE_KEY)
+                        for timestamp in (41, 43, 45, 47)
+                    ] + [
+                        _TimedKeyEvent(character, timestamp)
+                        for character, timestamp in zip(
+                            "what", (57, 67, 77, 87))
+                    ]
+                    text = ""
+                    cursor = 0
+                    for event in events:
+                        if event.key() == BACKSPACE_KEY:
+                            text = text[:-1]
+                            cursor -= 1
+                        else:
+                            text += event.text()
+                            cursor += 1
+                        book_view.cursor_pos = cursor
+                        stats._onKeyPress(event)
+                        stats._onTextChanged(text)
+                        stats.onUpdate(text)
+                    app.processEvents()
                 widget = window
             elif scenario == "customisation":
                 dialog = controller.customisation_dialog
