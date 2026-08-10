@@ -1,7 +1,8 @@
 import json
 
 from retype.services.chords import (
-    load_chords, by_word_notation, chordable_spans)
+    by_device_notation, by_word_notation, chordable_spans, load_chords,
+    parse_layout)
 
 
 def _ascii(s):
@@ -9,14 +10,22 @@ def _ascii(s):
     return [ord(c) for c in s]
 
 
-def _write(tmp_path, chords):
-    """Build a minimal CharaChorder backup with the given [input, output] chords."""
+def _layout():
+    """A layout whose geographic order for hello is o, e, h, l."""
+    return [[
+        606, ord('o'), 608, ord('e'), 607, ord('h'), 605, ord('l'),
+    ]]
+
+
+def _write(tmp_path, chords, layout=None):
+    """Build a minimal CharaChorder backup with chord/layout records."""
+    records = [{"type": "chords", "chords": chords}]
+    if layout is not None:
+        records.append({"type": "layout", "layout": layout})
     data = {
         "charaVersion": 1,
         "type": "backup",
-        "history": [[
-            {"type": "chords", "chords": chords},
-        ]],
+        "history": [records],
     }
     p = tmp_path / "backup.json"
     p.write_text(json.dumps(data), encoding="utf-8")
@@ -34,6 +43,53 @@ def test_load_chords_uses_word_order_and_lowercases_key(tmp_path):
         [_ascii("lho"), _ascii("hello")],
     ])
     assert load_chords(path) == {"hello": "h+l+o"}
+
+
+def test_hello_device_order_uses_selected_layout(tmp_path):
+    path = _write(tmp_path, [
+        [_ascii("lhoe"), _ascii("hello")],
+    ], _layout())
+    chord = load_chords(path)["hello"]
+    assert chord.word_order == "h+e+l+o"
+    assert chord.device_order == "o+e+h+l"
+    assert chord.input_codes == tuple(_ascii("lhoe"))
+    assert chord.layout is not None
+
+
+def test_missing_layout_hides_physical_notation(tmp_path):
+    path = _write(tmp_path, [
+        [_ascii("lhoe"), _ascii("hello")],
+    ])
+    assert load_chords(path)["hello"].device_order is None
+
+
+def test_layout_mapping_is_lowercase_but_input_tokens_keep_case():
+    layout = parse_layout([[606, ord('O'), 608, ord('E'),
+                            607, ord('H'), 605, ord('L')]])
+    assert layout is not None
+    assert dict(layout.char_to_switch) == {
+        "o": 606, "e": 608, "h": 607, "l": 605,
+    }
+    assert by_device_notation(
+        [ord('L'), ord('H'), ord('O'), ord('E')], layout) == "O+E+H+L"
+
+
+def test_device_order_keeps_unknown_actions_and_duplicates_last():
+    layout = parse_layout(_layout())
+    assert layout is not None
+    assert by_device_notation(
+        [ord('l'), DUP, 999, ord('l'), ord('o')], layout) \
+        == "o+l+l+DUP+[999]"
+
+
+def test_load_chords_preserves_duplicate_input_codes(tmp_path):
+    path = _write(tmp_path, [
+        [[ord('l'), ord('l'), ord('h'), ord('e'), DUP, DUP],
+         _ascii("hello")],
+    ])
+    assert load_chords(path)["hello"] == "h+e+l+l+DUP+DUP"
+    assert load_chords(path)["hello"].input_codes == (
+        ord('l'), ord('l'), ord('h'), ord('e'), DUP, DUP)
 
 
 def test_load_chords_skips_single_key_chords(tmp_path):

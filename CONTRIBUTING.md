@@ -72,7 +72,7 @@ QT_QPA_PLATFORM=offscreen uv run --locked --group test \
 
 Run one bounded scenario with `--scenario shelf|book|customisation|chords`.
 The manifest records each scenario’s dimensions, Python/Qt/platform details,
-commit, and absolute output path. The harness never compares or overwrites a
+and absolute output path. The harness never compares or overwrites a
 golden baseline. On a display-backed macOS session, unset the platform
 variable to use native Qt rendering, then optionally capture the visible app
 with:
