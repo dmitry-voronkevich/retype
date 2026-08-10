@@ -36,6 +36,7 @@ class Console(LineEdit):
         self._ev_subscribers = {
             self.Ev.keypress: [], self.Ev.keyrelease: []
         }  # type: dict[Console.Ev, list[Callable[[QKeyEvent], None]]]
+        self._processing_key_press = False
 
         self._font = self.font()
         self._font_family = font_family  # type: str | None
@@ -113,8 +114,14 @@ class Console(LineEdit):
             if e.key() == Qt.Key.Key_Down:
                 self.command_service.commandHistoryDown()
 
-        self.keyPressAboutToBeProcessed.emit(e)
-        super().keyPressEvent(e)
+        is_nested = self._processing_key_press
+        self._processing_key_press = True
+        try:
+            if not is_nested:
+                self.keyPressAboutToBeProcessed.emit(e)
+            super().keyPressEvent(e)
+        finally:
+            self._processing_key_press = is_nested
 
         for subscriber in self._ev_subscribers.get(self.Ev.keypress, []):
             subscriber(e)
