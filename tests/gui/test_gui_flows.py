@@ -1,0 +1,65 @@
+"""High-value GUI wiring checks; service and pure tests remain separate."""
+
+import json
+
+from qt import QWidget
+
+from retype.controllers.main_controller import View
+
+
+def test_launches_shelf_with_bundled_books(controller, qtbot):
+    window = controller._window
+    shelf = controller.views[View.shelf_view]
+    # The controller starts on the shelf and the bundled library is indexed.
+    assert window.objectName() == "main-window"
+    assert controller.view().objectName() == "shelf-view"
+    assert len(controller.library.books) >= 1
+    assert shelf.findChild(QWidget, "shelf-item-0") is not None
+
+
+def test_opens_bundled_book_and_bounded_typing(controller, qtbot):
+    controller.loadBookRequested.emit(0)
+    qtbot.wait(20)
+
+    book_view = controller.views[View.book_view]
+    # View is the public enum in the module; avoid relying on screen position.
+    assert controller.view().objectName() == "book-view"
+    assert book_view.book is not None
+    assert book_view.display.toPlainText()
+
+    initial_position = book_view.cursor_pos
+    text = str(book_view.current_line)[:3]
+    qtbot.keyClicks(controller.console, text)
+    qtbot.wait(20)
+    assert book_view.cursor_pos is not None
+    assert initial_position is not None
+    assert book_view.cursor_pos >= initial_position
+
+
+def test_opens_customisation_dialog_without_blocking(controller, qtbot):
+    controller.customisationDialogRequested.emit()
+    dialog = controller.customisation_dialog
+    qtbot.wait(20)
+
+    assert dialog.objectName() == "customisation-dialog"
+    assert dialog.isVisible()
+    assert dialog.isModal()
+    dialog.reject()
+    qtbot.wait(20)
+    assert not dialog.isVisible()
+
+
+def test_loads_chords_and_updates_hint_state(make_controller, qtbot, tmp_path):
+    chords_path = tmp_path / "chords.json"
+    chords_path.write_text(
+        json.dumps({"chords": [[[116, 104, 101], [116, 104, 101]]]}),
+        encoding="utf-8",
+    )
+    controller = make_controller(chords_path)
+    controller.loadBookRequested.emit(0)
+    qtbot.wait(20)
+
+    book_view = controller.view()
+    assert book_view.chords == {"the": "t+h+e"}
+    assert book_view.chord_hint_bar.isVisible()
+    assert book_view.chord_hint_bar.objectName() == "chord-hint-bar"

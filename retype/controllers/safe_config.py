@@ -14,15 +14,19 @@ logger = logging.getLogger(__name__)
 
 
 class _SafeConfig:
-    def __init__(self):
-        # type: (_SafeConfig) -> None
+    def __init__(self, default_user_dir=None, library_paths=None):
+        # type: (_SafeConfig, str | None, list[str] | None) -> None
         self.config_rel_path = 'config.json'
-        self.default_user_dir = default_config['user_dir']
+        self.default_user_dir = default_user_dir or default_config['user_dir']
+        self.defaults = deepcopy(default_config)
+        self.defaults['user_dir'] = self.default_user_dir
+        if library_paths is not None:
+            self.defaults['library_paths'] = list(library_paths)
         self.base_config_abs_path = os.path.join(
             self.default_user_dir, self.config_rel_path)
         self.config = self.raw = self.load(self.base_config_abs_path)
         self.safe_dict = SafeDict(
-            self.config, default_config,
+            self.config, self.defaults,
             ['rdict', 'sdict', 'kdict'])
 
     def isPathDefaultUserDir(self, path):
@@ -35,7 +39,7 @@ class _SafeConfig:
         config = self._load(path)
         if config is None:      # Loading failed
             # Nothing modifies it, but may as well explicitly avoid mutation
-            return deepcopy(default_config)
+            return deepcopy(self.defaults)
 
         user_dir = config['user_dir']
         if user_dir and not self.isPathDefaultUserDir(user_dir):
@@ -44,7 +48,7 @@ class _SafeConfig:
 Attempting to load config from: {}".format(user_dir, custom_path))
             config = self._load(custom_path)
             if not config:
-                config = deepcopy(default_config)
+                config = deepcopy(self.defaults)
                 config['user_dir'] = user_dir
         return config
 

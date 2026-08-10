@@ -103,6 +103,7 @@ class CustomisationDialog(QDialog):
                  ):
         # type: (...) -> None
         QDialog.__init__(self, parent, Qt.WindowType.WindowCloseButtonHint)
+        self.setObjectName('customisation-dialog')
         # The base config (no uncommitted modifications)
         self.config: Config = merge_dicts(DEFAULTS, config)
         # The config with uncommitted modifications (any modifications will be
@@ -148,6 +149,7 @@ class CustomisationDialog(QDialog):
         lyt.addWidget(catw)
         lyt.addWidget(hline())
         self.revert_btn = QPushButton("Revert")
+        self.revert_btn.setObjectName('customisation-revert')
         self.revert_btn.setToolTip("Revert changes")
         self.revert_btn.setEnabled(False)
         StandardButton = QDialogButtonBox.StandardButton
