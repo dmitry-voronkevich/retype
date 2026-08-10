@@ -188,7 +188,8 @@ class StatsDock(QWidget):
         # type: (StatsDock) -> None
         """Reset the detector and the statistics represented by this dock."""
         self.chord_detector.reset()
-        self.prev_cursor_pos = 0
+        cursor_pos = getattr(self.book_view, 'cursor_pos', None)
+        self.prev_cursor_pos = cursor_pos if cursor_pos is not None else 0
         self.prev_seconds = 0
         self.prev_ts = 0
         self.c = 0
