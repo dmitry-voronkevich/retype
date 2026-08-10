@@ -503,12 +503,11 @@ class BookView(QWidget):
             feedback.clear()
             feedback.setVisible(False)
             return
-        feedback.setText(
-            'Likely chord burst - nice!  Likely chords: {}'.format(count))
+        feedback.setText('Likely chord burst - nice!')
         feedback.setVisible(True)
         feedback.setAccessibleDescription(
-            'Likely chord burst encouragement. Likely chords: {}. '
-            'This is a timing heuristic, not device detection.'.format(count))
+            'Likely chord burst encouragement. See Typing statistics for the '
+            'session count. This is a timing heuristic, not device detection.')
 
     def setChords(self, chords):
         # type: (BookView, dict[str, object]) -> None

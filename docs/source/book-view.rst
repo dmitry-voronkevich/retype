@@ -81,7 +81,7 @@ The Stats Dock is the graph above the Modeline. It can be resized or collapsed u
 #. Dashed lines
     Dashed lines appear every 50 WPM and are there to help gauge the WPM each rectangle represents. For example, a rectangle whose height matches the first dashed line from the bottom represents 50 WPM.
 #. Likely chords
-    The session count of short keyboard-output bursts classified as likely chording. Matching chart segments are green and the count is also written in the encouragement message, so colour is not the only signal.
+    The session count of short keyboard-output bursts classified as likely chording. Matching chart segments are green, and this dock is the only place where the count is shown.
 
 The Stats Dock updates on every letter typed correctly.
 
@@ -91,10 +91,13 @@ Keyboard-only chord feedback
 The likely-chord prototype watches the ordinary Qt keyboard events that retype
 already receives. It classifies a burst when at least three printable
 characters arrive no more than 35 milliseconds apart and the burst lasts no
-more than 120 milliseconds. The thresholds are a timing heuristic inspired by
-short generated output; they do not identify a device or prove that a
-CharaChorder produced the text. This also covers the setup where a device is
-not connected to CCIO as a device and emits only ordinary keyboard input: the
-input path cannot attribute its origin. A fast ordinary typist or macro can be a false
-positive, while slower, shorter, interrupted, or mixed output can be a false
-negative. No USB, serial, or device companion access is used.
+more than 120 milliseconds. After a reported burst, rapid Backspace cleanup
+output is treated as part of that burst rather than as a second burst; a later
+event outside the timing window starts a new candidate. The thresholds are a
+timing heuristic inspired by short generated output; they do not identify a
+device or prove that a CharaChorder produced the text. This also covers the
+setup where a device is not connected to CCIO as a device and emits only
+ordinary keyboard input: the input path cannot attribute its origin. A fast
+ordinary typist or macro can be a false positive, while slower, shorter,
+interrupted, or mixed output can be a false negative. No USB, serial, or device
+companion access is used.

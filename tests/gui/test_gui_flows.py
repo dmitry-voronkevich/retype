@@ -5,18 +5,23 @@ import json
 from qt import QWidget
 
 from retype.controllers.main_controller import View
+from retype.services.chord_detection import BACKSPACE_KEY
 
 
 class _TimedKeyEvent:
-    def __init__(self, text, timestamp):
+    def __init__(self, text, timestamp, key=None):
         self._text = text
         self._timestamp = timestamp
+        self._key = key if key is not None else (ord(text) if text else 0)
 
     def text(self):
         return self._text
 
     def timestamp(self):
         return self._timestamp
+
+    def key(self):
+        return self._key
 
 
 def test_launches_shelf_with_bundled_books(controller, qtbot):
@@ -79,14 +84,59 @@ def test_likely_chord_feedback_count_and_chart_segment(make_controller, qtbot):
     assert stats.likely_chords == 1
     assert stats.wpms_likely_chords[-4:] == [True, True, True, True]
     assert book_view.chord_feedback.isVisible()
-    assert "Likely chord burst" in book_view.chord_feedback.text()
-    assert "Likely chords: 1" in book_view.chord_feedback.text()
+    assert book_view.chord_feedback.text() == "Likely chord burst - nice!"
+    assert "Likely chords" not in book_view.chord_feedback.text()
     assert "Likely chords: 1" in stats.accessibleDescription()
 
     stats.resetSession()
     assert stats.likely_chords == 0
     assert stats.wpms_likely_chords == []
     assert not book_view.chord_feedback.isVisible()
+
+
+def test_cleanup_backspaces_count_once_and_mark_one_burst(
+        make_controller, qtbot):
+    controller = make_controller()
+    controller.loadBookRequested.emit(0)
+    qtbot.wait(20)
+
+    book_view = controller.views[View.book_view]
+    stats = book_view.stats_dock
+    stats.resetSession()
+    encouragements = []
+    stats.likelyChordDetected.connect(encouragements.append)
+
+    events = [
+        _TimedKeyEvent(character, timestamp)
+        for character, timestamp in zip("what", (1, 11, 21, 31))
+    ] + [
+        _TimedKeyEvent("\b", timestamp, BACKSPACE_KEY)
+        for timestamp in (41, 43, 45, 47)
+    ] + [
+        _TimedKeyEvent(character, timestamp)
+        for character, timestamp in zip("what", (57, 67, 77, 87))
+    ]
+    text = ""
+    cursor = 0
+    for event in events:
+        if event.key() == BACKSPACE_KEY:
+            text = text[:-1]
+            cursor -= 1
+        else:
+            text += event.text()
+            cursor += 1
+        book_view.cursor_pos = cursor
+        stats._onKeyPress(event)
+        # Exercise the textChanged boundary where the final cleanup Backspace
+        # would otherwise reset the detector after the key event.
+        stats._onTextChanged(text)
+        stats.onUpdate(text)
+
+    assert stats.likely_chords == 1
+    assert encouragements == [1]
+    assert stats.wpms_likely_chords == [True] * 8
+    assert book_view.chord_feedback.text() == "Likely chord burst - nice!"
+    assert "Likely chords" not in book_view.chord_feedback.text()
 
 
 def test_non_printable_input_clears_pending_likely_segment(make_controller, qtbot):

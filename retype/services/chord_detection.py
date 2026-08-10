@@ -17,6 +17,11 @@ MIN_BURST_CHARS = 3
 MAX_INTERCHAR_MILLISECONDS = 35.0
 MAX_BURST_MILLISECONDS = 120.0
 
+# Qt::Key_Backspace is kept numeric here so this timing service stays usable
+# without importing Qt. The event path still identifies the key through its
+# normal QKeyEvent.key() value, not through device access.
+BACKSPACE_KEY = 0x01000003
+
 
 @dataclass(frozen=True)
 class LikelyChordBurst:
@@ -36,9 +41,10 @@ class KeyboardChordDetector:
     """Classify short, closely-spaced printable output bursts.
 
     The detector receives generated text from the normal Qt key event path and
-    never reads a USB/serial device.  Invalid or non-printable output resets
-    the current burst.  A timestamp is accepted in milliseconds for tests and
-    Qt events; when it is unavailable, monotonic arrival time is used.
+    never reads a USB/serial device. Invalid or non-printable output resets
+    the current burst; a reported burst can treat rapid Backspace cleanup as
+    neutral editing events. Timestamps are accepted in milliseconds for tests
+    and Qt events; when unavailable, monotonic arrival time is used.
     """
 
     def __init__(self, clock=None):
@@ -58,6 +64,31 @@ class KeyboardChordDetector:
         # type: (object) -> bool
         return isinstance(output, str) and len(output) == 1 and \
             output.isprintable()
+
+    @staticmethod
+    def is_backspace_event(event):
+        # type: (object) -> bool
+        """Return whether an event is Qt's Backspace key.
+
+        Some platforms provide ``\\b`` as the event text and some provide an
+        empty string, so text alone cannot identify cleanup Backspaces.
+        """
+        key_method = getattr(event, 'key', None)
+        if callable(key_method):
+            try:
+                if int(key_method()) == BACKSPACE_KEY:
+                    return True
+            except (TypeError, ValueError):
+                pass
+        text_method = getattr(event, 'text', None)
+        text = text_method() if callable(text_method) else None
+        return text in ('\b', '\x7f')
+
+    @property
+    def has_reported_burst(self):
+        # type: (KeyboardChordDetector) -> bool
+        """Whether the current burst crossed the chord threshold."""
+        return bool(self._output) and self._reported
 
     def _timestamp(self, timestamp_ms):
         # type: (object | None) -> float | None
@@ -113,17 +144,42 @@ class KeyboardChordDetector:
         self._reported = True
         return observation
 
+    def _observe_backspace(self, timestamp_ms):
+        # type: (KeyboardChordDetector, object | None) -> None
+        """Keep a reported burst alive across rapid chord cleanup output.
+
+        Backspace is an editing event, not generated character output. A
+        Backspace is only neutral after a burst is already reported and only
+        while it remains inside the same timing window. Thus an ordinary
+        Backspace cannot join an unfinished burst, and a later burst still
+        starts after the normal inter-character boundary.
+        """
+        timestamp = self._timestamp(timestamp_ms)
+        if not self.has_reported_burst or self._last_timestamp is None or \
+           self._first_timestamp is None or timestamp is None or \
+           timestamp < self._last_timestamp or \
+           timestamp - self._last_timestamp > MAX_INTERCHAR_MILLISECONDS or \
+           timestamp - self._first_timestamp > MAX_BURST_MILLISECONDS:
+            self.reset()
+            return
+        self._last_timestamp = timestamp
+
     def observe_event(self, event):
         # type: (object) -> LikelyChordBurst | None
         """Observe a ``QKeyEvent`` without requiring Qt in unit tests."""
-        text_method = getattr(event, 'text', None)
-        output = text_method() if callable(text_method) else None
         timestamp = None
         timestamp_method = getattr(event, 'timestamp', None)
         if callable(timestamp_method):
             timestamp = timestamp_method()
-            # Qt can report zero for synthetic events.  Let ``observe`` use
+            # Qt can report zero for synthetic events. Let ``observe`` use
             # the deterministic fallback clock in that case.
             if timestamp == 0:
                 timestamp = None
+
+        if self.is_backspace_event(event):
+            self._observe_backspace(timestamp)
+            return None
+
+        text_method = getattr(event, 'text', None)
+        output = text_method() if callable(text_method) else None
         return self.observe(output, timestamp)

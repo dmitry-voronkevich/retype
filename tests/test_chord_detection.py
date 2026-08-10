@@ -1,7 +1,40 @@
+import pytest
+
 from retype.services.chord_detection import (
-    KeyboardChordDetector, MAX_BURST_MILLISECONDS,
+    BACKSPACE_KEY, KeyboardChordDetector, MAX_BURST_MILLISECONDS,
     MAX_INTERCHAR_MILLISECONDS,
 )
+
+
+class _TimedKeyEvent:
+    def __init__(self, text, timestamp, key=None):
+        self._text = text
+        self._timestamp = timestamp
+        self._key = key if key is not None else (ord(text) if text else 0)
+
+    def text(self):
+        return self._text
+
+    def timestamp(self):
+        return self._timestamp
+
+    def key(self):
+        return self._key
+
+
+@pytest.fixture
+def what_chord_cleanup_sequence():
+    """The keyboard-only trace for a what chord's cleanup and final output."""
+    return [
+        _TimedKeyEvent(character, timestamp)
+        for character, timestamp in zip("what", (1, 11, 21, 31))
+    ] + [
+        _TimedKeyEvent("\b", timestamp, BACKSPACE_KEY)
+        for timestamp in (41, 43, 45, 47)
+    ] + [
+        _TimedKeyEvent(character, timestamp)
+        for character, timestamp in zip("what", (57, 67, 77, 87))
+    ]
 
 
 def test_ordinary_character_sequence_stays_unclassified():
@@ -10,6 +43,18 @@ def test_ordinary_character_sequence_stays_unclassified():
     assert detector.observe("a", 0) is None
     assert detector.observe("b", 100) is None
     assert detector.observe("c", 200) is None
+
+
+def test_normal_what_typing_stays_unclassified():
+    detector = KeyboardChordDetector()
+
+    events = [
+        _TimedKeyEvent(character, timestamp)
+        for character, timestamp in zip("what", (1, 101, 201, 301))
+    ]
+
+    assert [detector.observe_event(event) for event in events] == [
+        None, None, None, None]
 
 
 def test_short_generated_burst_is_likely_chord_once():
@@ -63,6 +108,38 @@ def test_mixed_or_unknown_output_cannot_complete_the_previous_burst():
     # A gap starts another one-character burst rather than joining the
     # characters from before the unknown output.
     assert detector.observe("d", 100) is None
+
+
+def test_cleanup_backspaces_keep_one_likely_chord_classification(
+        what_chord_cleanup_sequence):
+    detector = KeyboardChordDetector()
+
+    observations = [
+        detector.observe_event(event)
+        for event in what_chord_cleanup_sequence
+    ]
+    new_bursts = [observation for observation in observations
+                  if observation is not None and observation.is_new]
+
+    assert len(new_bursts) == 1
+    assert detector.has_reported_burst
+
+
+def test_separate_cleanup_chords_are_independently_classified(
+        what_chord_cleanup_sequence):
+    detector = KeyboardChordDetector()
+    first = list(what_chord_cleanup_sequence)
+    second = [
+        _TimedKeyEvent(event.text(), event.timestamp() + 200, event.key())
+        for event in first
+    ]
+
+    observations = [
+        detector.observe_event(event) for event in first + second]
+    new_bursts = [observation for observation in observations
+                  if observation is not None and observation.is_new]
+
+    assert len(new_bursts) == 2
 
 
 def test_reset_starts_a_new_session_context():

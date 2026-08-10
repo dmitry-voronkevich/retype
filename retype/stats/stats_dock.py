@@ -39,6 +39,10 @@ class StatsDock(QWidget):
         self.wpms_likely_chords = []  # type: list[bool]
         self.likely_chords = 0
         self._pending_likely_segment = False
+        # The final cleanup Backspace can empty the console. Keep that event
+        # from looking like a programmatic context reset until textChanged has
+        # handled it; later key events clear this one-event allowance.
+        self._preserve_empty_text_reset = False
         self.chord_detector = KeyboardChordDetector()
 
         self.main_c, self.text_c, self.grid_c, self.likely_c = self._loadTheme()
@@ -76,12 +80,18 @@ class StatsDock(QWidget):
     def _onKeyPress(self, event):
         # type: (StatsDock, QKeyEvent) -> None
         v = self.book_view
+        self._preserve_empty_text_reset = False
         if not v.isVisible() or v.cursor_pos is None:
             self.chord_detector.reset()
             self._pending_likely_segment = False
             return
 
+        was_reported = self.chord_detector.has_reported_burst
+        is_backspace = self.chord_detector.is_backspace_event(event)
         observation = self.chord_detector.observe_event(event)
+        self._preserve_empty_text_reset = (
+            is_backspace and was_reported and
+            self.chord_detector.has_reported_burst)
         if observation is None:
             self._pending_likely_segment = False
             return
@@ -107,7 +117,10 @@ class StatsDock(QWidget):
         # A programmatic clear starts a new output context (line advance,
         # chapter navigation, or a view switch).
         if not text:
-            self.chord_detector.reset()
+            if self._preserve_empty_text_reset:
+                self._preserve_empty_text_reset = False
+            else:
+                self.chord_detector.reset()
             # Keep a pending mark until the matching textEdited/onUpdate
             # callback consumes it. This matters when completing a line
             # clears the console synchronously during highlighting.
@@ -186,6 +199,7 @@ class StatsDock(QWidget):
         self.wpms_likely_chords = []
         self.likely_chords = 0
         self._pending_likely_segment = False
+        self._preserve_empty_text_reset = False
         self._update_accessibility()
         self.likelyChordDetected.emit(0)
         self.update()
