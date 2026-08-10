@@ -23,6 +23,7 @@ class ShelfView(QWidget):
     def __init__(self, main_win, main_controller, parent=None):
         # type: (ShelfView, MainWin, MainController, QWidget | None) -> None
         super().__init__(parent)
+        self.setObjectName('shelf-view')
         self._parent = parent
         self._controller = main_controller
         self._library = self._controller.library
@@ -46,6 +47,7 @@ class ShelfView(QWidget):
         self.shelf_height = self.cell_dimensions[2]
 
         self.shelves = ShelvesWidget(self, *self.cell_dimensions)
+        self.shelves.setObjectName('shelf-grid')
         self.shelves.setContentsMargins(10, 15, 15, 10)
         self.shelves.container.installEventFilter(self)
 
@@ -159,6 +161,7 @@ class ShelfItem(QWidget):
     def __init__(self, book, loadBook, parent=None):
         # type: (ShelfItem, BookWrapper, pyqtBoundSignal, QWidget|None) -> None
         super().__init__(parent)
+        self.setObjectName(f'shelf-item-{book.idn}')
         self.book = book
         self.idn = book.idn
         self.cover = Cover(book, self)

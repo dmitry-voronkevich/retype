@@ -35,11 +35,14 @@ class MainController(QObject):
     customisationDialogRequested = pyqtSignal()
     aboutDialogRequested = pyqtSignal(str)
 
-    def __init__(self, chords_path=None):
-        # type: (MainController, str | None) -> None
+    def __init__(self, chords_path=None, config_dir=None, library_paths=None):
+        # type: (MainController, str | None, str | None, list[str] | None) -> None
         super().__init__()
-        self.config = SafeConfig()
+        self.config = SafeConfig(config_dir, library_paths)
         self._chords_path_override = chords_path
+        # Keep view state local to a controller. This also makes multiple
+        # isolated GUI runs in one QApplication deterministic.
+        self.views = {}
 
         Icons.populateSets(
             getIconsPath(), getIconsPath(self.config['user_dir']))
@@ -48,6 +51,7 @@ class MainController(QObject):
         self.console = Console(
             self.config['prompt'], self.config['console_font'])
         self._window = MainWin(self.console, self.getGeometry(self.config))
+        self._window.setObjectName('main-window')
         if iswindows:
             self.sysconsole_visible = True
             self._window.opened.connect(self.maybeHideConsoleWindow)

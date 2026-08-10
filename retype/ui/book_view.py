@@ -35,6 +35,7 @@ class BookDisplay(QTextBrowser):
                  ):
         # type: (...) -> None
         super().__init__(parent)
+        self.setObjectName('book-display')
         self._cursor = QTextCursor(self.document())  # type: QTextCursor
         self.setOpenLinks(False)
         self.setOpenExternalLinks(True)
@@ -182,6 +183,7 @@ class BookView(QWidget):
     ):
         # type: (...) -> None
         super().__init__(parent)
+        self.setObjectName('book-view')
         self._main_win = main_win
         main_win.closing.connect(self.maybeSave)
         self._controller = main_controller
@@ -271,6 +273,7 @@ class BookView(QWidget):
         self._main_win.maybeRestoreSplitterState('bookview')
 
         self.chord_hint_bar = ChordHintBar(self.chords, self)
+        self.chord_hint_bar.setObjectName('chord-hint-bar')
 
         self.layout_.addWidget(self.toolbar)
         self.layout_.addWidget(self.splitter)
@@ -281,6 +284,7 @@ class BookView(QWidget):
     def _initToolbar(self):
         # type: (BookView) -> None
         self.toolbar = QToolBar(self)
+        self.toolbar.setObjectName('book-toolbar')
         self.toolbar.setIconSize(QSize(16, 16))
 
         self.actions = {
@@ -382,6 +386,7 @@ class BookView(QWidget):
     def _initModeline(self):
         # type: (BookView) -> None
         self.modeline = Modeline(self)
+        self.modeline.setObjectName('book-modeline')
         self.modeline.update_(title="No book loaded")
 
     def updateModeline(self):

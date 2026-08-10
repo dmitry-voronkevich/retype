@@ -37,6 +37,7 @@ version = {attr = "retype.__version__"}
 [dependency-groups]
 test = [
     "pytest>=8,<9",
+    "pytest-qt>=4,<5",
 ]
 build = [
     "pyinstaller>=6,<7",

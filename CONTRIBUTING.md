@@ -30,6 +30,13 @@ Homebrew's or another global Python.
    `QT_QPA_PLATFORM=offscreen` is for automated tests only. The project remains
    a PyQt5/Qt5 application; this setup does not start a Qt6 or PySide migration.
 
+   GUI integration tests use the single `pytest-qt` QApplication fixture and
+   isolated temporary config directories. Run just those checks with:
+
+   ```sh
+   QT_QPA_PLATFORM=offscreen uv run --locked --group test pytest tests/gui
+   ```
+
 The declared Python range is 3.10 through 3.14 (`>=3.10,<3.15`). The Phase 1
 lock was resolved for that range. This checkout has validated Python 3.11,
 3.13, and 3.14; Python 3.10 and 3.12 were not available in the validation
@@ -54,7 +61,28 @@ screencapture -x evidence/retype-macos.png
 ```
 
 Use the macOS display/window and the built-in Screenshot tool (or
-`screencapture`) for evidence. Phase 1 documents this native macOS-first path
-only; it does not add a screenshot harness, golden baselines, or packaging
-smoke tests. Keep evidence files out of the source tree unless a later task
-explicitly adds an evidence convention.
+`screencapture`) for evidence. For repeatable widget evidence, the agent/CI
+harness captures Qt widgets directly and writes PNGs, a JSON manifest, and a
+failure log to `evidence/gui`:
+
+```sh
+QT_QPA_PLATFORM=offscreen uv run --locked --group test \
+  python tools/capture_visuals.py
+```
+
+Run one bounded scenario with `--scenario shelf|book|customisation|chords`.
+The manifest records each scenario’s dimensions, Python/Qt/platform details,
+commit, and absolute output path. The harness never compares or overwrites a
+golden baseline. On a display-backed macOS session, unset the platform
+variable to use native Qt rendering, then optionally capture the visible app
+with:
+
+```sh
+uv run --locked bin/retype
+screencapture -x evidence/gui/native-macos.png
+```
+
+Capture failures are recorded in `evidence/gui/manifest.json` and
+`evidence/gui/capture.log`; a non-zero exit status is returned. Generated
+artifacts are retained in that directory locally/for CI collection and are
+not release packaging inputs.

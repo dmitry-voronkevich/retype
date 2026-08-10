@@ -23,7 +23,9 @@ class MainWin(QMainWindow):
     def _initUI(self):
         # type: (MainWin) -> None
         self.stacker = QStackedWidget()
+        self.stacker.setObjectName('view-stacker')
         self.consistent_layout = QSplitter()
+        self.consistent_layout.setObjectName('main-splitter')
         self.consistent_layout.setHandleWidth(2)
         self.consistent_layout.setOrientation(Qt.Orientation.Vertical)
         self.consistent_layout.setContentsMargins(0, 0, 0, 0)
