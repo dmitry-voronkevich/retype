@@ -47,7 +47,7 @@ def parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument(
         "--scenario", choices=SCENARIOS, default=None,
-        help="Capture one scenario; the default captures all four.",
+        help="Capture one scenario; the default captures all five.",
     )
     p.add_argument(
         "--output-dir", type=Path, default=ROOT / "evidence" / "gui",
