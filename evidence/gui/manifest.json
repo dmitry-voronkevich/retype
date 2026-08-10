@@ -6,40 +6,48 @@
   "pyqt": "5.15.11",
   "platform": "macOS-26.5.2-arm64-arm-64bit-Mach-O",
   "system": "darwin",
-  "qt_platform": "cocoa",
+  "qt_platform": "offscreen",
   "output_directory": "/Users/zloy/.treehouse/retype-f275f7/1/retype/evidence/gui",
   "scenarios": [
     {
       "scenario": "shelf",
       "dimensions": {
-        "width": 1920,
-        "height": 1440
+        "width": 960,
+        "height": 720
       },
       "output_path": "/Users/zloy/.treehouse/retype-f275f7/1/retype/evidence/gui/shelf.png"
     },
     {
       "scenario": "book",
       "dimensions": {
-        "width": 1920,
-        "height": 1440
+        "width": 960,
+        "height": 720
       },
       "output_path": "/Users/zloy/.treehouse/retype-f275f7/1/retype/evidence/gui/book.png"
     },
     {
       "scenario": "customisation",
       "dimensions": {
-        "width": 1400,
-        "height": 1200
+        "width": 700,
+        "height": 600
       },
       "output_path": "/Users/zloy/.treehouse/retype-f275f7/1/retype/evidence/gui/customisation.png"
     },
     {
       "scenario": "chords",
       "dimensions": {
-        "width": 1920,
-        "height": 1440
+        "width": 960,
+        "height": 720
       },
       "output_path": "/Users/zloy/.treehouse/retype-f275f7/1/retype/evidence/gui/chords.png"
+    },
+    {
+      "scenario": "chord-detection",
+      "dimensions": {
+        "width": 960,
+        "height": 720
+      },
+      "output_path": "/Users/zloy/.treehouse/retype-f275f7/1/retype/evidence/gui/chord-detection.png"
     }
   ],
   "failures": [],

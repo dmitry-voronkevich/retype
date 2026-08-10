@@ -75,6 +75,10 @@ BookView.StatsDock.Main {
   background-color: #cdcdc1;
 }
 
+BookView.StatsDock.LikelyChord {
+  color: #1a7f37;
+}
+
 BookView.BookDisplay.Cursor {
   color: #ff0000;
 }

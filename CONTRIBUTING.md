@@ -70,7 +70,7 @@ QT_QPA_PLATFORM=offscreen uv run --locked --group test \
   python tools/capture_visuals.py
 ```
 
-Run one bounded scenario with `--scenario shelf|book|customisation|chords`.
+Run one bounded scenario with `--scenario shelf|book|customisation|chords|chord-detection`.
 The manifest records each scenario’s dimensions, Python/Qt/platform details,
 and absolute output path. The harness never compares or overwrites a
 golden baseline. On a display-backed macOS session, unset the platform

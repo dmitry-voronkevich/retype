@@ -2,7 +2,7 @@ import logging
 from qt import (QWidget, QVBoxLayout, QTextBrowser, QTextDocument, QUrl,
                 QTextCursor, QTextCharFormat, QPainter, QPixmap,
                 QToolBar, QFont, QKeySequence, Qt, QApplication, pyqtSignal,
-                QSplitter, QSize, QGuiApplication)
+                QSplitter, QSize, QGuiApplication, QLabel)
 
 from typing import TYPE_CHECKING
 
@@ -244,6 +244,11 @@ class BookView(QWidget):
         self.chord_format.setUnderlineStyle(
             QTextCharFormat.UnderlineStyle.DotLine)
         self.chord_format.setUnderlineColor(self.c_chordable.fg())
+        feedback = getattr(self, 'chord_feedback', None)
+        if feedback is not None:
+            feedback.setStyleSheet(
+                'QLabel { color: %s; font-weight: bold; }' %
+                self.c_chordable.fg().name())
         # Re-apply to the currently displayed chapter so a live theme change
         #  (or chord reload) is reflected immediately.
         self.applyChordHighlighting()
@@ -274,11 +279,21 @@ class BookView(QWidget):
 
         self.chord_hint_bar = ChordHintBar(self.chords, self)
         self.chord_hint_bar.setObjectName('chord-hint-bar')
+        self.chord_feedback = QLabel('', self)
+        self.chord_feedback.setObjectName('chord-feedback')
+        self.chord_feedback.setAccessibleName('Likely chord encouragement')
+        self.chord_feedback.setAccessibleDescription(
+            'Encouragement shown when a short keyboard-output burst is likely '
+            'to be chording. This is a timing heuristic, not device detection.')
+        self.chord_feedback.setVisible(False)
+        self.stats_dock.likelyChordDetected.connect(
+            self._showLikelyChordFeedback)
 
         self.layout_.addWidget(self.toolbar)
         self.layout_.addWidget(self.splitter)
         self.layout_.addWidget(self.modeline)
         self.layout_.addWidget(self.chord_hint_bar)
+        self.layout_.addWidget(self.chord_feedback)
         self.setLayout(self.layout_)
 
     def _initToolbar(self):
@@ -478,6 +493,22 @@ class BookView(QWidget):
             return
         offset = max(0, self.cursor_pos - self.persistent_pos)
         bar.update_(str(line), offset)
+
+    def _showLikelyChordFeedback(self, count):
+        # type: (BookView, int) -> None
+        feedback = getattr(self, 'chord_feedback', None)
+        if feedback is None:
+            return
+        if count <= 0:
+            feedback.clear()
+            feedback.setVisible(False)
+            return
+        feedback.setText(
+            'Likely chord burst - nice!  Likely chords: {}'.format(count))
+        feedback.setVisible(True)
+        feedback.setAccessibleDescription(
+            'Likely chord burst encouragement. Likely chords: {}. '
+            'This is a timing heuristic, not device detection.'.format(count))
 
     def setChords(self, chords):
         # type: (BookView, dict[str, object]) -> None

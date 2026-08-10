@@ -92,6 +92,20 @@ While practicing, words found in the loaded chord library are highlighted with a
 
 More information on the user interface and available features can be found in the documentation_.
 
+Keyboard-only likely-chord feedback
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+retype also has a small keyboard-only heuristic for practice feedback. It
+watches the normal generated key output and marks a burst of at least three
+printable characters as *likely* chording when adjacent characters are no more
+than 35 milliseconds apart and the whole burst is no more than 120
+milliseconds. This is not direct CharaChorder detection: even when a device
+is not connected to CCIO as a device and emits only ordinary keyboard input,
+its origin cannot be attributed. Ordinary fast typing, macros, and other
+keyboard sources can produce the same pattern, and slower or interrupted chord
+output may be missed. The prototype uses no USB, serial, or
+device-companion access.
+
 -----------------------------
 Influences & acknowledgements
 -----------------------------

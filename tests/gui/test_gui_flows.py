@@ -7,6 +7,18 @@ from qt import QWidget
 from retype.controllers.main_controller import View
 
 
+class _TimedKeyEvent:
+    def __init__(self, text, timestamp):
+        self._text = text
+        self._timestamp = timestamp
+
+    def text(self):
+        return self._text
+
+    def timestamp(self):
+        return self._timestamp
+
+
 def test_launches_shelf_with_bundled_books(controller, qtbot):
     window = controller._window
     shelf = controller.views[View.shelf_view]
@@ -47,6 +59,34 @@ def test_opens_customisation_dialog_without_blocking(controller, qtbot):
     dialog.reject()
     qtbot.wait(20)
     assert not dialog.isVisible()
+
+
+def test_likely_chord_feedback_count_and_chart_segment(make_controller, qtbot):
+    controller = make_controller()
+    controller.loadBookRequested.emit(0)
+    qtbot.wait(20)
+
+    book_view = controller.views[View.book_view]
+    stats = book_view.stats_dock
+    stats.resetSession()
+
+    for position, (character, timestamp) in enumerate(
+            zip("abcd", (1, 11, 21, 31)), start=1):
+        book_view.cursor_pos = position
+        stats._onKeyPress(_TimedKeyEvent(character, timestamp))
+        stats.onUpdate(character)
+
+    assert stats.likely_chords == 1
+    assert stats.wpms_likely_chords[-4:] == [True, True, True, True]
+    assert book_view.chord_feedback.isVisible()
+    assert "Likely chord burst" in book_view.chord_feedback.text()
+    assert "Likely chords: 1" in book_view.chord_feedback.text()
+    assert "Likely chords: 1" in stats.accessibleDescription()
+
+    stats.resetSession()
+    assert stats.likely_chords == 0
+    assert stats.wpms_likely_chords == []
+    assert not book_view.chord_feedback.isVisible()
 
 
 def test_loads_chords_and_updates_hint_state(make_controller, qtbot, tmp_path):

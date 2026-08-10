@@ -24,7 +24,23 @@ from retype.controllers import MainController
 
 ROOT = Path(__file__).resolve().parents[1]
 LIBRARY = ROOT / "library"
-SCENARIOS = ("shelf", "book", "customisation", "chords")
+SCENARIOS = (
+    "shelf", "book", "customisation", "chords", "chord-detection",
+)
+
+
+class _TimedKeyEvent:
+    """Small Qt-event stand-in for deterministic heuristic evidence."""
+
+    def __init__(self, text: str, timestamp: float):
+        self._text = text
+        self._timestamp = timestamp
+
+    def text(self) -> str:
+        return self._text
+
+    def timestamp(self) -> float:
+        return self._timestamp
 
 
 def parser() -> argparse.ArgumentParser:
@@ -97,9 +113,20 @@ def capture_scenario(app: QApplication, scenario: str, output: Path) -> dict:
         app.processEvents()
 
         try:
-            if scenario in ("book", "chords"):
+            if scenario in ("book", "chords", "chord-detection"):
                 controller.loadBook(0)
                 app.processEvents()
+                if scenario == "chord-detection":
+                    book_view = controller.view()
+                    stats = book_view.stats_dock
+                    stats.resetSession()
+                    for position, (character, timestamp) in enumerate(
+                            zip("abcd", (1, 11, 21, 31)), start=1):
+                        book_view.cursor_pos = position
+                        stats._onKeyPress(
+                            _TimedKeyEvent(character, timestamp))
+                        stats.onUpdate(character)
+                    app.processEvents()
                 widget = window
             elif scenario == "customisation":
                 dialog = controller.customisation_dialog
