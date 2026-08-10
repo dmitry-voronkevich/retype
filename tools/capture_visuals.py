@@ -12,7 +12,6 @@ import argparse
 import json
 import logging
 import platform
-import subprocess
 import sys
 import tempfile
 import traceback
@@ -26,19 +25,6 @@ from retype.controllers import MainController
 ROOT = Path(__file__).resolve().parents[1]
 LIBRARY = ROOT / "library"
 SCENARIOS = ("shelf", "book", "customisation", "chords")
-
-
-def commit_id() -> str:
-    try:
-        return subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            cwd=ROOT,
-            check=True,
-            capture_output=True,
-            text=True,
-        ).stdout.strip()
-    except (OSError, subprocess.CalledProcessError):
-        return "unknown"
 
 
 def parser() -> argparse.ArgumentParser:
@@ -164,7 +150,6 @@ def main() -> int:
     scenarios = (args.scenario,) if args.scenario else SCENARIOS
     manifest = {
         "schema_version": 1,
-        "commit": commit_id(),
         "python": sys.version,
         "python_implementation": platform.python_implementation(),
         "qt": QT_VERSION_STR,
