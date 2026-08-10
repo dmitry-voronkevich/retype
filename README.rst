@@ -83,7 +83,7 @@ You can use a CharaChorder device backup JSON to practice with your chord librar
 
 The file should be a CharaChorder device backup in JSON format, containing its ``chords`` data (as produced by the device backup/export). The command-line option overrides the ``chords_path`` setting for that run; you can also select a backup JSON for that setting in the Customisation Dialog.
 
-While practicing, words found in the loaded chord library are highlighted with a dotted underline. The chording-hints banner above the words you type shows the chord for the word currently being typed, followed by upcoming words with known chords. The banner is hidden when no chord library is loaded.
+While practicing, words found in the loaded chord library are highlighted with a dotted underline. The chording-hints banner above the words you type shows the current or next known chord, followed by upcoming words with known chords. The banner is hidden when no chord library is loaded.
 
 More information on the user interface and available features can be found in the documentation_.
 
