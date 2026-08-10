@@ -92,6 +92,40 @@ def test_likely_chord_feedback_count_and_chart_segment(make_controller, qtbot):
     assert stats.likely_chords == 0
     assert stats.wpms_likely_chords == []
     assert not book_view.chord_feedback.isVisible()
+    assert not book_view._chord_feedback_timer.isActive()
+
+
+def test_likely_chord_feedback_hides_after_three_seconds_and_resets_timer(
+        make_controller, qtbot):
+    controller = make_controller()
+    controller.loadBookRequested.emit(0)
+    qtbot.wait(20)
+
+    book_view = controller.views[View.book_view]
+    stats = book_view.stats_dock
+    stats.resetSession()
+
+    def burst(start, word):
+        for position, (character, timestamp) in enumerate(
+                zip(word, (start + 1, start + 11, start + 21, start + 31)),
+                start=1):
+            book_view.cursor_pos = position
+            stats._onKeyPress(_TimedKeyEvent(character, timestamp))
+            stats.onUpdate(character)
+
+    burst(0, "abcd")
+    assert book_view.chord_feedback.isVisible()
+    qtbot.wait(1500)
+    burst(200, "efgh")
+    assert stats.likely_chords == 2
+    assert book_view.chord_feedback.isVisible()
+
+    # The second detection restarts the single-shot three-second timer.
+    qtbot.wait(1600)
+    assert book_view.chord_feedback.isVisible()
+    qtbot.wait(1500)
+    assert not book_view.chord_feedback.isVisible()
+    assert not book_view._chord_feedback_timer.isActive()
 
 
 def test_cleanup_backspaces_count_once_and_mark_one_burst(

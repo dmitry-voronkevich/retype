@@ -2,7 +2,7 @@ import logging
 from qt import (QWidget, QVBoxLayout, QTextBrowser, QTextDocument, QUrl,
                 QTextCursor, QTextCharFormat, QPainter, QPixmap,
                 QToolBar, QFont, QKeySequence, Qt, QApplication, pyqtSignal,
-                QSplitter, QSize, QGuiApplication, QLabel)
+                QSplitter, QSize, QGuiApplication, QLabel, QTimer)
 
 from typing import TYPE_CHECKING
 
@@ -281,6 +281,12 @@ class BookView(QWidget):
         self.chord_hint_bar.setObjectName('chord-hint-bar')
         self.chord_feedback = QLabel('', self)
         self.chord_feedback.setObjectName('chord-feedback')
+        # Keep this timer owned by the view and single-shot so it cannot keep
+        # the application or tests alive after the view is destroyed.
+        self._chord_feedback_timer = QTimer(self)
+        self._chord_feedback_timer.setSingleShot(True)
+        self._chord_feedback_timer.timeout.connect(
+            self._hideLikelyChordFeedback)
         self.chord_feedback.setAccessibleName('Likely chord encouragement')
         self.chord_feedback.setAccessibleDescription(
             'Encouragement shown when a short keyboard-output burst is likely '
@@ -494,20 +500,31 @@ class BookView(QWidget):
         offset = max(0, self.cursor_pos - self.persistent_pos)
         bar.update_(str(line), offset)
 
+    def _hideLikelyChordFeedback(self):
+        # type: (BookView) -> None
+        feedback = getattr(self, 'chord_feedback', None)
+        if feedback is not None:
+            feedback.clear()
+            feedback.setVisible(False)
+
     def _showLikelyChordFeedback(self, count):
         # type: (BookView, int) -> None
         feedback = getattr(self, 'chord_feedback', None)
+        timer = getattr(self, '_chord_feedback_timer', None)
         if feedback is None:
             return
         if count <= 0:
-            feedback.clear()
-            feedback.setVisible(False)
+            if timer is not None:
+                timer.stop()
+            self._hideLikelyChordFeedback()
             return
         feedback.setText('Likely chord burst - nice!')
         feedback.setVisible(True)
         feedback.setAccessibleDescription(
             'Likely chord burst encouragement. See Typing statistics for the '
             'session count. This is a timing heuristic, not device detection.')
+        if timer is not None:
+            timer.start(3000)
 
     def setChords(self, chords):
         # type: (BookView, dict[str, object]) -> None
