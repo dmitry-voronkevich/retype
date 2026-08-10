@@ -72,6 +72,19 @@ Other than typing, you can navigate the book with toolbar buttons and console co
 
 You can add more library search paths and customise retype’s operation in the Customisation Dialog, which can be accessed from the menu or by :kbd:`Ctrl+O`.
 
+CharaChorder chord library
+^^^^^^^^^^^^^^^^^^^^^^^^^
+
+You can use a CharaChorder device backup JSON to practice with your chord library. Pass the backup file with ``--chords`` (or its short form ``-c``):
+
+.. code-block:: console
+
+   $ bin/retype --chords ~/Downloads/charachorder-backup.json
+
+The file should be a CharaChorder device backup in JSON format, containing its ``chords`` data (as produced by the device backup/export). The command-line option overrides the ``chords_path`` setting for that run. Alternatively, in the Customisation Dialog's ``Filesystem > Paths`` section, use the ``Chords JSON`` file selector to save the backup path in the configuration; leave it empty to disable chord hints.
+
+While practicing, words found in the loaded chord library are highlighted with a dotted underline. The chording-hints banner above the words you type shows the current or next known chord, followed by upcoming words with known chords. The banner is hidden when no chord library is loaded.
+
 More information on the user interface and available features can be found in the documentation_.
 
 -----------------------------
