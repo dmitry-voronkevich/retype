@@ -31,9 +31,9 @@ Build instructions
 ^^^^^^^^^^^^^^^^^^
 
 #. Get a local copy of this repository: either clone it or download and extract `ZIP of latest <https://github.com/plu5/retype/archive/main.zip>`_   
-#. Install the `dependencies`_ [``pip3 install -r requirements.txt``]
-#. Install ``pyinstaller`` and ``setuptools`` [``pip3 install pyinstaller setuptools``]
-#. Run ``python3 setup.py b`` and help text will print with the build options you can use. For example, ``python3 setup.py b -k onedir`` will build retype with pyinstaller in onedir mode.
+#. Install `uv <https://docs.astral.sh/uv/>`_ and a supported Python (3.10--3.14).
+#. From the repository root, run ``uv sync --locked --all-groups`` in the isolated project environment.
+#. Run ``uv run --locked --group build python setup.py b``; help text will print with the build options you can use. For example, ``uv run --locked --group build python setup.py b -k onedir`` will build retype with pyinstaller in onedir mode.
 
 The output will be in ``/dist``.
 
@@ -41,18 +41,23 @@ Running from sources
 ^^^^^^^^^^^^^^^^^^^^
 
 #. Get a local copy of this repository: either clone it or download and extract `ZIP of latest <https://github.com/plu5/retype/archive/main.zip>`_   
-#. Install the `dependencies`_ [``pip3 install -r requirements.txt``]
-#. Run ``bin/retype``. On Windows, you can simply double-click on ``bin/retype.pyw``. From console, you can run ``python3 bin/retype``.
+#. Install ``uv`` and a supported Python (3.10--3.14).
+#. From the repository root, run ``uv sync --locked`` in the isolated project environment.
+#. Run ``uv run --locked bin/retype``. On Windows, you can simply double-click on ``bin/retype.pyw``. From a console, you can run ``uv run --locked python bin/retype``.
 
 Dependencies
 ^^^^^^^^^^^^
 
 **Required:**
 
-- Python 3.7 or higher
+- Python 3.10--3.14 (the declared range is ``>=3.10,<3.15``)
 - ``PyQt5``
 - ``ebooklib``
 - ``tinycss2``
+
+Install these from the locked ``pyproject.toml`` contract with ``uv sync --locked``;
+do not install them into global Python. See ``CONTRIBUTING.md`` for the macOS
+contributor and native visual-evidence workflow.
 
 **Optional:**
 

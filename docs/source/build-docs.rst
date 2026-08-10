@@ -2,9 +2,9 @@ Build docs locally
 ==================
 
 #. Get a local copy of `the code repository <https://github.com/plu5/retype>`_: either clone it or download and extract `ZIP of latest <https://github.com/plu5/retype/archive/main.zip>`_
-#. Install the docs dependencies, which are in ``docs/requirements.txt`` [``pip3 install -r docs/requirements.txt``]
+#. From the repository root, install the isolated locked docs environment with ``uv sync --locked --all-groups``
 #. cd into the ``docs`` folder
-#. Run ``make html``, or on Windows ``./make.bat html``
+#. Run ``uv run --locked --group docs sphinx-build -M html source build`` (or ``make html``), or on Windows ``./make.bat html``
 #. If build succeeds, open ``build/html/index.html`` in your browser
 
 Between builds you may sometimes have to ``make clean`` for things to work properly, for example when updating public files like images or css.
