@@ -109,6 +109,12 @@ def capture_scenario(app: QApplication, scenario: str, output: Path) -> dict:
             if controller.customisation_dialog.isVisible():
                 controller.customisation_dialog.reject()
                 controller.customisation_dialog.close()
+            for view in controller.views.values():
+                autosave = getattr(view, 'autosave', None)
+                signal = getattr(autosave, 'signal', None)
+                timer = getattr(signal, 'timer', None)
+                if timer is not None:
+                    timer.stop()
             controller.quit()
             for top_level in list(app.topLevelWidgets()):
                 if top_level is not window and top_level.isVisible():

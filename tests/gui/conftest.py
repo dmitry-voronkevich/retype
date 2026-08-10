@@ -36,6 +36,12 @@ def make_controller(qapp, qtbot, tmp_path):
             if isinstance(widget, QDialog) and widget.isVisible():
                 widget.reject()
                 widget.close()
+        for view in controller.views.values():
+            autosave = getattr(view, 'autosave', None)
+            signal = getattr(autosave, 'signal', None)
+            timer = getattr(signal, 'timer', None)
+            if timer is not None:
+                timer.stop()
         controller.quit()
         qtbot.wait(20)
 
