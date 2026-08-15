@@ -95,11 +95,13 @@ More information on the user interface and available features can be found in th
 Keyboard-only likely-chord feedback
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-retype also provides keyboard-only likely-chord feedback in the Stats Dock and
-an encouragement message. The detailed timing heuristic, device-attribution
-limits, and false-positive/false-negative considerations are documented in the
-Book View reference in the documentation_; it uses no USB, serial, or
-device-companion access.
+retype records keyboard-only likely-chord bursts in the Stats Dock. When a
+burst's output is a known word in the loaded chord library and matches the
+word expected at the book cursor, the existing chord feedback area shows a
+brief congratulatory message. The detailed timing heuristic, matching rules,
+device-attribution limits, and false-positive/false-negative considerations
+are documented in the Book View reference in the documentation_; it uses no
+USB, serial, or device-companion access.
 
 -----------------------------
 Influences & acknowledgements

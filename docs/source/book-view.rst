@@ -88,19 +88,28 @@ The Stats Dock updates on every letter typed correctly.
 Keyboard-only chord feedback
 ----------------------------
 
-The likely-chord prototype watches the ordinary Qt keyboard events that retype
+The likely-chord detector watches the ordinary Qt keyboard events that retype
 already receives. It classifies a burst when at least three printable
 characters arrive no more than 35 milliseconds apart and the burst lasts no
-more than 120 milliseconds. After a reported burst, the encouragement
-``Likely chord burst - nice!`` is shown for exactly three seconds; another
-reported burst restarts that timer. Rapid Backspace cleanup output is treated as part
-of the burst rather than as a second burst; a later event outside the timing
-window starts a new candidate. Session/reset cleanup hides the encouragement
-and cancels its timer. The thresholds are a
-timing heuristic inspired by short generated output; they do not identify a
-device or prove that a CharaChorder produced the text. This also covers the
-setup where a device is not connected to CCIO as a device and emits only
-ordinary keyboard input: the input path cannot attribute its origin. A fast
-ordinary typist or macro can be a false positive, while slower, shorter,
-interrupted, or mixed output can be a false negative. No USB, serial, or device
-companion access is used.
+more than 120 milliseconds. Such bursts remain heuristic observations and are
+counted in the Stats Dock, including output from ordinary fast typing or a
+macro.
+
+A burst receives educational feedback only when all of these conditions hold:
+
+* its output is a known word in the loaded CharaChorder chord library;
+* it matches the word expected at the current book cursor; and
+* the existing case and word-boundary rules match.
+
+The chord feedback area then shows a brief congratulatory message. Unknown or
+gibberish output, output at another book position, ordinary fast sequential
+text, and bursts without a loaded library do not receive that message. Rapid
+Backspace cleanup output is treated as part of a reported burst rather than as
+a second burst; an event outside the timing window starts a new candidate.
+Session/reset cleanup hides the feedback and cancels its timer.
+
+This feedback confirms only keyboard input/output and dictionary matching. It
+does not identify a device or prove that a CharaChorder produced the text. No
+USB, serial, or device-companion access is used. A fast ordinary typist or
+macro can therefore be a heuristic false positive, while slower, shorter,
+interrupted, or mixed output can be a false negative.
