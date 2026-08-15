@@ -85,6 +85,12 @@ class KeyboardChordDetector:
         return text in ('\b', '\x7f')
 
     @property
+    def output_length(self):
+        # type: (KeyboardChordDetector) -> int
+        """Number of printable outputs in the current timing burst."""
+        return len(self._output)
+
+    @property
     def has_reported_burst(self):
         # type: (KeyboardChordDetector) -> bool
         """Whether the current burst crossed the chord threshold."""

@@ -17,6 +17,7 @@ class StatsDock(QWidget):
     # The payload is the session count, which the Book View presents as
     # immediate, non-colour-only encouragement.
     likelyChordDetected = pyqtSignal(int)
+    successfulChordDetected = pyqtSignal(str)
 
     def __init__(self, book_view, parent=None):
         # type: (StatsDock, BookView, QWidget | None) -> None
@@ -38,7 +39,9 @@ class StatsDock(QWidget):
         # Kept separately from ``wpms`` so ordinary chart data remains intact.
         self.wpms_likely_chords = []  # type: list[bool]
         self.likely_chords = 0
+        self.successful_chords = 0
         self._pending_likely_segment = False
+        self._chord_burst_cursor = None
         # The final cleanup Backspace can empty the console. Keep that event
         # from looking like a programmatic context reset until textChanged has
         # handled it; later key events clear this one-event allowance.
@@ -89,6 +92,8 @@ class StatsDock(QWidget):
         was_reported = self.chord_detector.has_reported_burst
         is_backspace = self.chord_detector.is_backspace_event(event)
         observation = self.chord_detector.observe_event(event)
+        if self.chord_detector.output_length == 1:
+            self._chord_burst_cursor = v.cursor_pos
         self._preserve_empty_text_reset = (
             is_backspace and was_reported and
             self.chord_detector.has_reported_burst)
@@ -99,6 +104,13 @@ class StatsDock(QWidget):
         if observation.is_new:
             self.likely_chords += 1
             self.likelyChordDetected.emit(self.likely_chords)
+            # A timing burst is only educationally successful when the normal
+            # book typing path confirms its output against the active cursor.
+            # This deliberately makes no claim about the input device.
+            if v.isSuccessfulChordOutput(
+                    observation.output, self._chord_burst_cursor):
+                self.successful_chords += 1
+                self.successfulChordDetected.emit(observation.output)
             # The current event has not edited the document yet. Colour the
             # already-created bars for the preceding characters now; the
             # matching current bar is marked by onUpdate below.
@@ -199,7 +211,9 @@ class StatsDock(QWidget):
         self.wpms = []
         self.wpms_likely_chords = []
         self.likely_chords = 0
+        self.successful_chords = 0
         self._pending_likely_segment = False
+        self._chord_burst_cursor = None
         self._preserve_empty_text_reset = False
         self._update_accessibility()
         self.likelyChordDetected.emit(0)

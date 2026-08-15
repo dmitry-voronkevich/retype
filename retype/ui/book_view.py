@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 from retype.extras import splittext, isspaceorempty, ManifoldStr
 from retype.ui.modeline import Modeline
 from retype.ui.chord_hint_bar import ChordHintBar
-from retype.services.chords import chordable_spans
+from retype.services.chords import WORD_RE, chordable_spans
 from retype.services import Autosave
 from retype.stats import StatsDock
 from retype.services.theme import theme, C, Theme
@@ -287,13 +287,13 @@ class BookView(QWidget):
         self._chord_feedback_timer.setSingleShot(True)
         self._chord_feedback_timer.timeout.connect(
             self._hideLikelyChordFeedback)
-        self.chord_feedback.setAccessibleName('Likely chord encouragement')
+        self.chord_feedback.setAccessibleName('Chord feedback')
         self.chord_feedback.setAccessibleDescription(
-            'Encouragement shown when a short keyboard-output burst is likely '
-            'to be chording. This is a timing heuristic, not device detection.')
+            'Feedback shown when burst output matches a known chord word and '
+            'the text expected at the current book cursor.')
         self.chord_feedback.setVisible(False)
-        self.stats_dock.likelyChordDetected.connect(
-            self._showLikelyChordFeedback)
+        self.stats_dock.successfulChordDetected.connect(
+            self._showSuccessfulChordFeedback)
 
         self.layout_.addWidget(self.toolbar)
         self.layout_.addWidget(self.splitter)
@@ -507,6 +507,21 @@ class BookView(QWidget):
             feedback.clear()
             feedback.setVisible(False)
 
+    def _showSuccessfulChordFeedback(self, word):
+        # type: (BookView, str) -> None
+        feedback = getattr(self, 'chord_feedback', None)
+        timer = getattr(self, '_chord_feedback_timer', None)
+        if feedback is None:
+            return
+        feedback.setText('Chord matched “{}” — nice!'.format(word))
+        feedback.setVisible(True)
+        feedback.setAccessibleDescription(
+            'Chord output matched the known dictionary word and the text at '
+            'the current book cursor. This confirms input and text matching, '
+            'not the originating device.')
+        if timer is not None:
+            timer.start(3000)
+
     def _showLikelyChordFeedback(self, count):
         # type: (BookView, int) -> None
         feedback = getattr(self, 'chord_feedback', None)
@@ -525,6 +540,27 @@ class BookView(QWidget):
             'session count. This is a timing heuristic, not device detection.')
         if timer is not None:
             timer.start(3000)
+
+    def isSuccessfulChordOutput(self, output, cursor_pos=None):
+        # type: (BookView, object, int | None) -> bool
+        """Check burst output against the active word at the book cursor."""
+        if not self.chords or not isinstance(output, str) or \
+           self.cursor_pos is None or self.persistent_pos is None:
+            return False
+        word = output.lower()
+        if word not in self.chords:
+            return False
+        line = str(getattr(self, 'current_line', ''))
+        if cursor_pos is None:
+            cursor_pos = self.cursor_pos
+        offset = cursor_pos - self.persistent_pos
+        for match in WORD_RE.finditer(line):
+            if match.start() == offset:
+                return match.group().lower() == word and \
+                    match.end() - match.start() == len(output)
+            if match.start() > offset:
+                break
+        return False
 
     def setChords(self, chords):
         # type: (BookView, dict[str, object]) -> None

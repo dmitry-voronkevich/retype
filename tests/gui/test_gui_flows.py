@@ -2,6 +2,7 @@
 
 import json
 
+import pytest
 from qt import QWidget
 
 from retype.controllers.main_controller import View
@@ -83,9 +84,9 @@ def test_likely_chord_feedback_count_and_chart_segment(make_controller, qtbot):
 
     assert stats.likely_chords == 1
     assert stats.wpms_likely_chords[-4:] == [True, True, True, True]
-    assert book_view.chord_feedback.isVisible()
-    assert book_view.chord_feedback.text() == "Likely chord burst - nice!"
-    assert "Likely chords" not in book_view.chord_feedback.text()
+    # Heuristic bursts remain in statistics, but do not get educational
+    # feedback without a dictionary and an expected-word match.
+    assert not book_view.chord_feedback.isVisible()
     assert "Likely chords: 1" in stats.accessibleDescription()
 
     stats.resetSession()
@@ -114,18 +115,11 @@ def test_likely_chord_feedback_hides_after_three_seconds_and_resets_timer(
             stats.onUpdate(character)
 
     burst(0, "abcd")
-    assert book_view.chord_feedback.isVisible()
+    assert not book_view.chord_feedback.isVisible()
     qtbot.wait(1500)
     burst(200, "efgh")
     assert stats.likely_chords == 2
-    assert book_view.chord_feedback.isVisible()
-
-    # The second detection restarts the single-shot three-second timer.
-    qtbot.wait(1600)
-    assert book_view.chord_feedback.isVisible()
-    qtbot.wait(1500)
     assert not book_view.chord_feedback.isVisible()
-    assert not book_view._chord_feedback_timer.isActive()
 
 
 def test_cleanup_backspaces_count_once_and_mark_one_burst(
@@ -169,8 +163,57 @@ def test_cleanup_backspaces_count_once_and_mark_one_burst(
     assert stats.likely_chords == 1
     assert encouragements == [1]
     assert stats.wpms_likely_chords == [True] * 8
-    assert book_view.chord_feedback.text() == "Likely chord burst - nice!"
-    assert "Likely chords" not in book_view.chord_feedback.text()
+    assert not book_view.chord_feedback.isVisible()
+
+
+def test_known_expected_burst_gets_educational_feedback(make_controller, qtbot):
+    controller = make_controller()
+    controller.loadBookRequested.emit(0)
+    qtbot.wait(20)
+    book_view = controller.views[View.book_view]
+    stats = book_view.stats_dock
+    book_view.setChords({'the': 't+h+e'})
+    book_view.current_line = 'The cat'
+    book_view.persistent_pos = 0
+    book_view.cursor_pos = 0
+    stats.resetSession()
+
+    for character, timestamp in zip('THE', (1, 11, 21)):
+        stats._onKeyPress(_TimedKeyEvent(character, timestamp))
+        book_view.cursor_pos += 1
+        stats.onUpdate(character)
+
+    assert stats.successful_chords == 1
+    assert book_view.chord_feedback.isVisible()
+    assert book_view.chord_feedback.text() == 'Chord matched “THE” — nice!'
+    assert 'device' not in book_view.chord_feedback.text().lower()
+
+
+@pytest.mark.parametrize('output, line, chords', [
+    ('xyz', 'xyz now', {'the': 't+h+e'}),
+    ('the', 'other the', {'the': 't+h+e'}),
+    ('the', 'the now', {}),
+])
+def test_burst_without_known_expected_chord_gets_no_success_feedback(
+        make_controller, qtbot, output, line, chords):
+    controller = make_controller()
+    controller.loadBookRequested.emit(0)
+    qtbot.wait(20)
+    book_view = controller.views[View.book_view]
+    stats = book_view.stats_dock
+    book_view.setChords(chords)
+    book_view.current_line = line
+    book_view.persistent_pos = 0
+    book_view.cursor_pos = 0
+    stats.resetSession()
+
+    for character, timestamp in zip(output, (1, 11, 21, 31)):
+        stats._onKeyPress(_TimedKeyEvent(character, timestamp))
+        book_view.cursor_pos += 1
+        stats.onUpdate(character)
+
+    assert stats.successful_chords == 0
+    assert not book_view.chord_feedback.isVisible()
 
 
 def test_non_printable_input_clears_pending_likely_segment(make_controller, qtbot):
