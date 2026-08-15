@@ -150,30 +150,45 @@ def study_entries(mapping: dict[str, dict[str, Any]], words: Iterable[str] = STU
 
 
 def build_schedule(words: Iterable[str] = STUDY_WORDS, repetitions: int = DEFAULT_PAIRS,
-                   seed: int = DEFAULT_SEED) -> list[dict[str, Any]]:
-    """Build reproducible paired trials; each pair has exactly two conditions."""
+                   seed: int = DEFAULT_SEED, condition_order: str = "paired") -> list[dict[str, Any]]:
+    """Build reproducible paired trials, optionally in condition blocks.
+
+    ``paired`` alternates the two conditions within each pair with seeded
+    order. ``blocked`` places every trial of one condition before every trial
+    of the other, while retaining pair IDs for later paired analysis.
+    """
     selected = tuple(words)
     if repetitions < 1:
         raise ValueError("--pairs must be at least 1")
+    if condition_order not in ("paired", "blocked"):
+        raise ValueError("condition_order must be paired or blocked")
     rng = random.Random(seed)
-    schedule: list[dict[str, Any]] = []
+    pair_specs = []
     pair_number = 0
     for repetition in range(1, repetitions + 1):
         for word in selected:
             pair_number += 1
-            conditions = ["device_chord", "sequential"]
-            rng.shuffle(conditions)
-            pair_id = f"pair-{pair_number:03d}-r{repetition}-{word}"
-            for condition in conditions:
-                schedule.append({
-                    "trial_id": f"{pair_id}-{condition}",
-                    "pair_id": pair_id,
-                    "pair_index": pair_number,
-                    "repetition": repetition,
-                    "word": word,
-                    "condition": condition,
-                    "expected_sequence": word,
-                })
+            pair_specs.append((pair_number, repetition, word,
+                               f"pair-{pair_number:03d}-r{repetition}-{word}"))
+
+    def trial_for(spec: tuple[int, int, str, str], condition: str) -> dict[str, Any]:
+        pair_index, repetition, word, pair_id = spec
+        return {
+            "trial_id": f"{pair_id}-{condition}", "pair_id": pair_id,
+            "pair_index": pair_index, "repetition": repetition, "word": word,
+            "condition": condition, "expected_sequence": word,
+        }
+
+    if condition_order == "blocked":
+        conditions = ["device_chord", "sequential"]
+        rng.shuffle(conditions)
+        return [trial_for(spec, condition) for condition in conditions for spec in pair_specs]
+
+    schedule: list[dict[str, Any]] = []
+    for spec in pair_specs:
+        conditions = ["device_chord", "sequential"]
+        rng.shuffle(conditions)
+        schedule.extend(trial_for(spec, condition) for condition in conditions)
     return schedule
 
 
@@ -293,13 +308,14 @@ def write_exports(out_dir: Path, session: dict[str, Any]) -> None:
 
 
 def _session_metadata(chords_path: Path, out_dir: Path, words: tuple[str, ...],
-                      pairs: int, seed: int, override: bool) -> dict[str, Any]:
+                      pairs: int, seed: int, condition_order: str,
+                      override: bool) -> dict[str, Any]:
     return {
         "schema_version": 1, "session_id": uuid.uuid4().hex,
         "started_utc": datetime.now(timezone.utc).isoformat(),
         "chords_path": str(chords_path.resolve()), "out_dir": str(out_dir.resolve()),
         "study_words": list(words), "word_override": list(words) if override else None,
-        "pairs_per_word": pairs, "seed": seed,
+        "pairs_per_word": pairs, "seed": seed, "condition_order": condition_order,
         "reference_implementation": "/Users/zloy/dev/ChordMentor/charachorder_word_freq.py",
         "parsing_semantics": "Decoded printable output; shortest duplicate input; reference word order; physical left-to-right layout order.",
         "privacy_boundary": "Foreground focused Qt key events only; no global hook, background monitoring, serial/device access, network upload, or device-origin claim.",
@@ -307,13 +323,15 @@ def _session_metadata(chords_path: Path, out_dir: Path, words: tuple[str, ...],
     }
 
 
-def dry_run(chords_path: Path, words: tuple[str, ...], pairs: int, seed: int) -> int:
+def dry_run(chords_path: Path, words: tuple[str, ...], pairs: int, seed: int,
+             condition_order: str) -> int:
     mapping, _, _ = load_chords(chords_path)
     entries = study_entries(mapping, words)
-    print(f"validated {len(entries)} study chord entries; {len(build_schedule(words, pairs, seed))} trials")
+    schedule = build_schedule(words, pairs, seed, condition_order)
+    print(f"validated {len(entries)} study chord entries; {len(schedule)} trials ({condition_order})")
     for word, entry in entries.items():
         print(f"{word}: word-order={entry['by_word']} device-order={entry['by_lr']} raw={entry['orig']}")
-    for trial in build_schedule(words, pairs, seed):
+    for trial in schedule:
         print(f"{trial['trial_id']}: {trial['condition']} expected={trial['expected_sequence']}")
     return 0
 
@@ -327,13 +345,13 @@ def _qt_key_name(event: Any) -> str:
 
 
 def run_gui(chords_path: Path, out_dir: Path, words: tuple[str, ...], pairs: int, seed: int,
-            entries: dict[str, dict[str, Any]]) -> int:
+            condition_order: str, entries: dict[str, dict[str, Any]]) -> int:
     from PyQt5.QtCore import Qt
     from PyQt5.QtWidgets import (QApplication, QCheckBox, QFrame, QLabel, QMainWindow,
                                  QPushButton, QVBoxLayout, QWidget)
 
-    schedule = build_schedule(words, pairs, seed)
-    session = {"metadata": _session_metadata(chords_path, out_dir, words, pairs, seed, words != STUDY_WORDS), "trials": []}
+    schedule = build_schedule(words, pairs, seed, condition_order)
+    session = {"metadata": _session_metadata(chords_path, out_dir, words, pairs, seed, condition_order, words != STUDY_WORDS), "trials": []}
     app = QApplication.instance() or QApplication(sys.argv)
 
     class CaptureArea(QFrame):
@@ -474,6 +492,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--out-dir", type=Path, default=Path("chord-study-output"), help="local output directory")
     parser.add_argument("--pairs", type=int, default=DEFAULT_PAIRS, help="repetitions per word/condition (default: 3)")
     parser.add_argument("--seed", type=int, default=DEFAULT_SEED, help=f"schedule seed (default: {DEFAULT_SEED})")
+    parser.add_argument("--condition-order", choices=("paired", "blocked"), default="paired",
+                        help="interleave conditions per pair, or group each condition into a block")
     parser.add_argument("--words", help="comma-separated explicit word override; recorded in session metadata")
     parser.add_argument("--dry-run", action="store_true", help="validate and print schedule without opening Qt or capturing")
     return parser
@@ -489,8 +509,9 @@ def main(argv: list[str] | None = None) -> int:
         mapping, _, _ = load_chords(args.chords)
         entries = study_entries(mapping, words)
         if args.dry_run:
-            return dry_run(args.chords, words, args.pairs, args.seed)
-        return run_gui(args.chords, args.out_dir, words, args.pairs, args.seed, entries)
+            return dry_run(args.chords, words, args.pairs, args.seed, args.condition_order)
+        return run_gui(args.chords, args.out_dir, words, args.pairs, args.seed,
+                       args.condition_order, entries)
     except (OSError, json.JSONDecodeError, ValueError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 2

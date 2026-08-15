@@ -14,16 +14,19 @@ From the repository root (after `uv sync --locked`):
 uv run python tools/chord_study.py \
   --chords ~/Downloads/charachorder-backup.json \
   --out-dir ~/Desktop/retype-chord-study \
-  --pairs 3 --seed 20250308
+  --pairs 3 --seed 20250308 --condition-order blocked
 ```
 
 The initial words, in order, are `the`, `and`, `for`, `was`, `without`,
 `because`, `with`, and `at`. Every pair contains one `device_chord` trial and
-one `sequential` trial, with three repetitions by default. The seed determines
-the condition order within each pair; pair IDs are stored in every trial. An
-explicit override such as `--words the,and` is accepted only as an explicitly
-recorded session metadata field (`word_override`). The backup is validated for
-all selected single-word entries before the window opens.
+one `sequential` trial, with three repetitions by default. The default
+`--condition-order paired` shuffles the two conditions within each pair. Use
+`--condition-order blocked` to group all trials of one condition before all
+trials of the other (the seed reproducibly chooses which block comes first).
+Pair IDs remain attached to both trials for paired analysis. An explicit
+override such as `--words the,and` is accepted only as an explicitly recorded
+session metadata field (`word_override`). The backup is validated for all
+selected single-word entries before the window opens.
 
 For CI/headless validation, use the same backup without opening Qt:
 

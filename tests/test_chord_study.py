@@ -55,6 +55,13 @@ def test_exact_reproducible_paired_schedule():
     assert schedule == build_schedule(seed=17)
     assert schedule != build_schedule(seed=18)
 
+    blocked = build_schedule(seed=17, condition_order="blocked")
+    half = len(blocked) // 2
+    assert len({trial["condition"] for trial in blocked[:half]}) == 1
+    assert len({trial["condition"] for trial in blocked[half:]}) == 1
+    assert blocked[:half][0]["condition"] != blocked[half:][0]["condition"]
+    assert blocked == build_schedule(seed=17, condition_order="blocked")
+
 
 def test_event_pairing_and_derived_timing():
     times = iter((100.0, 100.1, 100.25, 100.5))
