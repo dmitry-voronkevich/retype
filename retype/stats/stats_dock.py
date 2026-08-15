@@ -42,6 +42,7 @@ class StatsDock(QWidget):
         self.successful_chords = 0
         self._pending_likely_segment = False
         self._chord_burst_cursor = None
+        self._pending_chord_success = None
         self._chord_success_timer = QTimer(self)
         self._chord_success_timer.setSingleShot(True)
         self._chord_success_timer.timeout.connect(self._finalizeChordSuccess)
@@ -90,6 +91,7 @@ class StatsDock(QWidget):
         if not v.isVisible() or v.cursor_pos is None:
             self.chord_detector.reset()
             self._chord_success_timer.stop()
+            self._pending_chord_success = None
             self._pending_likely_segment = False
             return
 
@@ -102,9 +104,16 @@ class StatsDock(QWidget):
             is_backspace and was_reported and
             self.chord_detector.has_reported_burst)
         if observation is None:
+            if not (is_backspace and self.chord_detector.has_reported_burst):
+                self._pending_chord_success = None
+                self._chord_success_timer.stop()
             self._pending_likely_segment = False
             return
 
+        self._pending_chord_success = (
+            observation.output, self._chord_burst_cursor,
+            v.isSuccessfulChordOutput(
+                observation.output, self._chord_burst_cursor))
         self._chord_success_timer.start(36)
         if observation.is_new:
             self.likely_chords += 1
@@ -124,11 +133,12 @@ class StatsDock(QWidget):
 
     def _finalizeChordSuccess(self):
         # type: (StatsDock) -> None
-        v = self.book_view
-        if not self.chord_detector.has_reported_burst:
+        pending = self._pending_chord_success
+        self._pending_chord_success = None
+        if pending is None:
             return
-        output = self.chord_detector.output
-        if v.isSuccessfulChordOutput(output, self._chord_burst_cursor):
+        output, _cursor_pos, is_success = pending
+        if is_success:
             self.successful_chords += 1
             self.successfulChordDetected.emit(output)
 
@@ -209,6 +219,7 @@ class StatsDock(QWidget):
         """Reset the detector and the statistics represented by this dock."""
         self.chord_detector.reset()
         self._chord_success_timer.stop()
+        self._pending_chord_success = None
         cursor_pos = getattr(self.book_view, 'cursor_pos', None)
         self.prev_cursor_pos = cursor_pos if cursor_pos is not None else 0
         self.prev_seconds = 0
