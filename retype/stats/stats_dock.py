@@ -1,6 +1,6 @@
 from math import floor, ceil
 from time import time
-from qt import QWidget, QPainter, Qt, QSize, QFontMetricsF, pyqtSignal
+from qt import QWidget, QPainter, Qt, QSize, QFontMetricsF, QTimer, pyqtSignal
 
 from typing import TYPE_CHECKING
 
@@ -42,6 +42,9 @@ class StatsDock(QWidget):
         self.successful_chords = 0
         self._pending_likely_segment = False
         self._chord_burst_cursor = None
+        self._chord_success_timer = QTimer(self)
+        self._chord_success_timer.setSingleShot(True)
+        self._chord_success_timer.timeout.connect(self._finalizeChordSuccess)
         # The final cleanup Backspace can empty the console. Keep that event
         # from looking like a programmatic context reset until textChanged has
         # handled it; later key events clear this one-event allowance.
@@ -86,6 +89,7 @@ class StatsDock(QWidget):
         self._preserve_empty_text_reset = False
         if not v.isVisible() or v.cursor_pos is None:
             self.chord_detector.reset()
+            self._chord_success_timer.stop()
             self._pending_likely_segment = False
             return
 
@@ -101,16 +105,10 @@ class StatsDock(QWidget):
             self._pending_likely_segment = False
             return
 
+        self._chord_success_timer.start(36)
         if observation.is_new:
             self.likely_chords += 1
             self.likelyChordDetected.emit(self.likely_chords)
-            # A timing burst is only educationally successful when the normal
-            # book typing path confirms its output against the active cursor.
-            # This deliberately makes no claim about the input device.
-            if v.isSuccessfulChordOutput(
-                    observation.output, self._chord_burst_cursor):
-                self.successful_chords += 1
-                self.successfulChordDetected.emit(observation.output)
             # The current event has not edited the document yet. Colour the
             # already-created bars for the preceding characters now; the
             # matching current bar is marked by onUpdate below.
@@ -123,6 +121,16 @@ class StatsDock(QWidget):
         # the same chart treatment.
         self._pending_likely_segment = True
         self.update()
+
+    def _finalizeChordSuccess(self):
+        # type: (StatsDock) -> None
+        v = self.book_view
+        if not self.chord_detector.has_reported_burst:
+            return
+        output = self.chord_detector.output
+        if v.isSuccessfulChordOutput(output, self._chord_burst_cursor):
+            self.successful_chords += 1
+            self.successfulChordDetected.emit(output)
 
     def _onTextChanged(self, text):
         # type: (StatsDock, str) -> None
@@ -200,6 +208,7 @@ class StatsDock(QWidget):
         # type: (StatsDock) -> None
         """Reset the detector and the statistics represented by this dock."""
         self.chord_detector.reset()
+        self._chord_success_timer.stop()
         cursor_pos = getattr(self.book_view, 'cursor_pos', None)
         self.prev_cursor_pos = cursor_pos if cursor_pos is not None else 0
         self.prev_seconds = 0

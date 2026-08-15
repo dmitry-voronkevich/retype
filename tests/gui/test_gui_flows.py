@@ -183,6 +183,8 @@ def test_known_expected_burst_gets_educational_feedback(make_controller, qtbot):
         book_view.cursor_pos += 1
         stats.onUpdate(character)
 
+    assert stats.successful_chords == 0
+    qtbot.wait(50)
     assert stats.successful_chords == 1
     assert book_view.chord_feedback.isVisible()
     assert book_view.chord_feedback.text() == 'Chord matched “THE” — nice!'

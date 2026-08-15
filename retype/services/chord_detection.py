@@ -91,6 +91,12 @@ class KeyboardChordDetector:
         return len(self._output)
 
     @property
+    def output(self):
+        # type: (KeyboardChordDetector) -> str
+        """Printable output accumulated in the current timing burst."""
+        return ''.join(self._output)
+
+    @property
     def has_reported_burst(self):
         # type: (KeyboardChordDetector) -> bool
         """Whether the current burst crossed the chord threshold."""
