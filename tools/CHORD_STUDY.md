@@ -20,10 +20,10 @@ uv run python tools/chord_study.py \
 The initial words, in order, are `the`, `and`, `for`, `was`, `without`,
 `because`, `with`, and `at`. Every pair contains one `device_chord` trial and
 one `sequential` trial, with three repetitions by default. The default
-`--condition-order paired` shuffles the two conditions within each pair. Use
-`--condition-order blocked` to group all trials of one condition before all
-trials of the other (the seed reproducibly chooses which block comes first).
-Pair IDs remain attached to both trials for paired analysis. An explicit
+`--condition-order blocked` runs the complete sequential block first and then
+the complete device-chord block. Use `--condition-order paired` to interleave
+the two conditions within each pair. Pair IDs remain attached to both trials
+for paired analysis. An explicit
 override such as `--words the,and` is accepted only as an explicitly recorded
 session metadata field (`word_override`). The backup is validated for all
 selected single-word entries before the window opens.
@@ -38,8 +38,9 @@ uv run python tools/chord_study.py --help
 ## Trial procedure
 
 1. Read the displayed **exact instruction**, target, expected character
-   sequence, pair ID, word-order notation, physical left-to-right/device-order
-   notation, and raw input codes.
+   sequence, and pair ID. Chord word-order, physical left-to-right/device-order,
+   and raw input-code hints are shown only during `device_chord` trials; they
+   are explicitly hidden during sequential control trials.
 2. Check **I performed the instruction above**. Until **Begin this trial** is
    pressed, no events are captured.
 3. Press **Begin this trial**, which focuses the visible capture box. For a

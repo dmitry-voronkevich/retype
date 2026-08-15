@@ -43,7 +43,7 @@ def test_parsing_shortest_duplicate_and_layout_notation(tmp_path):
 
 
 def test_exact_reproducible_paired_schedule():
-    schedule = build_schedule(seed=17)
+    schedule = build_schedule(seed=17, condition_order="paired")
     assert len(schedule) == 8 * 3 * 2
     assert [trial["word"] for trial in schedule[:2]] == ["the", "the"]
     pairs = {}
@@ -52,14 +52,16 @@ def test_exact_reproducible_paired_schedule():
     assert len(pairs) == 24
     assert all({trial["condition"] for trial in trials} == {"device_chord", "sequential"}
                for trials in pairs.values())
-    assert schedule == build_schedule(seed=17)
-    assert schedule != build_schedule(seed=18)
+    assert schedule == build_schedule(seed=17, condition_order="paired")
+    assert schedule != build_schedule(seed=18, condition_order="paired")
 
     blocked = build_schedule(seed=17, condition_order="blocked")
+    assert blocked == build_schedule(seed=17)
     half = len(blocked) // 2
     assert len({trial["condition"] for trial in blocked[:half]}) == 1
     assert len({trial["condition"] for trial in blocked[half:]}) == 1
-    assert blocked[:half][0]["condition"] != blocked[half:][0]["condition"]
+    assert {trial["condition"] for trial in blocked[:half]} == {"sequential"}
+    assert {trial["condition"] for trial in blocked[half:]} == {"device_chord"}
     assert blocked == build_schedule(seed=17, condition_order="blocked")
 
 

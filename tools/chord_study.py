@@ -150,12 +150,12 @@ def study_entries(mapping: dict[str, dict[str, Any]], words: Iterable[str] = STU
 
 
 def build_schedule(words: Iterable[str] = STUDY_WORDS, repetitions: int = DEFAULT_PAIRS,
-                   seed: int = DEFAULT_SEED, condition_order: str = "paired") -> list[dict[str, Any]]:
+                   seed: int = DEFAULT_SEED, condition_order: str = "blocked") -> list[dict[str, Any]]:
     """Build reproducible paired trials, optionally in condition blocks.
 
     ``paired`` alternates the two conditions within each pair with seeded
-    order. ``blocked`` places every trial of one condition before every trial
-    of the other, while retaining pair IDs for later paired analysis.
+    order. ``blocked`` places every sequential trial first and every device
+    chord trial second, while retaining pair IDs for later paired analysis.
     """
     selected = tuple(words)
     if repetitions < 1:
@@ -180,8 +180,9 @@ def build_schedule(words: Iterable[str] = STUDY_WORDS, repetitions: int = DEFAUL
         }
 
     if condition_order == "blocked":
-        conditions = ["device_chord", "sequential"]
-        rng.shuffle(conditions)
+        # The requested pilot order is a complete sequential control block,
+        # followed by the device-chord block.
+        conditions = ("sequential", "device_chord")
         return [trial_for(spec, condition) for condition in conditions for spec in pair_specs]
 
     schedule: list[dict[str, Any]] = []
@@ -413,9 +414,12 @@ def run_gui(chords_path: Path, out_dir: Path, words: tuple[str, ...], pairs: int
             self.layout.addWidget(QLabel(f"Trial {self.position + 1}/{len(schedule)}   Pair {trial['pair_id']}"))
             self.layout.addWidget(QLabel(f"TARGET WORD: {trial['word']}    TRIAL TYPE: {trial['condition']}"))
             self.layout.addWidget(QLabel(f"EXPECTED CHARACTER SEQUENCE: {trial['expected_sequence']}"))
-            self.layout.addWidget(QLabel(f"CHORD WORD ORDER: {entry['by_word']}"))
-            self.layout.addWidget(QLabel(f"CHORD DEVICE ORDER (physical left-to-right): {entry['by_lr']}"))
-            self.layout.addWidget(QLabel(f"RAW INPUT CODES: {entry['orig']}"))
+            if trial["condition"] == "device_chord":
+                self.layout.addWidget(QLabel(f"CHORD WORD ORDER: {entry['by_word']}"))
+                self.layout.addWidget(QLabel(f"CHORD DEVICE ORDER (physical left-to-right): {entry['by_lr']}"))
+                self.layout.addWidget(QLabel(f"RAW INPUT CODES: {entry['orig']}"))
+            else:
+                self.layout.addWidget(QLabel("CHORD HINTS: hidden for sequential control trial"))
             self.layout.addWidget(QLabel(instruction))
             self.instruction_check = QCheckBox("I performed the instruction above")
             self.layout.addWidget(self.instruction_check)
@@ -492,8 +496,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--out-dir", type=Path, default=Path("chord-study-output"), help="local output directory")
     parser.add_argument("--pairs", type=int, default=DEFAULT_PAIRS, help="repetitions per word/condition (default: 3)")
     parser.add_argument("--seed", type=int, default=DEFAULT_SEED, help=f"schedule seed (default: {DEFAULT_SEED})")
-    parser.add_argument("--condition-order", choices=("paired", "blocked"), default="paired",
-                        help="interleave conditions per pair, or group each condition into a block")
+    parser.add_argument("--condition-order", choices=("paired", "blocked"), default="blocked",
+                        help="group sequential then chord trials (default), or interleave per pair")
     parser.add_argument("--words", help="comma-separated explicit word override; recorded in session metadata")
     parser.add_argument("--dry-run", action="store_true", help="validate and print schedule without opening Qt or capturing")
     return parser
