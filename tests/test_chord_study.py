@@ -46,6 +46,7 @@ def test_exact_reproducible_paired_schedule():
     schedule = build_schedule(seed=17, condition_order="paired")
     assert len(schedule) == 8 * 3 * 2
     assert [trial["word"] for trial in schedule[:2]] == ["the", "the"]
+    assert all(trial["expected_sequence"] == trial["word"] + " " for trial in schedule)
     pairs = {}
     for trial in schedule:
         pairs.setdefault(trial["pair_id"], []).append(trial)

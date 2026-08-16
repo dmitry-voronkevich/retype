@@ -176,7 +176,7 @@ def build_schedule(words: Iterable[str] = STUDY_WORDS, repetitions: int = DEFAUL
         return {
             "trial_id": f"{pair_id}-{condition}", "pair_id": pair_id,
             "pair_index": pair_index, "repetition": repetition, "word": word,
-            "condition": condition, "expected_sequence": word,
+            "condition": condition, "expected_sequence": f"{word} ",
         }
 
     if condition_order == "blocked":
@@ -337,7 +337,7 @@ def dry_run(chords_path: Path, words: tuple[str, ...], pairs: int, seed: int,
     for word, entry in entries.items():
         print(f"{word}: word-order={entry['by_word']} device-order={entry['by_lr']} raw={entry['orig']}")
     for trial in schedule:
-        print(f"{trial['trial_id']}: {trial['condition']} expected={trial['expected_sequence']}")
+        print(f"{trial['trial_id']}: {trial['condition']} expected={trial['expected_sequence']!r}")
     return 0
 
 
@@ -415,12 +415,12 @@ def run_gui(chords_path: Path, out_dir: Path, words: tuple[str, ...], pairs: int
                 return
             trial = schedule[self.position]
             entry = entries[trial["word"]]
-            instruction = (f"Exact instruction: Focus the box, then press the physical chord for '{trial['word']}'."
+            instruction = (f"Exact instruction: Focus the box, then press the physical chord for '{trial['word']}'. It should produce the word followed by Space."
                            if trial["condition"] == "device_chord" else
-                           f"Exact instruction: Focus the box, then type '{trial['word']}' conventionally, one key at a time.")
+                           f"Exact instruction: Focus the box, then type '{trial['word']}' conventionally, one key at a time, followed by Space.")
             self.layout.addWidget(QLabel(f"Trial {self.position + 1}/{len(schedule)}   Pair {trial['pair_id']}"))
             self.layout.addWidget(QLabel(f"TARGET WORD: {trial['word']}    TRIAL TYPE: {trial['condition']}"))
-            self.layout.addWidget(QLabel(f"EXPECTED CHARACTER SEQUENCE: {trial['expected_sequence']}"))
+            self.layout.addWidget(QLabel(f"EXPECTED CHARACTER SEQUENCE: {trial['word']}␠ (word + Space)"))
             if trial["condition"] == "device_chord":
                 self.layout.addWidget(QLabel(f"CHORD WORD ORDER: {entry['by_word']}"))
                 self.layout.addWidget(QLabel(f"CHORD DEVICE ORDER (physical left-to-right): {entry['by_lr']}"))

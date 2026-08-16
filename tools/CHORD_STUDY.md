@@ -38,14 +38,15 @@ uv run python tools/chord_study.py --help
 ## Trial procedure
 
 1. Read the displayed **exact instruction**, target, expected character
-   sequence, and pair ID. Chord word-order, physical left-to-right/device-order,
-   and raw input-code hints are shown only during `device_chord` trials; they
+   sequence (the study sequence is always `word + Space`), and pair ID. Chord
+   word-order, physical left-to-right/device-order, and raw input-code hints are
+   shown only during `device_chord` trials; they
    are explicitly hidden during sequential control trials.
 2. Check **I performed the instruction above**. Until **Begin this trial** is
    pressed, no events are captured.
 3. Press **Begin this trial**, which focuses the visible capture box. For a
    `device_chord` trial, press the physical chord; for a `sequential` trial,
-   type the expected word conventionally, one key at a time.
+   type the expected word conventionally, one key at a time, followed by Space.
 4. Press **Complete Trial**. If a mistake occurs, press **Restart Trial**;
    the current attempt is discarded, the clock and press IDs reset, and the
    same trial starts again. The saved trial records `restart_count`.
@@ -54,7 +55,8 @@ uv run python tools/chord_study.py --help
    session.
 
 Each save updates `session.json`, `events.csv`, and `trials.csv` in the output
-directory. The JSON contains every focused key-down and key-up event, including
+directory. Both conditions use the same expected output: the selected word followed by
+one Space. The JSON contains every focused key-down and key-up event, including
 monotonic trial-relative time, Qt timestamp when available, key name/code,
 text, auto-repeat, and a local press ID. Derived trial fields include observed
 output, output length, inter-event/output gaps, paired key durations, burst
