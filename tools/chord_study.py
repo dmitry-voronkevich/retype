@@ -207,8 +207,11 @@ class TrialRecorder:
         self.started_at = self.clock()
 
     def start(self, now: float | None = None) -> None:
-        """Start the trial clock at the moment focused capture is enabled."""
+        """Start or restart the clock and discard the current attempt."""
         self.started_at = self.clock() if now is None else now
+        self.events.clear()
+        self._next_press_id = 1
+        self._active.clear()
 
     def record(self, event_type: str, key_code: int, key_name: str, text: str = "",
                auto_repeat: bool = False, qt_timestamp_ms: int | None = None,
@@ -286,7 +289,8 @@ TRIAL_FIELDS = ("session_id", "trial_id", "pair_id", "pair_index", "repetition",
                 "condition", "expected_sequence", "status", "performed_instruction",
                 "observed_output", "output_length", "expected_output_appeared",
                 "inter_event_gaps_seconds", "inter_output_gaps_seconds",
-                "key_durations_seconds", "burst_duration_seconds", "event_count")
+                "key_durations_seconds", "burst_duration_seconds", "event_count",
+                "restart_count", "restart_occurred")
 
 
 def write_exports(out_dir: Path, session: dict[str, Any]) -> None:
@@ -364,8 +368,11 @@ def run_gui(chords_path: Path, out_dir: Path, words: tuple[str, ...], pairs: int
             self.recorder = TrialRecorder(trial)
             self.display = display
             self.started = False
+            self.restart_count = 0
 
-        def begin(self) -> None:
+        def begin(self, restart: bool = False) -> None:
+            if restart:
+                self.restart_count += 1
             self.recorder.start()
             self.started = True
             self.setFocus(Qt.OtherFocusReason)
@@ -428,38 +435,51 @@ def run_gui(chords_path: Path, out_dir: Path, words: tuple[str, ...], pairs: int
             self.layout.addWidget(observed)
             self.layout.addWidget(self.current)
             begin = QPushButton("Begin this trial")
+            restart = QPushButton("Restart Trial (discard current capture)")
             complete = QPushButton("Complete Trial")
             stop = QPushButton("Stop & Save")
             cancel = QPushButton("Cancel Without Saving")
+            restart.setEnabled(False)
             complete.setEnabled(False)
-            begin.clicked.connect(lambda: self.begin_trial(begin, complete))
+            begin.clicked.connect(lambda: self.begin_trial(begin, restart, complete))
+            restart.clicked.connect(self.restart_trial)
             complete.clicked.connect(self.complete_trial)
             stop.clicked.connect(lambda: self.stop_save())
             cancel.clicked.connect(self.cancel)
             self.current.destroyed.connect(lambda: None)
             self.layout.addWidget(begin)
+            self.layout.addWidget(restart)
             self.layout.addWidget(complete)
             self.layout.addWidget(stop)
             self.layout.addWidget(cancel)
             self._complete_button = complete
             self._begin_button = begin
+            self._restart_button = restart
             self.show()
 
-        def begin_trial(self, begin: QPushButton, complete: QPushButton) -> None:
+        def begin_trial(self, begin: QPushButton, restart: QPushButton, complete: QPushButton) -> None:
             if not self.instruction_check or not self.instruction_check.isChecked():
                 self.statusBar().showMessage("Check that you performed the exact instruction before capture.")
                 return
             assert self.current
             self.current.begin()
             begin.setEnabled(False)
+            restart.setEnabled(True)
             complete.setEnabled(True)
             self.statusBar().showMessage("Capturing focused key events only.")
+
+        def restart_trial(self) -> None:
+            if self.current and self.current.started:
+                self.current.begin(restart=True)
+                self.statusBar().showMessage("Current capture discarded; trial restarted.")
 
         def complete_trial(self) -> None:
             if not self.current or not self.current.started:
                 return
             assert self.instruction_check
             result = self.current.recorder.finish(self.instruction_check.isChecked())
+            result["restart_count"] = self.current.restart_count
+            result["restart_occurred"] = self.current.restart_count > 0
             result["events"] = list(self.current.recorder.events)
             session["trials"].append(result)
             write_exports(out_dir, session)
@@ -470,6 +490,8 @@ def run_gui(chords_path: Path, out_dir: Path, words: tuple[str, ...], pairs: int
             if self.current and self.current.started:
                 assert self.instruction_check
                 result = self.current.recorder.finish(self.instruction_check.isChecked(), "stopped")
+                result["restart_count"] = self.current.restart_count
+                result["restart_occurred"] = self.current.restart_count > 0
                 result["events"] = list(self.current.recorder.events)
                 session["trials"].append(result)
             session["metadata"]["stop_status"] = "stop_requested"

@@ -83,6 +83,16 @@ def test_event_pairing_and_derived_timing():
     assert recorder.events[0]["press_id"] == recorder.events[1]["press_id"]
 
 
+def test_restart_discards_attempt_and_resets_local_press_ids():
+    recorder = TrialRecorder({"expected_sequence": "a"}, clock=lambda: 1.0)
+    recorder.record("key_down", 65, "A", "a", now=1.1)
+    recorder.start(now=2.0)
+    assert recorder.events == []
+    event = recorder.record("key_down", 66, "B", "b", now=2.1)
+    assert event["press_id"] == 1
+    assert recorder.finish(True)["observed_output"] == "b"
+
+
 def test_cancel_without_saving_and_exports(tmp_path):
     trial = {"trial_id": "t", "pair_id": "p", "pair_index": 1, "repetition": 1,
              "word": "a", "condition": "sequential", "expected_sequence": "a",

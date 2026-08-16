@@ -46,9 +46,12 @@ uv run python tools/chord_study.py --help
 3. Press **Begin this trial**, which focuses the visible capture box. For a
    `device_chord` trial, press the physical chord; for a `sequential` trial,
    type the expected word conventionally, one key at a time.
-4. Press **Complete Trial**. **Stop & Save** saves completed trials (and a
-   currently active trial as `stopped`); **Cancel Without Saving** writes
-   nothing for the current session.
+4. Press **Complete Trial**. If a mistake occurs, press **Restart Trial**;
+   the current attempt is discarded, the clock and press IDs reset, and the
+   same trial starts again. The saved trial records `restart_count`.
+5. **Stop & Save** saves completed trials (and a currently active trial as
+   `stopped`); **Cancel Without Saving** writes nothing for the current
+   session.
 
 Each save updates `session.json`, `events.csv`, and `trials.csv` in the output
 directory. The JSON contains every focused key-down and key-up event, including
