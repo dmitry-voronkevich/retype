@@ -95,18 +95,21 @@ more than 120 milliseconds. Such bursts remain heuristic observations and are
 counted in the Stats Dock, including output from ordinary fast typing or a
 macro.
 
-A burst receives educational feedback only when all of these conditions hold:
+Feedback validates the complete surviving token when its delimiter arrives,
+not the partial output at the detector's three-character threshold. The token
+receives educational feedback only when all of these conditions hold:
 
-* its output is a known word in the loaded CharaChorder chord library;
+* it is a known word in the loaded CharaChorder chord library;
 * it matches the word expected at the current book cursor; and
 * the existing case and word-boundary rules match.
 
 The chord feedback area then shows a brief congratulatory message. Unknown or
 gibberish output, output at another book position, ordinary fast sequential
-text, and bursts without a loaded library do not receive that message. Rapid
-Backspace cleanup output is treated as part of a reported burst rather than as
-a second burst; an event outside the timing window starts a new candidate.
-Session/reset cleanup hides the feedback and cancels its timer.
+text, and tokens without a loaded library do not receive that message. Rapid
+Backspace cleanup removes corrected characters from the candidate; the final
+surviving token is checked once at its delimiter, even when cleanup takes
+longer than the detector's timing window. Session/reset cleanup hides the
+feedback and cancels its timer.
 
 This feedback confirms only keyboard input/output and dictionary matching. It
 does not identify a device or prove that a CharaChorder produced the text. No
