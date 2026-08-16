@@ -1,11 +1,14 @@
 from math import floor, ceil
 from time import time
-from qt import QWidget, QPainter, Qt, QSize, QFontMetricsF, QTimer, pyqtSignal
+from qt import QWidget, QPainter, Qt, QSize, QFontMetricsF, pyqtSignal
 
 from typing import TYPE_CHECKING
 
 from retype.ui.painting import rectPixmap, textPixmap, linePixmap, Font
-from retype.services.chord_detection import KeyboardChordDetector
+from retype.services.chord_detection import (
+    KeyboardChordDetector, MAX_BURST_MILLISECONDS,
+    MAX_INTERCHAR_MILLISECONDS)
+from retype.services.chords import WORD_RE
 from retype.services.theme import theme, C, Theme
 
 
@@ -42,10 +45,9 @@ class StatsDock(QWidget):
         self.successful_chords = 0
         self._pending_likely_segment = False
         self._chord_burst_cursor = None
-        self._pending_chord_success = None
-        self._chord_success_timer = QTimer(self)
-        self._chord_success_timer.setSingleShot(True)
-        self._chord_success_timer.timeout.connect(self._finalizeChordSuccess)
+        self._candidate_chars = []
+        self._candidate_timestamps = []
+        self._candidate_cursor = None
         # The final cleanup Backspace can empty the console. Keep that event
         # from looking like a programmatic context reset until textChanged has
         # handled it; later key events clear this one-event allowance.
@@ -90,13 +92,26 @@ class StatsDock(QWidget):
         self._preserve_empty_text_reset = False
         if not v.isVisible() or v.cursor_pos is None:
             self.chord_detector.reset()
-            self._chord_success_timer.stop()
-            self._pending_chord_success = None
+            self._resetCandidate()
             self._pending_likely_segment = False
             return
 
         was_reported = self.chord_detector.has_reported_burst
         is_backspace = self.chord_detector.is_backspace_event(event)
+        timestamp = self.chord_detector.event_timestamp(event)
+        text_method = getattr(event, 'text', None)
+        event_text = text_method() if callable(text_method) else ''
+        if is_backspace:
+            self._removeCandidateCharacter()
+        elif isinstance(event_text, str) and len(event_text) == 1 and \
+                event_text.isprintable():
+            if WORD_RE.fullmatch(event_text):
+                self._appendCandidateCharacter(
+                    event_text, timestamp, v.cursor_pos)
+            else:
+                self._finalizeCandidate()
+        else:
+            self._resetCandidate()
         observation = self.chord_detector.observe_event(event)
         if self.chord_detector.output_length == 1:
             self._chord_burst_cursor = v.cursor_pos
@@ -104,17 +119,9 @@ class StatsDock(QWidget):
             is_backspace and was_reported and
             self.chord_detector.has_reported_burst)
         if observation is None:
-            if not (is_backspace and self.chord_detector.has_reported_burst):
-                self._pending_chord_success = None
-                self._chord_success_timer.stop()
             self._pending_likely_segment = False
             return
 
-        self._pending_chord_success = (
-            observation.output, self._chord_burst_cursor,
-            v.isSuccessfulChordOutput(
-                observation.output, self._chord_burst_cursor))
-        self._chord_success_timer.start(36)
         if observation.is_new:
             self.likely_chords += 1
             self.likelyChordDetected.emit(self.likely_chords)
@@ -131,14 +138,53 @@ class StatsDock(QWidget):
         self._pending_likely_segment = True
         self.update()
 
-    def _finalizeChordSuccess(self):
+    def _resetCandidate(self):
         # type: (StatsDock) -> None
-        pending = self._pending_chord_success
-        self._pending_chord_success = None
-        if pending is None:
+        self._candidate_chars = []
+        self._candidate_timestamps = []
+        self._candidate_cursor = None
+
+    def _appendCandidateCharacter(self, character, timestamp, cursor_pos):
+        # type: (StatsDock, str, float | None, int) -> None
+        if self._candidate_timestamps and timestamp is not None:
+            previous = self._candidate_timestamps[-1]
+            first = self._candidate_timestamps[0]
+            if previous is None or timestamp < previous or \
+               timestamp - previous > MAX_INTERCHAR_MILLISECONDS or \
+               timestamp - first > MAX_BURST_MILLISECONDS:
+                self._resetCandidate()
+        if self._candidate_cursor is None:
+            self._candidate_cursor = cursor_pos
+        self._candidate_chars.append(character)
+        self._candidate_timestamps.append(timestamp)
+
+    def _removeCandidateCharacter(self):
+        # type: (StatsDock) -> None
+        if self._candidate_chars:
+            self._candidate_chars.pop()
+            self._candidate_timestamps.pop()
+        if not self._candidate_chars:
+            self._resetCandidate()
+
+    def _finalizeCandidate(self):
+        # type: (StatsDock) -> None
+        if not self._candidate_chars:
             return
-        output, _cursor_pos, is_success = pending
-        if is_success:
+        timestamps = self._candidate_timestamps
+        valid_timing = all(timestamp is not None for timestamp in timestamps)
+        if valid_timing:
+            gaps = [later - earlier for earlier, later in
+                    zip(timestamps, timestamps[1:])]
+            valid_timing = all(0 <= gap <= MAX_INTERCHAR_MILLISECONDS
+                               for gap in gaps)
+            if timestamps:
+                valid_timing = valid_timing and \
+                    timestamps[-1] - timestamps[0] <= MAX_BURST_MILLISECONDS
+        output = ''.join(self._candidate_chars)
+        cursor_pos = self._candidate_cursor
+        self._resetCandidate()
+        if valid_timing and self.book_view.isSuccessfulChordOutput(
+                output, cursor_pos):
             self.successful_chords += 1
             self.successfulChordDetected.emit(output)
 
@@ -147,6 +193,7 @@ class StatsDock(QWidget):
         # A programmatic clear starts a new output context (line advance,
         # chapter navigation, or a view switch).
         if not text:
+            self._resetCandidate()
             if self._preserve_empty_text_reset:
                 self._preserve_empty_text_reset = False
             else:
@@ -218,8 +265,7 @@ class StatsDock(QWidget):
         # type: (StatsDock) -> None
         """Reset the detector and the statistics represented by this dock."""
         self.chord_detector.reset()
-        self._chord_success_timer.stop()
-        self._pending_chord_success = None
+        self._resetCandidate()
         cursor_pos = getattr(self.book_view, 'cursor_pos', None)
         self.prev_cursor_pos = cursor_pos if cursor_pos is not None else 0
         self.prev_seconds = 0

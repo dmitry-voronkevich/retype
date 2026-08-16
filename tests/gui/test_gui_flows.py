@@ -183,8 +183,12 @@ def test_known_expected_burst_gets_educational_feedback(make_controller, qtbot):
         book_view.cursor_pos += 1
         stats.onUpdate(character)
 
+    # The word is not validated at the heuristic's three-character crossing;
+    # the delimiter validates the complete final token.
     assert stats.successful_chords == 0
-    qtbot.wait(50)
+    stats._onKeyPress(_TimedKeyEvent(' ', 31))
+    book_view.cursor_pos += 1
+    stats.onUpdate(' ')
     assert stats.successful_chords == 1
     assert book_view.chord_feedback.isVisible()
     assert book_view.chord_feedback.text() == 'Chord matched “THE” — nice!'
@@ -213,6 +217,81 @@ def test_burst_without_known_expected_chord_gets_no_success_feedback(
         stats._onKeyPress(_TimedKeyEvent(character, timestamp))
         book_view.cursor_pos += 1
         stats.onUpdate(character)
+
+    assert stats.successful_chords == 0
+    assert not book_view.chord_feedback.isVisible()
+
+
+@pytest.mark.parametrize('word', ['at', 'with', 'without', 'because'])
+@pytest.mark.parametrize('cleanup_gap', [10, 200])
+def test_corrected_final_tokens_succeed_once_at_delimiter(
+        make_controller, qtbot, word, cleanup_gap):
+    controller = make_controller()
+    controller.loadBookRequested.emit(0)
+    qtbot.wait(20)
+    book_view = controller.views[View.book_view]
+    stats = book_view.stats_dock
+    book_view.setChords({word: word})
+    book_view.current_line = word + ' next'
+    book_view.persistent_pos = 0
+    book_view.cursor_pos = 0
+    stats.resetSession()
+
+    cursor = 0
+    timestamp = 1
+
+    def key(text, is_backspace=False):
+        nonlocal cursor, timestamp
+        event = _TimedKeyEvent(
+            '\b' if is_backspace else text, timestamp,
+            BACKSPACE_KEY if is_backspace else None)
+        stats._onKeyPress(event)
+        cursor += -1 if is_backspace else len(text)
+        book_view.cursor_pos = cursor
+        stats.onUpdate(text)
+        timestamp += 10
+
+    # Simulate a corrected output: the prefix is deleted, then the final
+    # surviving token is emitted rapidly and validated only at its delimiter.
+    prefix = word[:2]
+    for character in prefix:
+        key(character)
+    for _ in prefix:
+        key('', is_backspace=True)
+        timestamp += cleanup_gap
+    for character in word:
+        key(character)
+    key(' ')
+
+    assert stats.successful_chords == 1
+    assert book_view.chord_feedback.text() == \
+        'Chord matched “{}” — nice!'.format(word)
+
+    # Continuation observations and another delimiter cannot double-count it.
+    key(' ')
+    assert stats.successful_chords == 1
+
+
+def test_slow_final_token_and_wrong_position_do_not_succeed(
+        make_controller, qtbot):
+    controller = make_controller()
+    controller.loadBookRequested.emit(0)
+    qtbot.wait(20)
+    book_view = controller.views[View.book_view]
+    stats = book_view.stats_dock
+    book_view.setChords({'because': 'b+e+c+a+u+s+e'})
+    book_view.current_line = 'other because'
+    book_view.persistent_pos = 0
+    book_view.cursor_pos = 0
+    stats.resetSession()
+
+    for index, character in enumerate('because', start=1):
+        stats._onKeyPress(_TimedKeyEvent(character, index * 100))
+        book_view.cursor_pos = index
+        stats.onUpdate(character)
+    stats._onKeyPress(_TimedKeyEvent(' ', 801))
+    book_view.cursor_pos = 8
+    stats.onUpdate(' ')
 
     assert stats.successful_chords == 0
     assert not book_view.chord_feedback.isVisible()
