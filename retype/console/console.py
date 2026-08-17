@@ -98,9 +98,11 @@ class Console(LineEdit):
         # type: (Console) -> None
         self.submitted.emit(self.text())
 
-    def clear(self):
-        # type: (Console) -> None
+    def clear(self, automatic=False):
+        # type: (Console, bool) -> None
         super().setText('')
+        if automatic:
+            return
         self.cleared.emit()
 
     def setText(self, text):

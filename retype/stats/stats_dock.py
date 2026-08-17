@@ -53,7 +53,6 @@ class StatsDock(QWidget):
         # from looking like a programmatic context reset until textChanged has
         # handled it; later key events clear this one-event allowance.
         self._preserve_empty_text_reset = False
-        self._preserve_success_feedback_reset = False
         self.chord_detector = KeyboardChordDetector()
         self._resetCandidate()
         self.validatedChordDetected.connect(self._recordValidatedChord)
@@ -238,10 +237,6 @@ class StatsDock(QWidget):
             return
         if self.book_view.isSuccessfulChordOutput(
                 token, self._candidate_book_cursor):
-            # A successful delimiter can synchronously complete the current
-            # line and clear the console after this event. Keep that completion
-            # clear from immediately hiding valid feedback, but let a later
-            # explicit/session clear reset it normally.
             line = getattr(self.book_view, 'current_line', '')
             suffix = line[len(editor_text or ''):] if isinstance(line, str) \
                 and isinstance(editor_text, str) and line.startswith(editor_text) \
@@ -249,8 +244,6 @@ class StatsDock(QWidget):
             completing_line = bool(suffix) and all(
                 not character.isalnum() and character != '_' for character in suffix)
             completed_on_line_end = projected or completing_line
-            if completed_on_line_end:
-                self._preserve_success_feedback_reset = True
             gaps = [later - earlier for earlier, later in zip(
                 self._candidate_timestamps, self._candidate_timestamps[1:])]
             result = ValidatedChord(
@@ -281,10 +274,6 @@ class StatsDock(QWidget):
         # type: (StatsDock, QKeyEvent) -> None
         v = self.book_view
         self._preserve_empty_text_reset = False
-        # A completion may synchronously clear the console more than once;
-        # keep its feedback through this key event, then treat the next key as
-        # a new reset boundary.
-        self._preserve_success_feedback_reset = False
         if not v.isVisible() or v.cursor_pos is None:
             self.chord_detector.reset()
             self._resetCandidate()
@@ -326,9 +315,8 @@ class StatsDock(QWidget):
         self.chord_detector.reset()
         self._resetCandidate()
         self._preserve_empty_text_reset = False
-        if self._preserve_success_feedback_reset:
-            self._preserve_success_feedback_reset = False
-        else:
+        console = getattr(self, '_console', None)
+        if console is None or not getattr(console, '_processing_key_press', False):
             self.successfulChordFeedbackReset.emit()
 
     def _onTextChanged(self, text):
@@ -431,12 +419,7 @@ class StatsDock(QWidget):
     def resetSession(self):
         # type: (StatsDock) -> None
         """Reset the detector and the statistics represented by this dock."""
-        if self._preserve_success_feedback_reset:
-            self.chord_detector.reset()
-            self._resetCandidate()
-            self._preserve_empty_text_reset = False
-        else:
-            self._onConsoleCleared()
+        self._onConsoleCleared()
         cursor_pos = getattr(self.book_view, 'cursor_pos', None)
         self.prev_cursor_pos = cursor_pos if cursor_pos is not None else 0
         self.prev_seconds = 0
