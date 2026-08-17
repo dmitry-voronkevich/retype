@@ -664,6 +664,7 @@ class BookView(QWidget):
 
         self.viewed_chapter_pos = pos
         if move_cursor:
+            self.stats_dock.resetSession()
             self._controller.console.clear()
             self.chapter_pos = pos
             self._initChapter(reset)
