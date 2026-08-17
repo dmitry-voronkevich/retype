@@ -302,6 +302,8 @@ def test_punctuation_newline_and_repeated_delimiters_finalize_once(
     # final character; Return must not emit a second success.
     qtbot.keyClick(controller.console, Qt.Key.Key_Return)
     assert successes == ['the', 'at']
+    assert book_view.chord_feedback.isVisible()
+    assert book_view._chord_feedback_timer.isActive()
     assert book_view.progress == 100
 
 

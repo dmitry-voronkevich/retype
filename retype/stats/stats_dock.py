@@ -1,6 +1,6 @@
 from math import floor, ceil
 from time import time
-from qt import QWidget, QPainter, Qt, QSize, QFontMetricsF, pyqtSignal
+from qt import QWidget, QPainter, Qt, QSize, QFontMetricsF, QTimer, pyqtSignal
 
 from typing import TYPE_CHECKING
 
@@ -51,6 +51,7 @@ class StatsDock(QWidget):
         # from looking like a programmatic context reset until textChanged has
         # handled it; later key events clear this one-event allowance.
         self._preserve_empty_text_reset = False
+        self._preserve_success_feedback_reset = False
         self.chord_detector = KeyboardChordDetector()
         self._resetCandidate()
 
@@ -233,7 +234,15 @@ class StatsDock(QWidget):
             return
         if self.book_view.isSuccessfulChordOutput(
                 token, self._candidate_book_cursor):
+            if projected:
+                self._preserve_success_feedback_reset = True
+                QTimer.singleShot(
+                    0, self._clearPreservedSuccessFeedbackReset)
             self.successfulChordDetected.emit(token)
+
+    def _clearPreservedSuccessFeedbackReset(self):
+        # type: (StatsDock) -> None
+        self._preserve_success_feedback_reset = False
 
     def _onKeyPress(self, event):
         # type: (StatsDock, QKeyEvent) -> None
@@ -288,7 +297,10 @@ class StatsDock(QWidget):
         self.chord_detector.reset()
         self._resetCandidate()
         self._preserve_empty_text_reset = False
-        self.successfulChordFeedbackReset.emit()
+        if self._preserve_success_feedback_reset:
+            self._preserve_success_feedback_reset = False
+        else:
+            self.successfulChordFeedbackReset.emit()
 
     def _onTextChanged(self, text):
         # type: (StatsDock, str) -> None
@@ -389,7 +401,12 @@ class StatsDock(QWidget):
     def resetSession(self):
         # type: (StatsDock) -> None
         """Reset the detector and the statistics represented by this dock."""
-        self._onConsoleCleared()
+        if self._preserve_success_feedback_reset:
+            self.chord_detector.reset()
+            self._resetCandidate()
+            self._preserve_empty_text_reset = False
+        else:
+            self._onConsoleCleared()
         cursor_pos = getattr(self.book_view, 'cursor_pos', None)
         self.prev_cursor_pos = cursor_pos if cursor_pos is not None else 0
         self.prev_seconds = 0
