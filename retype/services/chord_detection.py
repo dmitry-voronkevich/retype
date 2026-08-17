@@ -164,17 +164,21 @@ class KeyboardChordDetector:
             return
         self._last_timestamp = timestamp
 
+    def timestamp_for_event(self, event):
+        # type: (KeyboardChordDetector, object) -> float | None
+        """Return the normalized event timestamp used by this heuristic."""
+        timestamp_method = getattr(event, 'timestamp', None)
+        timestamp = timestamp_method() if callable(timestamp_method) else None
+        # Qt can report zero for synthetic events. Let ``_timestamp`` use the
+        # deterministic fallback clock in that case.
+        if timestamp == 0:
+            timestamp = None
+        return self._timestamp(timestamp)
+
     def observe_event(self, event):
         # type: (object) -> LikelyChordBurst | None
         """Observe a ``QKeyEvent`` without requiring Qt in unit tests."""
-        timestamp = None
-        timestamp_method = getattr(event, 'timestamp', None)
-        if callable(timestamp_method):
-            timestamp = timestamp_method()
-            # Qt can report zero for synthetic events. Let ``observe`` use
-            # the deterministic fallback clock in that case.
-            if timestamp == 0:
-                timestamp = None
+        timestamp = self.timestamp_for_event(event)
 
         if self.is_backspace_event(event):
             self._observe_backspace(timestamp)

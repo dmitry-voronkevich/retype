@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 from retype.extras import splittext, isspaceorempty, ManifoldStr
 from retype.ui.modeline import Modeline
 from retype.ui.chord_hint_bar import ChordHintBar
-from retype.services.chords import chordable_spans
+from retype.services.chords import WORD_RE, chordable_spans
 from retype.services import Autosave
 from retype.stats import StatsDock
 from retype.services.theme import theme, C, Theme
@@ -287,13 +287,15 @@ class BookView(QWidget):
         self._chord_feedback_timer.setSingleShot(True)
         self._chord_feedback_timer.timeout.connect(
             self._hideLikelyChordFeedback)
-        self.chord_feedback.setAccessibleName('Likely chord encouragement')
+        self.chord_feedback.setAccessibleName('Known chord encouragement')
         self.chord_feedback.setAccessibleDescription(
-            'Encouragement shown when a short keyboard-output burst is likely '
-            'to be chording. This is a timing heuristic, not device detection.')
+            'Encouragement shown for a rapid, correct known chord word at the '
+            'book cursor. This bounded timing heuristic does not detect a device.')
         self.chord_feedback.setVisible(False)
-        self.stats_dock.likelyChordDetected.connect(
-            self._showLikelyChordFeedback)
+        self.stats_dock.successfulChordDetected.connect(
+            self._showSuccessfulChordFeedback)
+        self.stats_dock.successfulChordFeedbackReset.connect(
+            self._hideLikelyChordFeedback)
 
         self.layout_.addWidget(self.toolbar)
         self.layout_.addWidget(self.splitter)
@@ -502,29 +504,47 @@ class BookView(QWidget):
 
     def _hideLikelyChordFeedback(self):
         # type: (BookView) -> None
+        timer = getattr(self, '_chord_feedback_timer', None)
+        if timer is not None:
+            timer.stop()
         feedback = getattr(self, 'chord_feedback', None)
         if feedback is not None:
             feedback.clear()
             feedback.setVisible(False)
 
-    def _showLikelyChordFeedback(self, count):
-        # type: (BookView, int) -> None
+    def _showSuccessfulChordFeedback(self, word):
+        # type: (BookView, str) -> None
+        """Show educational feedback without re-labelling Likely statistics."""
         feedback = getattr(self, 'chord_feedback', None)
         timer = getattr(self, '_chord_feedback_timer', None)
         if feedback is None:
             return
-        if count <= 0:
-            if timer is not None:
-                timer.stop()
-            self._hideLikelyChordFeedback()
-            return
-        feedback.setText('Likely chord burst - nice!')
+        feedback.setText('Known chord complete: {} - nice!'.format(word))
         feedback.setVisible(True)
         feedback.setAccessibleDescription(
-            'Likely chord burst encouragement. See Typing statistics for the '
-            'session count. This is a timing heuristic, not device detection.')
+            'Rapid, correct known chord word at the book cursor. This is a '
+            'bounded timing heuristic, not device detection.')
         if timer is not None:
             timer.start(3000)
+
+    def isSuccessfulChordOutput(self, output, cursor_pos):
+        # type: (BookView, str, int | None) -> bool
+        """Validate a completed token against the loaded map and book cursor.
+
+        Dictionary lookup keeps chord-map normalization (lowercase), while the
+        actual output must exactly equal the word at this cursor, including
+        case. WORD_RE supplies the same word-boundary semantics used by hints.
+        """
+        if not isinstance(output, str) or cursor_pos is None or \
+           output.lower() not in self.chords or not isinstance(
+               getattr(self, 'tobetyped', None), str):
+            return False
+        for match in WORD_RE.finditer(self.tobetyped):
+            if match.start() == cursor_pos:
+                return match.group() == output
+            if match.start() > cursor_pos:
+                break
+        return False
 
     def setChords(self, chords):
         # type: (BookView, dict[str, object]) -> None
@@ -606,6 +626,9 @@ class BookView(QWidget):
 
         if not self.stats_dock.connected:
             self.stats_dock.connectConsole(self._controller.console)
+        # Loading another book starts a new typing context; it must not leave
+        # an earlier success label/timer or candidate alive in this view.
+        self.stats_dock.resetSession()
 
         if self.autosave is None:
             self.autosave = Autosave(self._console)

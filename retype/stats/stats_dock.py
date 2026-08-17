@@ -5,7 +5,11 @@ from qt import QWidget, QPainter, Qt, QSize, QFontMetricsF, pyqtSignal
 from typing import TYPE_CHECKING
 
 from retype.ui.painting import rectPixmap, textPixmap, linePixmap, Font
-from retype.services.chord_detection import KeyboardChordDetector
+from retype.services.chord_detection import (
+    KeyboardChordDetector, MAX_BURST_MILLISECONDS,
+    MAX_INTERCHAR_MILLISECONDS,
+)
+from retype.services.chords import WORD_RE
 from retype.services.theme import theme, C, Theme
 
 
@@ -17,6 +21,10 @@ class StatsDock(QWidget):
     # The payload is the session count, which the Book View presents as
     # immediate, non-colour-only encouragement.
     likelyChordDetected = pyqtSignal(int)
+    # This signal is intentionally separate from Likely timing observations:
+    # it is only emitted for a completed rapid, correct loaded chord word.
+    successfulChordDetected = pyqtSignal(str)
+    successfulChordFeedbackReset = pyqtSignal()
 
     def __init__(self, book_view, parent=None):
         # type: (StatsDock, BookView, QWidget | None) -> None
@@ -44,6 +52,7 @@ class StatsDock(QWidget):
         # handled it; later key events clear this one-event allowance.
         self._preserve_empty_text_reset = False
         self.chord_detector = KeyboardChordDetector()
+        self._resetCandidate()
 
         self.main_c, self.text_c, self.grid_c, self.likely_c = self._loadTheme()
         self.main_c.changed.connect(self.themeUpdate)
@@ -72,10 +81,158 @@ class StatsDock(QWidget):
     def connectConsole(self, console):
         # type: (StatsDock, Console) -> None
         self._hs = console.highlighting_service
+        self._console = console
         console.keyPressAboutToBeProcessed.connect(self._onKeyPress)
+        console.textEdited.connect(self._onTextEdited)
         console.textEdited.connect(self.onUpdate)
         console.textChanged.connect(self._onTextChanged)
         self.connected = True
+
+    @staticmethod
+    def _eventText(event):
+        # type: (object) -> str | None
+        text_method = getattr(event, 'text', None)
+        text = text_method() if callable(text_method) else None
+        return text if isinstance(text, str) else None
+
+    def _eventTimestamp(self, event):
+        # type: (StatsDock, object) -> float | None
+        return self.chord_detector.timestamp_for_event(event)
+
+    @staticmethod
+    def _isDelimiter(text, event):
+        # type: (str | None, object) -> bool
+        """Whether a key can finish a word before it edits the console."""
+        if isinstance(text, str) and len(text) == 1:
+            return text.isspace() or (text.isprintable() and
+                                      WORD_RE.fullmatch(text) is None)
+        key_method = getattr(event, 'key', None)
+        key = key_method() if callable(key_method) else None
+        return key in (int(Qt.Key.Key_Return), int(Qt.Key.Key_Enter))
+
+    def _editorState(self):
+        # type: (StatsDock) -> tuple[str, int, bool] | None
+        console = getattr(self, '_console', None)
+        if console is None:
+            return None
+        cursor = console.textCursor()
+        return (console.text(), cursor.position(), cursor.hasSelection())
+
+    def _resetCandidate(self):
+        # type: (StatsDock) -> None
+        """Discard unfinalized output provenance, never a Likely observation."""
+        self._candidate_text = []  # type: list[str]
+        self._candidate_timestamps = []  # type: list[float]
+        self._candidate_editor_start = None  # type: int | None
+        self._candidate_book_cursor = None  # type: int | None
+        self._candidate_timing_invalid = False
+        self._expected_editor_text = None  # type: str | None
+        self._expected_editor_text_seen = False
+
+    def _appendCandidateCharacter(self, output, timestamp):
+        # type: (StatsDock, str, float | None) -> None
+        state = self._editorState()
+        v = self.book_view
+        if state is None or timestamp is None:
+            self._resetCandidate()
+            return
+        text, cursor, has_selection = state
+        if has_selection or self._expected_editor_text is not None:
+            self._resetCandidate()
+            return
+
+        if self._candidate_text:
+            expected_cursor = self._candidate_editor_start + len(
+                self._candidate_text)
+            if cursor != expected_cursor or text[cursor:cursor + 1]:
+                self._resetCandidate()
+                return
+            previous = self._candidate_timestamps[-1]
+            if timestamp < previous or \
+               timestamp - previous > MAX_INTERCHAR_MILLISECONDS or \
+               timestamp - self._candidate_timestamps[0] > \
+               MAX_BURST_MILLISECONDS:
+                self._candidate_timing_invalid = True
+        else:
+            self._candidate_editor_start = cursor
+            self._candidate_book_cursor = v.cursor_pos
+            self._candidate_timing_invalid = False
+
+        self._candidate_text.append(output)
+        self._candidate_timestamps.append(timestamp)
+        self._expected_editor_text = text[:cursor] + output + text[cursor:]
+
+        # Auto-newline can clear the console synchronously while processing
+        # this character. Finalize from the projected editor text first.
+        if self._wouldCompleteLine(self._expected_editor_text):
+            self._finalizeCandidate(self._expected_editor_text, cursor + 1,
+                                    projected=True)
+            self._resetCandidate()
+
+    def _removeCandidateCharacter(self):
+        # type: (StatsDock) -> None
+        state = self._editorState()
+        if state is None or not self._candidate_text or \
+           self._expected_editor_text is not None:
+            self._resetCandidate()
+            return
+        text, cursor, has_selection = state
+        expected_cursor = self._candidate_editor_start + len(
+            self._candidate_text)
+        if has_selection or cursor != expected_cursor or cursor <= 0 or \
+           text[cursor - 1] != self._candidate_text[-1]:
+            self._resetCandidate()
+            return
+        self._candidate_text.pop()
+        self._candidate_timestamps.pop()
+        self._expected_editor_text = text[:cursor - 1] + text[cursor:]
+        if not self._candidate_text:
+            self._candidate_editor_start = None
+            self._candidate_book_cursor = None
+            self._candidate_timing_invalid = False
+
+    def _wouldCompleteLine(self, text):
+        # type: (StatsDock, str) -> bool
+        line = getattr(self.book_view, 'current_line', None)
+        if line is None:
+            return False
+        # HighlightingService accepts either the literal line or its trailing
+        # non-breaking-space-stripped form as a completed line.
+        from retype.extras.space import nrspacerstrip
+        return text == str(line) or text == nrspacerstrip(line)
+
+    def _finalizeCandidate(self, editor_text=None, editor_cursor=None,
+                           projected=False):
+        # type: (StatsDock, str | None, int | None, bool) -> None
+        """Emit one bounded rapid-output encouragement for a surviving token."""
+        if not self._candidate_text or self._candidate_timing_invalid or \
+           (self._expected_editor_text is not None and not projected):
+            return
+        state = self._editorState()
+        if editor_text is None:
+            if state is None:
+                return
+            editor_text, editor_cursor, has_selection = state
+            if has_selection:
+                return
+        if editor_cursor is None or self._candidate_editor_start is None or \
+           self._candidate_book_cursor is None:
+            return
+
+        token = ''.join(self._candidate_text)
+        editor_match = None
+        for match in WORD_RE.finditer(editor_text):
+            if match.end() == editor_cursor:
+                editor_match = match
+                break
+        # The candidate must be the entire surviving editor token. This blocks
+        # a rapid suffix after a timing reset from accepting ``xat`` as ``at``.
+        if editor_match is None or editor_match.start() != \
+           self._candidate_editor_start or editor_match.group() != token:
+            return
+        if self.book_view.isSuccessfulChordOutput(
+                token, self._candidate_book_cursor):
+            self.successfulChordDetected.emit(token)
 
     def _onKeyPress(self, event):
         # type: (StatsDock, QKeyEvent) -> None
@@ -83,11 +240,24 @@ class StatsDock(QWidget):
         self._preserve_empty_text_reset = False
         if not v.isVisible() or v.cursor_pos is None:
             self.chord_detector.reset()
+            self._resetCandidate()
             self._pending_likely_segment = False
             return
 
         was_reported = self.chord_detector.has_reported_burst
         is_backspace = self.chord_detector.is_backspace_event(event)
+        text = self._eventText(event)
+        if is_backspace:
+            self._removeCandidateCharacter()
+        elif self._isDelimiter(text, event):
+            self._finalizeCandidate()
+            self._resetCandidate()
+        elif isinstance(text, str) and len(text) == 1 and \
+                WORD_RE.fullmatch(text) is not None:
+            self._appendCandidateCharacter(text, self._eventTimestamp(event))
+        else:
+            self._resetCandidate()
+
         observation = self.chord_detector.observe_event(event)
         self._preserve_empty_text_reset = (
             is_backspace and was_reported and
@@ -114,6 +284,17 @@ class StatsDock(QWidget):
 
     def _onTextChanged(self, text):
         # type: (StatsDock, str) -> None
+        # Only the exact post-edit state projected from our key event can keep
+        # candidate provenance. Paste, IME, selection replacement, setText,
+        # fillChars, and any other programmatic mutation therefore fail closed.
+        if self._expected_editor_text is not None:
+            if text == self._expected_editor_text:
+                # Wait for textEdited before accepting this projected state:
+                # setText/paste can produce identical textChanged output but
+                # must never inherit keyboard-event provenance.
+                self._expected_editor_text_seen = True
+                return
+            self._resetCandidate()
         # A programmatic clear starts a new output context (line advance,
         # chapter navigation, or a view switch).
         if not text:
@@ -121,9 +302,22 @@ class StatsDock(QWidget):
                 self._preserve_empty_text_reset = False
             else:
                 self.chord_detector.reset()
+            self._resetCandidate()
             # Keep a pending mark until the matching textEdited/onUpdate
             # callback consumes it. This matters when completing a line
             # clears the console synchronously during highlighting.
+
+    def _onTextEdited(self, text):
+        # type: (StatsDock, str) -> None
+        """Accept a projected mutation only when Qt marks it user-edited."""
+        if self._expected_editor_text is None:
+            return
+        if self._expected_editor_text_seen and text == \
+                self._expected_editor_text:
+            self._expected_editor_text = None
+            self._expected_editor_text_seen = False
+        else:
+            self._resetCandidate()
 
     def onUpdate(self, text):
         # type: (StatsDock, str) -> None
@@ -188,6 +382,8 @@ class StatsDock(QWidget):
         # type: (StatsDock) -> None
         """Reset the detector and the statistics represented by this dock."""
         self.chord_detector.reset()
+        self._resetCandidate()
+        self.successfulChordFeedbackReset.emit()
         cursor_pos = getattr(self.book_view, 'cursor_pos', None)
         self.prev_cursor_pos = cursor_pos if cursor_pos is not None else 0
         self.prev_seconds = 0

@@ -88,19 +88,25 @@ The Stats Dock updates on every letter typed correctly.
 Keyboard-only chord feedback
 ----------------------------
 
-The likely-chord prototype watches the ordinary Qt keyboard events that retype
-already receives. It classifies a burst when at least three printable
-characters arrive no more than 35 milliseconds apart and the burst lasts no
-more than 120 milliseconds. After a reported burst, the encouragement
-``Likely chord burst - nice!`` is shown for exactly three seconds; another
-reported burst restarts that timer. Rapid Backspace cleanup output is treated as part
-of the burst rather than as a second burst; a later event outside the timing
-window starts a new candidate. Session/reset cleanup hides the encouragement
-and cancels its timer. The thresholds are a
-timing heuristic inspired by short generated output; they do not identify a
-device or prove that a CharaChorder produced the text. This also covers the
-setup where a device is not connected to CCIO as a device and emits only
-ordinary keyboard input: the input path cannot attribute its origin. A fast
-ordinary typist or macro can be a false positive, while slower, shorter,
-interrupted, or mixed output can be a false negative. No USB, serial, or device
-companion access is used.
+The likely-chord statistic watches the ordinary Qt keyboard events that retype
+already receives. It marks a burst when at least three printable characters
+arrive no more than 35 milliseconds apart and the burst lasts no more than 120
+milliseconds. Its green chart segments and ``Likely chords`` count are timing
+observations only; they are deliberately separate from congratulations.
+
+A three-second ``Known chord complete`` encouragement is shown only after a
+word delimiter (including punctuation or Return) when the surviving editor
+token is a rapid known chord word exactly at the current book cursor. The word
+must match the loaded dictionary and book word, and each surviving character
+must be no more than 35 milliseconds apart with a total span no greater than
+120 milliseconds. CharaChorder-style incorrect prefixes followed by Backspace
+cleanup are accepted only when the final surviving word meets those conditions.
+Pastes, selection replacement, IME-like or programmatic edits, ambiguous timing
+resets, and uncorrected prefixes fail closed. Session/reset cleanup hides the
+encouragement and cancels its timer.
+
+This is a bounded timing heuristic for the observed study conditions, not a
+device detector or attribution claim. A fast ordinary typist or macro can
+receive the same feedback, notably for a valid short known word such as ``at``;
+slower, interrupted, or mixed output can miss it. No USB, serial, HID, Web
+Serial, raw-device, or device-companion access is used.
