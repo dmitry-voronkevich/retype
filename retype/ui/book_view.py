@@ -648,8 +648,9 @@ class BookView(QWidget):
         if complete:
             self.markComplete()
 
-    def setChapter(self, pos, move_cursor=False, reset=True):
-        # type: (BookView, int, bool, bool) -> None
+    def setChapter(self, pos, move_cursor=False, reset=True,
+                   automatic=False):
+        # type: (BookView, int, bool, bool, bool) -> None
         if self.book is None or self.chapter_pos is None:
             logger.error(f'setChapter: Unexpected None. book: {self.book}, '
                          f'chapter_pos: {self.chapter_pos}')
@@ -668,15 +669,18 @@ class BookView(QWidget):
 
         self.viewed_chapter_pos = pos
         if move_cursor:
-            stats_dock = getattr(self, 'stats_dock', None)
-            if stats_dock is not None:
-                stats_dock.resetSession()
-            self._controller.console.clear()
+            if not automatic:
+                stats_dock = getattr(self, 'stats_dock', None)
+                if stats_dock is not None:
+                    stats_dock.resetSession()
+                self._controller.console.clear()
+            else:
+                self._controller.console.clear(automatic=True)
             self.chapter_pos = pos
             self._initChapter(reset)
             if isspaceorempty(self.tobetyped):
                 logger.debug("Skipping empty chapter")
-                self.setChapter(pos + 1, move_cursor)
+                self.setChapter(pos + 1, move_cursor, automatic=automatic)
             self.updateProgress()
         elif pos == self.chapter_pos:
             self.setCursor()
@@ -701,8 +705,8 @@ class BookView(QWidget):
             elif pos in ['previous', 'prev', 'p']:
                 self.previousChapter(m)
 
-    def nextChapter(self, move_cursor=False):
-        # type: (BookView, bool) -> None
+    def nextChapter(self, move_cursor=False, automatic=False):
+        # type: (BookView, bool, bool) -> None
         if self.book is None or self.chapter_pos is None:
             logger.error(f'nextChapter: Unexpected None. book: {self.book}, '
                          f'chapter_pos: {self.chapter_pos}')
@@ -711,7 +715,7 @@ class BookView(QWidget):
             else self.viewed_chapter_pos + 1
         if pos >= len(self.book.chapters):
             return
-        self.setChapter(pos, move_cursor)
+        self.setChapter(pos, move_cursor, automatic=automatic)
 
     def _keyboardModifiers(self):
         # type: (BookView) -> Qt.KeyboardModifiers | None

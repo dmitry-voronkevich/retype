@@ -76,7 +76,7 @@ class FakeBookView(QObject):
     def setChapter(self, pos):
         pass
 
-    def nextChapter(self, move_cursor=False):
+    def nextChapter(self, move_cursor=False, automatic=False):
         self.setChapter(self.chapter_pos + 1)
 
     def updateModeline(self):

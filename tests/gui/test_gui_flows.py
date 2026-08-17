@@ -433,6 +433,28 @@ def test_console_clear_hides_chord_feedback(
     assert not book_view._chord_feedback_timer.isActive()
 
 
+def test_automatic_chapter_advance_preserves_chord_feedback(
+        make_controller, qtbot):
+    controller = make_controller()
+    controller.loadBookRequested.emit(0)
+    qtbot.wait(20)
+
+    book_view = controller.view()
+    if len(book_view.book.chapters) < 2:
+        pytest.skip('bundled book has no automatic chapter transition')
+    stats = book_view.stats_dock
+    stats.validatedChordDetected.emit(_validated_result('the'))
+    assert stats.successful_chords == 1
+    assert book_view.chord_feedback.isVisible()
+    assert book_view._chord_feedback_timer.isActive()
+
+    book_view.nextChapter(move_cursor=True, automatic=True)
+
+    assert stats.successful_chords == 1
+    assert book_view.chord_feedback.isVisible()
+    assert book_view._chord_feedback_timer.isActive()
+
+
 def test_cursor_moving_chapter_reset_hides_chord_feedback(
         make_controller, qtbot):
     controller = make_controller()
