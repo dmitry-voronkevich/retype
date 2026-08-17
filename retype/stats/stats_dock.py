@@ -295,12 +295,13 @@ class StatsDock(QWidget):
         text = self._eventText(event)
         if is_backspace:
             self._removeCandidateCharacter()
+        elif isinstance(text, str) and len(text) == 1 and \
+                (WORD_RE.fullmatch(text) is not None or
+                 (text == "'" and self._candidate_text)):
+            self._appendCandidateCharacter(text, self._eventTimestamp(event))
         elif self._isDelimiter(text, event):
             self._finalizeCandidate()
             self._resetCandidate()
-        elif isinstance(text, str) and len(text) == 1 and \
-                WORD_RE.fullmatch(text) is not None:
-            self._appendCandidateCharacter(text, self._eventTimestamp(event))
         else:
             self._resetCandidate()
 
@@ -430,8 +431,12 @@ class StatsDock(QWidget):
     def resetSession(self):
         # type: (StatsDock) -> None
         """Reset the detector and the statistics represented by this dock."""
-        self._preserve_success_feedback_reset = False
-        self._onConsoleCleared()
+        if self._preserve_success_feedback_reset:
+            self.chord_detector.reset()
+            self._resetCandidate()
+            self._preserve_empty_text_reset = False
+        else:
+            self._onConsoleCleared()
         cursor_pos = getattr(self.book_view, 'cursor_pos', None)
         self.prev_cursor_pos = cursor_pos if cursor_pos is not None else 0
         self.prev_seconds = 0

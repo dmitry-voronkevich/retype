@@ -193,7 +193,7 @@ def _type_rapidly(qtbot, monkeypatch, console, stats, text, timestamps):
 
 
 @pytest.mark.parametrize('word', [
-    'the', 'and', 'for', 'was', 'without', 'because', 'with', 'at',
+    'the', 'and', 'for', 'was', 'without', 'because', 'with', 'at', "can't",
 ])
 def test_study_words_congratulate_only_after_surviving_token_delimiter(
         make_controller, qtbot, monkeypatch, word):
