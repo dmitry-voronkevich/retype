@@ -668,11 +668,12 @@ class BookView(QWidget):
             return
 
         self.viewed_chapter_pos = pos
+        if not automatic:
+            stats_dock = getattr(self, 'stats_dock', None)
+            if stats_dock is not None:
+                stats_dock.resetSession()
         if move_cursor:
             if not automatic:
-                stats_dock = getattr(self, 'stats_dock', None)
-                if stats_dock is not None:
-                    stats_dock.resetSession()
                 self._controller.console.clear()
             else:
                 self._controller.console.clear(automatic=True)
