@@ -844,6 +844,7 @@ class BookView(QWidget):
         # type: (BookView, bool) -> None
         if self.chapter_pos is None:
             return
+        self.stats_dock.resetSession()
         self._controller.console.clear()
         if move:
             self.setChapter(self.viewed_chapter_pos, True)
