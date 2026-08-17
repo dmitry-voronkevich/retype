@@ -337,6 +337,24 @@ def test_nonempty_mutation_selection_replacement_and_reset_fail_closed(
     assert not book_view._chord_feedback_timer.isActive()
 
 
+def test_console_clear_hides_chord_feedback(
+        make_controller, qtbot):
+    controller = make_controller()
+    controller.loadBookRequested.emit(0)
+    qtbot.wait(20)
+
+    book_view = controller.view()
+    stats = book_view.stats_dock
+    stats.successfulChordDetected.emit('the')
+    assert book_view.chord_feedback.isVisible()
+    assert book_view._chord_feedback_timer.isActive()
+
+    controller.console.clear()
+
+    assert not book_view.chord_feedback.isVisible()
+    assert not book_view._chord_feedback_timer.isActive()
+
+
 def test_cursor_moving_chapter_reset_hides_chord_feedback(
         make_controller, qtbot):
     controller = make_controller()
