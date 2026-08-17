@@ -315,9 +315,7 @@ class StatsDock(QWidget):
         self.chord_detector.reset()
         self._resetCandidate()
         self._preserve_empty_text_reset = False
-        console = getattr(self, '_console', None)
-        if console is None or not getattr(console, '_processing_key_press', False):
-            self.successfulChordFeedbackReset.emit()
+        self.successfulChordFeedbackReset.emit()
 
     def _onTextChanged(self, text):
         # type: (StatsDock, str) -> None

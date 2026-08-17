@@ -256,6 +256,24 @@ def test_validated_chord_event_drives_banner_counter_and_chart(
     assert not book_view.chord_feedback.isVisible()
 
 
+def test_processing_console_clear_hides_success_feedback(
+        make_controller, qtbot):
+    controller = make_controller()
+    controller.loadBookRequested.emit(0)
+    qtbot.wait(20)
+    book_view = controller.view()
+    stats = book_view.stats_dock
+    stats.validatedChordDetected.emit(_validated_result('the'))
+    assert book_view.chord_feedback.isVisible()
+
+    controller.console._processing_key_press = True
+    controller.console.clear()
+    controller.console._processing_key_press = False
+
+    assert not book_view.chord_feedback.isVisible()
+    assert not book_view._chord_feedback_timer.isActive()
+
+
 def test_cleanup_prefixes_and_cleanup_gaps_preserve_final_word_only(
         make_controller, qtbot, monkeypatch):
     controller = make_controller()
