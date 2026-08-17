@@ -80,8 +80,8 @@ The Stats Dock is the graph above the Modeline. It can be resized or collapsed u
     Each rectangle’s height represents the WPM achieved as a proportion of the PB. New rectangles appear on the right; the right-most rectangle represents the current WPM.
 #. Dashed lines
     Dashed lines appear every 50 WPM and are there to help gauge the WPM each rectangle represents. For example, a rectangle whose height matches the first dashed line from the bottom represents 50 WPM.
-#. Likely chords
-    The session count of short keyboard-output bursts classified as likely chording. Matching chart segments are green, and this dock is the only place where the count is shown.
+#. Likely chords and successes
+    The session count of short keyboard-output bursts classified as likely chording is diagnostic only. The separate Success count and green chart segments represent validated rapid, correct known words at the book cursor.
 
 The Stats Dock updates on every letter typed correctly.
 
@@ -91,8 +91,8 @@ Keyboard-only chord feedback
 The likely-chord statistic watches the ordinary Qt keyboard events that retype
 already receives. It marks a burst when at least three printable characters
 arrive no more than 35 milliseconds apart and the burst lasts no more than 120
-milliseconds. Its green chart segments and ``Likely chords`` count are timing
-observations only; they are deliberately separate from congratulations.
+milliseconds. Its ``Likely`` count is a timing observation only; it is
+separate from both congratulations and green chart segments.
 
 A three-second ``Known chord complete`` encouragement is shown after a word
 delimiter (including punctuation or Return), or when automatic line completion
@@ -103,8 +103,12 @@ must be no more than 35 milliseconds apart with a total span no greater than
 120 milliseconds. CharaChorder-style incorrect prefixes followed by Backspace
 cleanup are accepted only when the final surviving word meets those conditions.
 Pastes, selection replacement, IME-like or programmatic edits, ambiguous timing
-resets, and uncorrected prefixes fail closed. Session/reset cleanup hides the
-encouragement and cancels its timer.
+resets, and uncorrected prefixes fail closed. One typed validated-chord result
+is emitted only after all of those checks; the banner, Success counter, and
+green chart segments consume that same result. Its word identity, cursor, and
+timing fields are intentionally available to future mastery/adaptive-lesson
+consumers without coupling their storage to this UI. Session/reset cleanup
+hides the encouragement and cancels its timer.
 
 This is a bounded timing heuristic for the observed study conditions, not a
 device detector or attribution claim. A fast ordinary typist or macro can

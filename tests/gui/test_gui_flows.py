@@ -6,7 +6,7 @@ import pytest
 from qt import Qt, QWidget
 
 from retype.controllers.main_controller import View
-from retype.services.chord_detection import BACKSPACE_KEY
+from retype.services.chord_detection import BACKSPACE_KEY, ValidatedChord
 
 
 class _TimedKeyEvent:
@@ -83,14 +83,14 @@ def test_likely_chord_feedback_count_and_chart_segment(make_controller, qtbot):
         stats.onUpdate(character)
 
     assert stats.likely_chords == 1
-    assert stats.wpms_likely_chords[-4:] == [True, True, True, True]
-    assert "Likely chords: 1" in stats.accessibleDescription()
+    assert stats.wpms_validated_chords[-4:] == [False, False, False, False]
+    assert "Likely timing bursts: 1" in stats.accessibleDescription()
     # Likely timing observations are not congratulations.
     assert not book_view.chord_feedback.isVisible()
 
     stats.resetSession()
     assert stats.likely_chords == 0
-    assert stats.wpms_likely_chords == []
+    assert stats.wpms_validated_chords == []
     assert not book_view.chord_feedback.isVisible()
     assert not book_view._chord_feedback_timer.isActive()
 
@@ -135,12 +135,13 @@ def test_cleanup_backspaces_count_once_and_mark_one_burst(
 
     assert stats.likely_chords == 1
     assert encouragements == [1]
-    assert stats.wpms_likely_chords == [True] * 8
+    assert stats.wpms_validated_chords == [False] * 8
     # The neutral Likely count/chart remains independent of congratulations.
     assert not book_view.chord_feedback.isVisible()
 
 
-def test_non_printable_input_clears_pending_likely_segment(make_controller, qtbot):
+def test_non_printable_input_does_not_colour_validated_segment(
+        make_controller, qtbot):
     controller = make_controller()
     controller.loadBookRequested.emit(0)
     qtbot.wait(20)
@@ -160,7 +161,13 @@ def test_non_printable_input_clears_pending_likely_segment(make_controller, qtbo
     stats._onKeyPress(_TimedKeyEvent("d", 23))
     stats.onUpdate("d")
 
-    assert stats.wpms_likely_chords[-1] is False
+    assert stats.wpms_validated_chords[-1] is False
+
+
+def _validated_result(word='the', completed_on_line_end=False):
+    return ValidatedChord(
+        word, word.lower(), word, 0, 0, 20.0, 10.0,
+        completed_on_line_end)
 
 
 def _prepare_chord_word(controller, word, delimiter=' '):
@@ -195,7 +202,8 @@ def test_study_words_congratulate_only_after_surviving_token_delimiter(
     qtbot.wait(20)
     book_view, stats = _prepare_chord_word(controller, word)
     successes = []
-    stats.successfulChordDetected.connect(successes.append)
+    stats.validatedChordDetected.connect(
+        lambda result: successes.append(result.word))
 
     _type_rapidly(
         qtbot, monkeypatch, controller.console, stats, word,
@@ -208,6 +216,46 @@ def test_study_words_congratulate_only_after_surviving_token_delimiter(
     assert word in book_view.chord_feedback.text()
 
 
+def test_validated_chord_event_drives_banner_counter_and_chart(
+        make_controller, qtbot):
+    controller = make_controller()
+    controller.loadBookRequested.emit(0)
+    qtbot.wait(20)
+    book_view = controller.view()
+    stats = book_view.stats_dock
+    stats.resetSession()
+    # Existing word bars simulate the completed editor token at its delimiter.
+    stats.wpms = [10, 20, 30]
+    stats.wpms_validated_chords = [False, False, False]
+    observed = []
+    stats.validatedChordDetected.connect(observed.append)
+    result = _validated_result('the')
+
+    stats.validatedChordDetected.emit(result)
+
+    assert observed == [result]
+    assert stats.successful_chords == 1
+    assert stats.wpms_validated_chords == [True, True, True]
+    assert book_view.chord_feedback.isVisible()
+    assert 'the' in book_view.chord_feedback.text()
+    assert result.dictionary_key == 'the'
+    assert result.expected_word == 'the'
+    assert result.duration_ms == 20.0
+
+    # A timing-only observation remains diagnostic: it changes neither the
+    # validated counter, green outcome segments, nor the congratulations UI.
+    stats.resetSession()
+    for position, (character, timestamp) in enumerate(
+            zip('abcd', (1, 11, 21, 31)), start=1):
+        book_view.cursor_pos = position
+        stats._onKeyPress(_TimedKeyEvent(character, timestamp))
+        stats.onUpdate(character)
+    assert stats.likely_chords == 1
+    assert stats.successful_chords == 0
+    assert stats.wpms_validated_chords == [False] * 4
+    assert not book_view.chord_feedback.isVisible()
+
+
 def test_cleanup_prefixes_and_cleanup_gaps_preserve_final_word_only(
         make_controller, qtbot, monkeypatch):
     controller = make_controller()
@@ -215,7 +263,8 @@ def test_cleanup_prefixes_and_cleanup_gaps_preserve_final_word_only(
     qtbot.wait(20)
     _, stats = _prepare_chord_word(controller, 'with')
     successes = []
-    stats.successfulChordDetected.connect(successes.append)
+    stats.validatedChordDetected.connect(
+        lambda result: successes.append(result.word))
 
     # The study contains cleanup prefixes; an intentionally long pause during
     # cleanup does not count against the surviving final token's timing.
@@ -238,7 +287,8 @@ def test_wrong_prefix_and_timing_reset_never_congratulate_suffix(
     qtbot.wait(20)
     _, stats = _prepare_chord_word(controller, 'at')
     successes = []
-    stats.successfulChordDetected.connect(successes.append)
+    stats.validatedChordDetected.connect(
+        lambda result: successes.append(result.word))
 
     _type_rapidly(qtbot, monkeypatch, controller.console, stats, 'xat',
                   (1, 201, 211))
@@ -254,7 +304,8 @@ def test_slow_wrong_and_wrong_cursor_outputs_do_not_congratulate(
     qtbot.wait(20)
     _, stats = _prepare_chord_word(controller, 'the')
     successes = []
-    stats.successfulChordDetected.connect(successes.append)
+    stats.validatedChordDetected.connect(
+        lambda result: successes.append(result.word))
 
     _type_rapidly(qtbot, monkeypatch, controller.console, stats, 'the',
                   (1, 50, 60))
@@ -262,7 +313,8 @@ def test_slow_wrong_and_wrong_cursor_outputs_do_not_congratulate(
     assert successes == []
 
     _, stats = _prepare_chord_word(controller, 'the')
-    stats.successfulChordDetected.connect(successes.append)
+    stats.validatedChordDetected.connect(
+        lambda result: successes.append(result.word))
     _type_rapidly(qtbot, monkeypatch, controller.console, stats, 'and',
                   (100, 110, 120))
     qtbot.keyClick(controller.console, Qt.Key.Key_Space)
@@ -285,7 +337,8 @@ def test_punctuation_newline_and_repeated_delimiters_finalize_once(
     qtbot.wait(20)
     _, stats = _prepare_chord_word(controller, 'the', '.')
     successes = []
-    stats.successfulChordDetected.connect(successes.append)
+    stats.validatedChordDetected.connect(
+        lambda result: successes.append(result.word))
     _type_rapidly(qtbot, monkeypatch, controller.console, stats, 'the',
                   (1, 11, 21))
     qtbot.keyClick(controller.console, Qt.Key.Key_Period)
@@ -314,7 +367,8 @@ def test_nonempty_mutation_selection_replacement_and_reset_fail_closed(
     qtbot.wait(20)
     book_view, stats = _prepare_chord_word(controller, 'the')
     successes = []
-    stats.successfulChordDetected.connect(successes.append)
+    stats.validatedChordDetected.connect(
+        lambda result: successes.append(result.word))
 
     _type_rapidly(qtbot, monkeypatch, controller.console, stats, 't', (1,))
     controller.console.setText('the')  # paste/setText/IME-like mutation
@@ -331,7 +385,7 @@ def test_nonempty_mutation_selection_replacement_and_reset_fail_closed(
     qtbot.keyClick(controller.console, Qt.Key.Key_Space)
     assert successes == []
 
-    stats.successfulChordDetected.emit('the')
+    stats.validatedChordDetected.emit(_validated_result('the'))
     assert book_view.chord_feedback.isVisible()
     assert book_view._chord_feedback_timer.isActive()
     stats.resetSession()
@@ -347,7 +401,7 @@ def test_console_clear_hides_chord_feedback(
 
     book_view = controller.view()
     stats = book_view.stats_dock
-    stats.successfulChordDetected.emit('the')
+    stats.validatedChordDetected.emit(_validated_result('the'))
     assert book_view.chord_feedback.isVisible()
     assert book_view._chord_feedback_timer.isActive()
 
@@ -365,7 +419,7 @@ def test_cursor_moving_chapter_reset_hides_chord_feedback(
 
     book_view = controller.view()
     stats = book_view.stats_dock
-    stats.successfulChordDetected.emit('the')
+    stats.validatedChordDetected.emit(_validated_result('the'))
     assert book_view.chord_feedback.isVisible()
     assert book_view._chord_feedback_timer.isActive()
 

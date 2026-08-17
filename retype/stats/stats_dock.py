@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 from retype.ui.painting import rectPixmap, textPixmap, linePixmap, Font
 from retype.services.chord_detection import (
     KeyboardChordDetector, MAX_BURST_MILLISECONDS,
-    MAX_INTERCHAR_MILLISECONDS,
+    MAX_INTERCHAR_MILLISECONDS, ValidatedChord,
 )
 from retype.services.chords import WORD_RE
 from retype.services.theme import theme, C, Theme
@@ -18,12 +18,11 @@ from retype.services.theme import theme, C, Theme
 @theme('BookView.StatsDock.Grid', C(fg='gray'))
 @theme('BookView.StatsDock.LikelyChord', C(fg='#1a7f37'))
 class StatsDock(QWidget):
-    # The payload is the session count, which the Book View presents as
-    # immediate, non-colour-only encouragement.
+    # Likely is a diagnostic timing observation only; it is never success.
     likelyChordDetected = pyqtSignal(int)
-    # This signal is intentionally separate from Likely timing observations:
-    # it is only emitted for a completed rapid, correct loaded chord word.
-    successfulChordDetected = pyqtSignal(str)
+    # The authoritative domain event. Every success subscriber (banner,
+    # counter, and green chart marking) consumes this typed result.
+    validatedChordDetected = pyqtSignal(object)
     successfulChordFeedbackReset = pyqtSignal()
 
     def __init__(self, book_view, parent=None):
@@ -44,9 +43,12 @@ class StatsDock(QWidget):
         self.rect_w = 15
         self.wpms = []  # type: list[int]
         # Kept separately from ``wpms`` so ordinary chart data remains intact.
-        self.wpms_likely_chords = []  # type: list[bool]
+        # Green segments represent validated outcomes, never timing-only Likely
+        # observations.
+        self.wpms_validated_chords = []  # type: list[bool]
         self.likely_chords = 0
-        self._pending_likely_segment = False
+        self.successful_chords = 0
+        self._pending_validated_segment = False
         # The final cleanup Backspace can empty the console. Keep that event
         # from looking like a programmatic context reset until textChanged has
         # handled it; later key events clear this one-event allowance.
@@ -54,6 +56,7 @@ class StatsDock(QWidget):
         self._preserve_success_feedback_reset = False
         self.chord_detector = KeyboardChordDetector()
         self._resetCandidate()
+        self.validatedChordDetected.connect(self._recordValidatedChord)
 
         self.main_c, self.text_c, self.grid_c, self.likely_c = self._loadTheme()
         self.main_c.changed.connect(self.themeUpdate)
@@ -75,9 +78,10 @@ class StatsDock(QWidget):
     def _update_accessibility(self):
         # type: (StatsDock) -> None
         self.setAccessibleDescription(
-            "Typing statistics. Likely chords: {}. Green chart segments "
-            "mark likely chord output; timing is a heuristic and does not "
-            "identify a device.".format(self.likely_chords))
+            "Typing statistics. Likely timing bursts: {}. Validated chord "
+            "words: {}. Green chart segments mark validated rapid correct "
+            "known words; Likely timing is a heuristic and does not identify "
+            "a device.".format(self.likely_chords, self.successful_chords))
 
     def connectConsole(self, console):
         # type: (StatsDock, Console) -> None
@@ -235,19 +239,43 @@ class StatsDock(QWidget):
         if self.book_view.isSuccessfulChordOutput(
                 token, self._candidate_book_cursor):
             # A successful delimiter can synchronously complete the current
-            # line and clear the console after this signal is emitted. Keep
-            # that completion clear from immediately hiding the feedback, but
-            # let a later explicit/session clear reset it normally. Do not
-            # preserve an unrelated explicit clear or session reset.
+            # line and clear the console after this event. Keep that completion
+            # clear from immediately hiding valid feedback, but let a later
+            # explicit/session clear reset it normally.
             line = getattr(self.book_view, 'current_line', '')
             suffix = line[len(editor_text or ''):] if isinstance(line, str) \
                 and isinstance(editor_text, str) and line.startswith(editor_text) \
                 else ''
             completing_line = bool(suffix) and all(
                 not character.isalnum() and character != '_' for character in suffix)
-            if projected or completing_line:
+            completed_on_line_end = projected or completing_line
+            if completed_on_line_end:
                 self._preserve_success_feedback_reset = True
-            self.successfulChordDetected.emit(token)
+            gaps = [later - earlier for earlier, later in zip(
+                self._candidate_timestamps, self._candidate_timestamps[1:])]
+            result = ValidatedChord(
+                token, token.lower(), token, self._candidate_book_cursor,
+                self._candidate_editor_start,
+                self._candidate_timestamps[-1] -
+                self._candidate_timestamps[0], max(gaps) if gaps else 0.0,
+                completed_on_line_end)
+            self.validatedChordDetected.emit(result)
+
+    def _recordValidatedChord(self, result):
+        # type: (StatsDock, ValidatedChord) -> None
+        """Update every in-dock success representation from one domain event."""
+        if not isinstance(result, ValidatedChord):
+            return
+        self.successful_chords += 1
+        # At a delimiter the full word already has bars. At a projected line
+        # end, the final character's bar is still pending its editor mutation.
+        completed_bars = len(result.word) - (1 if result.completed_on_line_end
+                                             else 0)
+        for index in range(1, min(completed_bars, len(self.wpms)) + 1):
+            self.wpms_validated_chords[-index] = True
+        self._pending_validated_segment = result.completed_on_line_end
+        self._update_accessibility()
+        self.update()
 
     def _onKeyPress(self, event):
         # type: (StatsDock, QKeyEvent) -> None
@@ -260,7 +288,6 @@ class StatsDock(QWidget):
         if not v.isVisible() or v.cursor_pos is None:
             self.chord_detector.reset()
             self._resetCandidate()
-            self._pending_likely_segment = False
             return
 
         was_reported = self.chord_detector.has_reported_burst
@@ -282,23 +309,15 @@ class StatsDock(QWidget):
             is_backspace and was_reported and
             self.chord_detector.has_reported_burst)
         if observation is None:
-            self._pending_likely_segment = False
             return
 
         if observation.is_new:
             self.likely_chords += 1
             self.likelyChordDetected.emit(self.likely_chords)
-            # The current event has not edited the document yet. Colour the
-            # already-created bars for the preceding characters now; the
-            # matching current bar is marked by onUpdate below.
-            for index in range(1, len(observation.output)):
-                if index <= len(self.wpms_likely_chords):
-                    self.wpms_likely_chords[-index] = True
             self._update_accessibility()
 
-        # Continuations are not counted again, but each output character gets
-        # the same chart treatment.
-        self._pending_likely_segment = True
+        # Likely observations are intentionally diagnostic only. They never
+        # colour a successful segment or update successful-chord state.
         self.update()
 
     def _onConsoleCleared(self):
@@ -393,15 +412,16 @@ class StatsDock(QWidget):
             if len(self.wpms) > amount:
                 length = len(self.wpms)
                 self.wpms = self.wpms[length-amount:length]
-                self.wpms_likely_chords = self.wpms_likely_chords[
+                self.wpms_validated_chords = self.wpms_validated_chords[
                     length-amount:length]
             self.wpms.append(self.wpm)
-            self.wpms_likely_chords.append(self._pending_likely_segment)
-            self._pending_likely_segment = False
+            self.wpms_validated_chords.append(
+                self._pending_validated_segment)
+            self._pending_validated_segment = False
             self.update()
 
         if not graphShouldUpdate:
-            self._pending_likely_segment = False
+            self._pending_validated_segment = False
         self.prev_seconds = seconds
         self.prev_cursor_pos = v.cursor_pos
 
@@ -423,9 +443,10 @@ class StatsDock(QWidget):
         self.wpm = 0
         self.wpm_pb = 0
         self.wpms = []
-        self.wpms_likely_chords = []
+        self.wpms_validated_chords = []
         self.likely_chords = 0
-        self._pending_likely_segment = False
+        self.successful_chords = 0
+        self._pending_validated_segment = False
         self._preserve_empty_text_reset = False
         self._update_accessibility()
         self.likelyChordDetected.emit(0)
@@ -448,9 +469,9 @@ class StatsDock(QWidget):
         i = 0
         for index, wpm in enumerate(self.wpms):
             rect_h = floor(wpm * factor)
-            likely = (index < len(self.wpms_likely_chords) and
-                      self.wpms_likely_chords[index])
-            bar_c = self.likely_c.fg() if likely else self.main_c.fg()
+            validated = (index < len(self.wpms_validated_chords) and
+                         self.wpms_validated_chords[index])
+            bar_c = self.likely_c.fg() if validated else self.main_c.fg()
             draw(i, h - rect_h,
                  rectPixmap(self.rect_w, int(wpm * factor),
                             self.main_c.bg(), bar_c))
@@ -477,7 +498,8 @@ class StatsDock(QWidget):
         cur_w = ceil(fm.horizontalAdvance(cur_txt))
         draw(w - cur_w - 2, 2,
              textPixmap(cur_txt, cur_w, font_h, font, self.text_c.fg()))
-        chord_txt = "Likely chords: {}".format(self.likely_chords)
+        chord_txt = "Likely: {}  Success: {}".format(
+            self.likely_chords, self.successful_chords)
         chord_w = ceil(fm.horizontalAdvance(chord_txt))
         draw(max(2, (w - chord_w) // 2), 2,
              textPixmap(chord_txt, chord_w, font_h, font,

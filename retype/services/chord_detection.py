@@ -24,12 +24,31 @@ BACKSPACE_KEY = 0x01000003
 
 
 @dataclass(frozen=True)
+class ValidatedChord:
+    """A final editor token accepted by the bounded chord-success heuristic.
+
+    This is deliberately an output-validation result, not a device-origin
+    claim. Its timing fields support future mastery statistics and UI effects
+    without reinterpreting a neutral Likely timing observation as success.
+    """
+
+    word: str
+    dictionary_key: str
+    expected_word: str
+    book_cursor: int
+    editor_token_start: int
+    duration_ms: float
+    max_intercharacter_ms: float
+    completed_on_line_end: bool
+
+
+@dataclass(frozen=True)
 class LikelyChordBurst:
     """One observation in a short output burst.
 
     ``is_new`` is true only for the observation that crosses the minimum burst
-    length.  Later characters in the same burst are returned as continuations
-    so the chart can colour all output without counting one burst repeatedly.
+    length. Later characters in the same burst are returned as continuations
+    so diagnostic consumers can avoid counting one burst repeatedly.
     """
 
     output: str

@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 from retype.extras import splittext, isspaceorempty, ManifoldStr
 from retype.ui.modeline import Modeline
 from retype.ui.chord_hint_bar import ChordHintBar
+from retype.services.chord_detection import ValidatedChord
 from retype.services.chords import WORD_RE, chordable_spans
 from retype.services import Autosave
 from retype.stats import StatsDock
@@ -292,8 +293,8 @@ class BookView(QWidget):
             'Encouragement shown for a rapid, correct known chord word at the '
             'book cursor. This bounded timing heuristic does not detect a device.')
         self.chord_feedback.setVisible(False)
-        self.stats_dock.successfulChordDetected.connect(
-            self._showSuccessfulChordFeedback)
+        self.stats_dock.validatedChordDetected.connect(
+            self._showValidatedChordFeedback)
         self.stats_dock.successfulChordFeedbackReset.connect(
             self._hideLikelyChordFeedback)
 
@@ -512,14 +513,17 @@ class BookView(QWidget):
             feedback.clear()
             feedback.setVisible(False)
 
-    def _showSuccessfulChordFeedback(self, word):
-        # type: (BookView, str) -> None
-        """Show educational feedback without re-labelling Likely statistics."""
+    def _showValidatedChordFeedback(self, result):
+        # type: (BookView, ValidatedChord) -> None
+        """Render the validated result without coupling domain state to UI."""
+        if not isinstance(result, ValidatedChord):
+            return
         feedback = getattr(self, 'chord_feedback', None)
         timer = getattr(self, '_chord_feedback_timer', None)
         if feedback is None:
             return
-        feedback.setText('Known chord complete: {} - nice!'.format(word))
+        feedback.setText('Known chord complete: {} - nice!'.format(
+            result.word))
         feedback.setVisible(True)
         feedback.setAccessibleDescription(
             'Rapid, correct known chord word at the book cursor. This is a '
@@ -664,7 +668,9 @@ class BookView(QWidget):
 
         self.viewed_chapter_pos = pos
         if move_cursor:
-            self.stats_dock.resetSession()
+            stats_dock = getattr(self, 'stats_dock', None)
+            if stats_dock is not None:
+                stats_dock.resetSession()
             self._controller.console.clear()
             self.chapter_pos = pos
             self._initChapter(reset)
@@ -845,7 +851,9 @@ class BookView(QWidget):
         # type: (BookView, bool) -> None
         if self.chapter_pos is None:
             return
-        self.stats_dock.resetSession()
+        stats_dock = getattr(self, 'stats_dock', None)
+        if stats_dock is not None:
+            stats_dock.resetSession()
         self._controller.console.clear()
         if move:
             self.setChapter(self.viewed_chapter_pos, True)
