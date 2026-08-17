@@ -325,7 +325,9 @@ class StatsDock(QWidget):
         self.chord_detector.reset()
         self._resetCandidate()
         self._preserve_empty_text_reset = False
-        if not self._preserve_success_feedback_reset:
+        if self._preserve_success_feedback_reset:
+            self._preserve_success_feedback_reset = False
+        else:
             self.successfulChordFeedbackReset.emit()
 
     def _onTextChanged(self, text):

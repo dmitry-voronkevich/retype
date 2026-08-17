@@ -359,6 +359,10 @@ def test_punctuation_newline_and_repeated_delimiters_finalize_once(
     assert book_view._chord_feedback_timer.isActive()
     assert book_view.progress == 100
 
+    controller.console.clear()
+    assert not book_view.chord_feedback.isVisible()
+    assert not book_view._chord_feedback_timer.isActive()
+
 
 def test_nonempty_mutation_selection_replacement_and_reset_fail_closed(
         make_controller, qtbot, monkeypatch):
