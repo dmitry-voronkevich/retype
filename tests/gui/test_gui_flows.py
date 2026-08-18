@@ -444,6 +444,22 @@ def test_console_clear_preserves_chord_feedback(
     assert book_view._chord_feedback_timer.isActive()
 
 
+def test_chord_feedback_hides_when_timer_expires(make_controller, qtbot):
+    controller = make_controller()
+    controller.loadBookRequested.emit(0)
+    qtbot.wait(20)
+
+    book_view = controller.view()
+    book_view.stats_dock.validatedChordDetected.emit(_validated_result('the'))
+    assert book_view.chord_feedback.isVisible()
+    assert book_view._chord_feedback_timer.isActive()
+
+    qtbot.wait(3100)
+
+    assert not book_view.chord_feedback.isVisible()
+    assert not book_view._chord_feedback_timer.isActive()
+
+
 def test_automatic_chapter_advance_preserves_chord_feedback(
         make_controller, qtbot):
     controller = make_controller()

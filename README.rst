@@ -92,8 +92,8 @@ While practicing, words found in the loaded chord library are highlighted with a
 
 More information on the user interface and available features can be found in the documentation_.
 
-Keyboard-only likely-chord feedback
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Keyboard-only chord feedback
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 retype also provides separate keyboard-only timing observations in the Stats
 Dock and bounded congratulations for rapid, correct known chord words. The
