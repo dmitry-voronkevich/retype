@@ -81,7 +81,7 @@ The Stats Dock is the graph above the Modeline. It can be resized or collapsed u
 #. Dashed lines
     Dashed lines appear every 50 WPM and are there to help gauge the WPM each rectangle represents. For example, a rectangle whose height matches the first dashed line from the bottom represents 50 WPM.
 #. Chords
-    The ``Chords`` count and green chart segments represent validated rapid, correct known words at the book cursor. Timing-only observations are retained only as internal diagnostics and never affect this user-facing count.
+    The ``Chords: N`` label and green chart segments represent validated rapid, correct known words at the book cursor. Timing-only observations are retained only as internal diagnostics and never affect this user-facing count.
 
 The Stats Dock updates on every letter typed correctly.
 
@@ -106,8 +106,10 @@ resets, and uncorrected prefixes fail closed. One typed validated-chord result
 is emitted only after all of those checks; the banner, ``Chords`` counter,
 and green chart segments consume that same result. Its word identity, cursor, and
 timing fields are intentionally available to future mastery/adaptive-lesson
-consumers without coupling their storage to this UI. Session/reset cleanup
-hides the encouragement and cancels its timer.
+consumers without coupling their storage to this UI. Only expiry of the
+single-shot timer hides the encouragement; console clears, automatic
+completion, navigation, and statistics resets do not control its visibility or
+timer.
 
 This is a bounded timing heuristic for the observed study conditions, not a
 device detector or attribution claim. A fast ordinary typist or macro can
