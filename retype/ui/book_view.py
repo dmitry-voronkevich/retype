@@ -671,10 +671,7 @@ class BookView(QWidget):
             if stats_dock is not None:
                 stats_dock.resetSession()
         if move_cursor:
-            if not automatic:
-                self._controller.console.clear()
-            else:
-                self._controller.console.clear(automatic=True)
+            self._controller.console.clear()
             self.chapter_pos = pos
             self._initChapter(reset)
             if isspaceorempty(self.tobetyped):

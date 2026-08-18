@@ -26,7 +26,7 @@ class FakeConsole(QObject):
     def text(self):
         return self._text
 
-    def clear(self, automatic=False):
+    def clear(self):
         pass
 
     def setText(self, text):

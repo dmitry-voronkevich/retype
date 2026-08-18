@@ -14,7 +14,6 @@ from retype.console import CommandService, HighlightingService
          r_border='white'))
 class Console(LineEdit):
     submitted = pyqtSignal(str)
-    cleared = pyqtSignal()
     # Emitted before the wrapped editor mutates its document. This preserves
     # the real Qt key-event timing for keyboard-only heuristics while leaving
     # the existing post-edit subscribers unchanged.
@@ -98,12 +97,9 @@ class Console(LineEdit):
         # type: (Console) -> None
         self.submitted.emit(self.text())
 
-    def clear(self, automatic=False):
-        # type: (Console, bool) -> None
+    def clear(self):
+        # type: (Console) -> None
         super().setText('')
-        if automatic:
-            return
-        self.cleared.emit()
 
     def setText(self, text):
         # type: (Console, str) -> None

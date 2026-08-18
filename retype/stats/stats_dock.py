@@ -84,7 +84,6 @@ class StatsDock(QWidget):
         # type: (StatsDock, Console) -> None
         self._hs = console.highlighting_service
         self._console = console
-        console.cleared.connect(self._onConsoleCleared)
         console.keyPressAboutToBeProcessed.connect(self._onKeyPress)
         console.textEdited.connect(self._onTextEdited)
         console.textEdited.connect(self.onUpdate)
@@ -308,8 +307,9 @@ class StatsDock(QWidget):
         # colour a successful segment or update successful-chord state.
         self.update()
 
-    def _onConsoleCleared(self):
+    def _resetDetectionContext(self):
         # type: (StatsDock) -> None
+        """Reset internal detection state without affecting feedback UI."""
         self.chord_detector.reset()
         self._resetCandidate()
         self._preserve_empty_text_reset = False
@@ -414,7 +414,7 @@ class StatsDock(QWidget):
     def resetSession(self):
         # type: (StatsDock) -> None
         """Reset the detector and the statistics represented by this dock."""
-        self._onConsoleCleared()
+        self._resetDetectionContext()
         cursor_pos = getattr(self.book_view, 'cursor_pos', None)
         self.prev_cursor_pos = cursor_pos if cursor_pos is not None else 0
         self.prev_seconds = 0

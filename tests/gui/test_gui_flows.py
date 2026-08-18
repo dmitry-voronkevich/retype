@@ -431,6 +431,9 @@ def test_console_clear_preserves_chord_feedback(
 
     book_view = controller.view()
     stats = book_view.stats_dock
+    # Console clearing is ordinary editor state now; it has no dedicated
+    # lifecycle signal or automatic-mode argument for chord feedback.
+    assert not hasattr(controller.console, 'cleared')
     stats.validatedChordDetected.emit(_validated_result('the'))
     assert book_view.chord_feedback.isVisible()
     assert book_view._chord_feedback_timer.isActive()
