@@ -67,7 +67,8 @@ def test_opens_customisation_dialog_without_blocking(controller, qtbot):
     assert not dialog.isVisible()
 
 
-def test_likely_chord_feedback_count_and_chart_segment(make_controller, qtbot):
+def test_timing_observations_do_not_affect_user_facing_chord_count(
+        make_controller, qtbot):
     controller = make_controller()
     controller.loadBookRequested.emit(0)
     qtbot.wait(20)
@@ -82,14 +83,18 @@ def test_likely_chord_feedback_count_and_chart_segment(make_controller, qtbot):
         stats._onKeyPress(_TimedKeyEvent(character, timestamp))
         stats.onUpdate(character)
 
-    assert stats.likely_chords == 1
+    assert stats.likely_chords == 1  # internal diagnostic only
+    assert stats.successful_chords == 0
+    assert stats.chordCountText() == "Chords: 0"
+    assert "Chords: 0" in stats.accessibleDescription()
+    assert "Likely" not in stats.accessibleDescription()
     assert stats.wpms_validated_chords[-4:] == [False, False, False, False]
-    assert "Likely timing bursts: 1" in stats.accessibleDescription()
-    # Likely timing observations are not congratulations.
+    # Timing observations are not congratulations or user-facing chords.
     assert not book_view.chord_feedback.isVisible()
 
     stats.resetSession()
     assert stats.likely_chords == 0
+    assert stats.chordCountText() == "Chords: 0"
     assert stats.wpms_validated_chords == []
     assert not book_view.chord_feedback.isVisible()
     assert not book_view._chord_feedback_timer.isActive()
@@ -235,6 +240,7 @@ def test_validated_chord_event_drives_banner_counter_and_chart(
 
     assert observed == [result]
     assert stats.successful_chords == 1
+    assert stats.chordCountText() == "Chords: 1"
     assert stats.wpms_validated_chords == [True, True, True]
     assert book_view.chord_feedback.isVisible()
     assert 'the' in book_view.chord_feedback.text()
@@ -252,6 +258,7 @@ def test_validated_chord_event_drives_banner_counter_and_chart(
         stats.onUpdate(character)
     assert stats.likely_chords == 1
     assert stats.successful_chords == 0
+    assert stats.chordCountText() == "Chords: 0"
     assert stats.wpms_validated_chords == [False] * 4
     assert not book_view.chord_feedback.isVisible()
 

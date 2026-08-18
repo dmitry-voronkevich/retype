@@ -77,10 +77,9 @@ class StatsDock(QWidget):
     def _update_accessibility(self):
         # type: (StatsDock) -> None
         self.setAccessibleDescription(
-            "Typing statistics. Likely timing bursts: {}. Validated chord "
-            "words: {}. Green chart segments mark validated rapid correct "
-            "known words; Likely timing is a heuristic and does not identify "
-            "a device.".format(self.likely_chords, self.successful_chords))
+            "Typing statistics. Chords: {}. Green chart segments mark "
+            "validated rapid correct known words; timing cannot identify a "
+            "device.".format(self.successful_chords))
 
     def connectConsole(self, console):
         # type: (StatsDock, Console) -> None
@@ -482,15 +481,19 @@ class StatsDock(QWidget):
         cur_w = ceil(fm.horizontalAdvance(cur_txt))
         draw(w - cur_w - 2, 2,
              textPixmap(cur_txt, cur_w, font_h, font, self.text_c.fg()))
-        chord_txt = "Likely: {}  Success: {}".format(
-            self.likely_chords, self.successful_chords)
+        chord_txt = self.chordCountText()
         chord_w = ceil(fm.horizontalAdvance(chord_txt))
         draw(max(2, (w - chord_w) // 2), 2,
              textPixmap(chord_txt, chord_w, font_h, font,
-                        self.likely_c.fg() if self.likely_chords else
+                        self.likely_c.fg() if self.successful_chords else
                         self.text_c.fg()))
 
         qp.end()
+
+    def chordCountText(self):
+        # type: (StatsDock) -> str
+        """The user-facing count; timing-only observations stay internal."""
+        return "Chords: {}".format(self.successful_chords)
 
     def sizeHint(self):
         # type: (StatsDock) -> QSize

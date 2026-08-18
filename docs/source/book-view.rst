@@ -80,19 +80,18 @@ The Stats Dock is the graph above the Modeline. It can be resized or collapsed u
     Each rectangle’s height represents the WPM achieved as a proportion of the PB. New rectangles appear on the right; the right-most rectangle represents the current WPM.
 #. Dashed lines
     Dashed lines appear every 50 WPM and are there to help gauge the WPM each rectangle represents. For example, a rectangle whose height matches the first dashed line from the bottom represents 50 WPM.
-#. Likely chords and successes
-    The session count of short keyboard-output bursts classified as likely chording is diagnostic only. The separate Success count and green chart segments represent validated rapid, correct known words at the book cursor.
+#. Chords
+    The ``Chords`` count and green chart segments represent validated rapid, correct known words at the book cursor. Timing-only observations are retained only as internal diagnostics and never affect this user-facing count.
 
 The Stats Dock updates on every letter typed correctly.
 
 Keyboard-only chord feedback
 ----------------------------
 
-The likely-chord statistic watches the ordinary Qt keyboard events that retype
-already receives. It marks a burst when at least three printable characters
-arrive no more than 35 milliseconds apart and the burst lasts no more than 120
-milliseconds. Its ``Likely`` count is a timing observation only; it is
-separate from both congratulations and green chart segments.
+The keyboard-only heuristic watches ordinary Qt keyboard events that retype
+already receives. Timing-only observations are internal diagnostics; they are
+not displayed as chord successes and never affect the ``Chords`` count or green
+chart segments.
 
 A three-second ``Known chord complete`` encouragement is shown after a word
 delimiter (including punctuation or Return), or when automatic line completion
@@ -104,8 +103,8 @@ must be no more than 35 milliseconds apart with a total span no greater than
 cleanup are accepted only when the final surviving word meets those conditions.
 Pastes, selection replacement, IME-like or programmatic edits, ambiguous timing
 resets, and uncorrected prefixes fail closed. One typed validated-chord result
-is emitted only after all of those checks; the banner, Success counter, and
-green chart segments consume that same result. Its word identity, cursor, and
+is emitted only after all of those checks; the banner, ``Chords`` counter,
+and green chart segments consume that same result. Its word identity, cursor, and
 timing fields are intentionally available to future mastery/adaptive-lesson
 consumers without coupling their storage to this UI. Session/reset cleanup
 hides the encouragement and cancels its timer.
