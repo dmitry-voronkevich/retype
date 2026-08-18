@@ -260,10 +260,11 @@ def test_validated_chord_event_drives_banner_counter_and_chart(
     assert stats.successful_chords == 0
     assert stats.chordCountText() == "Chords: 0"
     assert stats.wpms_validated_chords == [False] * 4
-    assert not book_view.chord_feedback.isVisible()
+    assert book_view.chord_feedback.isVisible()
+    assert book_view._chord_feedback_timer.isActive()
 
 
-def test_processing_console_clear_hides_success_feedback(
+def test_processing_console_clear_preserves_success_feedback(
         make_controller, qtbot):
     controller = make_controller()
     controller.loadBookRequested.emit(0)
@@ -277,8 +278,8 @@ def test_processing_console_clear_hides_success_feedback(
     controller.console.clear()
     controller.console._processing_key_press = False
 
-    assert not book_view.chord_feedback.isVisible()
-    assert not book_view._chord_feedback_timer.isActive()
+    assert book_view.chord_feedback.isVisible()
+    assert book_view._chord_feedback_timer.isActive()
 
 
 def test_cleanup_prefixes_and_cleanup_gaps_preserve_final_word_only(
@@ -385,8 +386,8 @@ def test_punctuation_newline_and_repeated_delimiters_finalize_once(
     assert book_view.progress == 100
 
     controller.console.clear()
-    assert not book_view.chord_feedback.isVisible()
-    assert not book_view._chord_feedback_timer.isActive()
+    assert book_view.chord_feedback.isVisible()
+    assert book_view._chord_feedback_timer.isActive()
 
 
 def test_nonempty_mutation_selection_replacement_and_reset_fail_closed(
@@ -418,11 +419,11 @@ def test_nonempty_mutation_selection_replacement_and_reset_fail_closed(
     assert book_view.chord_feedback.isVisible()
     assert book_view._chord_feedback_timer.isActive()
     stats.resetSession()
-    assert not book_view.chord_feedback.isVisible()
-    assert not book_view._chord_feedback_timer.isActive()
+    assert book_view.chord_feedback.isVisible()
+    assert book_view._chord_feedback_timer.isActive()
 
 
-def test_console_clear_hides_chord_feedback(
+def test_console_clear_preserves_chord_feedback(
         make_controller, qtbot):
     controller = make_controller()
     controller.loadBookRequested.emit(0)
@@ -436,8 +437,8 @@ def test_console_clear_hides_chord_feedback(
 
     controller.console.clear()
 
-    assert not book_view.chord_feedback.isVisible()
-    assert not book_view._chord_feedback_timer.isActive()
+    assert book_view.chord_feedback.isVisible()
+    assert book_view._chord_feedback_timer.isActive()
 
 
 def test_automatic_chapter_advance_preserves_chord_feedback(
@@ -462,7 +463,7 @@ def test_automatic_chapter_advance_preserves_chord_feedback(
     assert book_view._chord_feedback_timer.isActive()
 
 
-def test_cursor_moving_chapter_reset_hides_chord_feedback(
+def test_cursor_moving_chapter_reset_preserves_chord_feedback(
         make_controller, qtbot):
     controller = make_controller()
     controller.loadBookRequested.emit(0)
@@ -476,11 +477,11 @@ def test_cursor_moving_chapter_reset_hides_chord_feedback(
 
     book_view.setChapter(book_view.chapter_pos, move_cursor=True)
 
-    assert not book_view.chord_feedback.isVisible()
-    assert not book_view._chord_feedback_timer.isActive()
+    assert book_view.chord_feedback.isVisible()
+    assert book_view._chord_feedback_timer.isActive()
 
 
-def test_nonmoving_chapter_navigation_hides_chord_feedback(
+def test_nonmoving_chapter_navigation_preserves_chord_feedback(
         make_controller, qtbot):
     controller = make_controller()
     controller.loadBookRequested.emit(0)
@@ -496,8 +497,8 @@ def test_nonmoving_chapter_navigation_hides_chord_feedback(
 
     book_view.nextChapter()
 
-    assert not book_view.chord_feedback.isVisible()
-    assert not book_view._chord_feedback_timer.isActive()
+    assert book_view.chord_feedback.isVisible()
+    assert book_view._chord_feedback_timer.isActive()
 
 
 def test_loads_chords_and_updates_hint_state(make_controller, qtbot, tmp_path):

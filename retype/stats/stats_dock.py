@@ -23,7 +23,6 @@ class StatsDock(QWidget):
     # The authoritative domain event. Every success subscriber (banner,
     # counter, and green chart marking) consumes this typed result.
     validatedChordDetected = pyqtSignal(object)
-    successfulChordFeedbackReset = pyqtSignal()
 
     def __init__(self, book_view, parent=None):
         # type: (StatsDock, BookView, QWidget | None) -> None
@@ -314,7 +313,6 @@ class StatsDock(QWidget):
         self.chord_detector.reset()
         self._resetCandidate()
         self._preserve_empty_text_reset = False
-        self.successfulChordFeedbackReset.emit()
 
     def _onTextChanged(self, text):
         # type: (StatsDock, str) -> None

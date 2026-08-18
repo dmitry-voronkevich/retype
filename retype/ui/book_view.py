@@ -295,8 +295,6 @@ class BookView(QWidget):
         self.chord_feedback.setVisible(False)
         self.stats_dock.validatedChordDetected.connect(
             self._showValidatedChordFeedback)
-        self.stats_dock.successfulChordFeedbackReset.connect(
-            self._hideLikelyChordFeedback)
 
         self.layout_.addWidget(self.toolbar)
         self.layout_.addWidget(self.splitter)
