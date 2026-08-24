@@ -24,12 +24,31 @@ BACKSPACE_KEY = 0x01000003
 
 
 @dataclass(frozen=True)
+class ValidatedChord:
+    """A final editor token accepted by the bounded chord-success heuristic.
+
+    This is deliberately an output-validation result, not a device-origin
+    claim. Its timing fields support future mastery statistics and UI effects
+    without reinterpreting a neutral Likely timing observation as success.
+    """
+
+    word: str
+    dictionary_key: str
+    expected_word: str
+    book_cursor: int
+    editor_token_start: int
+    duration_ms: float
+    max_intercharacter_ms: float
+    completed_on_line_end: bool
+
+
+@dataclass(frozen=True)
 class LikelyChordBurst:
     """One observation in a short output burst.
 
     ``is_new`` is true only for the observation that crosses the minimum burst
-    length.  Later characters in the same burst are returned as continuations
-    so the chart can colour all output without counting one burst repeatedly.
+    length. Later characters in the same burst are returned as continuations
+    so diagnostic consumers can avoid counting one burst repeatedly.
     """
 
     output: str
@@ -164,17 +183,21 @@ class KeyboardChordDetector:
             return
         self._last_timestamp = timestamp
 
+    def timestamp_for_event(self, event):
+        # type: (KeyboardChordDetector, object) -> float | None
+        """Return the normalized event timestamp used by this heuristic."""
+        timestamp_method = getattr(event, 'timestamp', None)
+        timestamp = timestamp_method() if callable(timestamp_method) else None
+        # Qt can report zero for synthetic events. Let ``_timestamp`` use the
+        # deterministic fallback clock in that case.
+        if timestamp == 0:
+            timestamp = None
+        return self._timestamp(timestamp)
+
     def observe_event(self, event):
         # type: (object) -> LikelyChordBurst | None
         """Observe a ``QKeyEvent`` without requiring Qt in unit tests."""
-        timestamp = None
-        timestamp_method = getattr(event, 'timestamp', None)
-        if callable(timestamp_method):
-            timestamp = timestamp_method()
-            # Qt can report zero for synthetic events. Let ``observe`` use
-            # the deterministic fallback clock in that case.
-            if timestamp == 0:
-                timestamp = None
+        timestamp = self.timestamp_for_event(event)
 
         if self.is_backspace_event(event):
             self._observe_backspace(timestamp)

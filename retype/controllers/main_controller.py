@@ -126,7 +126,9 @@ class MainController(QObject):
 
     def setView(self, view):
         # type: (MainController, QWidget) -> None
-        # Clear console before view change
+        book_view = self.views.get(View.book_view)
+        if book_view is not None:
+            book_view.stats_dock.resetSession()
         self.console.clear()
 
         if view is self._view:

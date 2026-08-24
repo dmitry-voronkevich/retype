@@ -142,7 +142,7 @@ class HighlightingService(object):
 
         # Reached last line of this chapter, move to next one
         if len(v.tobetyped_list) == v.line_pos:
-            v.nextChapter(True)
+            v.nextChapter(True, automatic=True)
 
         # Set the line that needs to be typed next
         try:
