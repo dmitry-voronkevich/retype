@@ -28,8 +28,9 @@ class ValidatedChord:
     """A final editor token accepted by the bounded chord-success heuristic.
 
     This is deliberately an output-validation result, not a device-origin
-    claim. Its timing fields support future mastery statistics and UI effects
-    without reinterpreting a neutral Likely timing observation as success.
+    claim. Its timing fields support session mastery statistics and future UI
+    effects without reinterpreting a neutral Likely timing observation as
+    success.
     """
 
     word: str

@@ -104,9 +104,9 @@ cleanup are accepted only when the final surviving word meets those conditions.
 Pastes, selection replacement, IME-like or programmatic edits, ambiguous timing
 resets, and uncorrected prefixes fail closed. One typed validated-chord result
 is emitted only after all of those checks; the banner, ``Chords`` counter,
-and green chart segments consume that same result. Its word identity, cursor, and
-timing fields are intentionally available to future mastery/adaptive-lesson
-consumers without coupling their storage to this UI. Only expiry of the
+and green chart segments consume that same result. Its word identity, cursor,
+and timing fields are available to the session mastery tracker and future
+adaptive-lesson consumers without coupling their storage to this UI. Only expiry of the
 single-shot timer hides the encouragement; console clears, automatic
 completion, navigation, and statistics resets do not control its visibility or
 timer.
