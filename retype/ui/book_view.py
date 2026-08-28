@@ -11,7 +11,7 @@ from retype.ui.modeline import Modeline
 from retype.ui.chord_hint_bar import ChordHintBar
 from retype.services.chord_detection import ValidatedChord
 from retype.services.chords import WORD_RE, chordable_spans
-from retype.services import Autosave
+from retype.services import Autosave, ChordMasteryTracker
 from retype.stats import StatsDock
 from retype.services.theme import theme, C, Theme
 from retype.services.keymap import keymap, K, Keymap, genActions, keymapUpdate
@@ -192,6 +192,9 @@ class BookView(QWidget):
         self._console = self._controller.console
         self.autosave = None  # type: Autosave | None
         self.chords = chords or {}
+        # The tracker is a pure session service; this view merely subscribes
+        # it to the authoritative event alongside the existing UI consumers.
+        self.chord_mastery = ChordMasteryTracker()
 
         self.c_highlight, self.c_mistake, self.c_chordable = self._loadTheme()
 
@@ -295,6 +298,8 @@ class BookView(QWidget):
         self.chord_feedback.setVisible(False)
         self.stats_dock.validatedChordDetected.connect(
             self._showValidatedChordFeedback)
+        self.stats_dock.validatedChordDetected.connect(
+            self.chord_mastery.record)
 
         self.layout_.addWidget(self.toolbar)
         self.layout_.addWidget(self.splitter)
@@ -611,6 +616,12 @@ class BookView(QWidget):
         else:
             logger.error("{} not found".format(f))
 
+    def resetSessionStatistics(self):
+        # type: (BookView) -> None
+        """Reset independent presentation and mastery session statistics."""
+        self.stats_dock.resetSession()
+        self.chord_mastery.reset()
+
     def setBook(self, book, save_data=None):
         # type: (BookView, Book, SaveData | None) -> None
         self.book = book
@@ -630,7 +641,7 @@ class BookView(QWidget):
             self.stats_dock.connectConsole(self._controller.console)
         # Loading another book starts a new typing context; it must not leave
         # an earlier success label/timer or candidate alive in this view.
-        self.stats_dock.resetSession()
+        self.resetSessionStatistics()
 
         if self.autosave is None:
             self.autosave = Autosave(self._console)
@@ -667,9 +678,8 @@ class BookView(QWidget):
 
         self.viewed_chapter_pos = pos
         if not automatic:
-            stats_dock = getattr(self, 'stats_dock', None)
-            if stats_dock is not None:
-                stats_dock.resetSession()
+            if getattr(self, 'stats_dock', None) is not None:
+                self.resetSessionStatistics()
         if move_cursor:
             self._controller.console.clear()
             self.chapter_pos = pos
@@ -851,9 +861,8 @@ class BookView(QWidget):
         # type: (BookView, bool) -> None
         if self.chapter_pos is None:
             return
-        stats_dock = getattr(self, 'stats_dock', None)
-        if stats_dock is not None:
-            stats_dock.resetSession()
+        if getattr(self, 'stats_dock', None) is not None:
+            self.resetSessionStatistics()
         self._controller.console.clear()
         if move:
             self.setChapter(self.viewed_chapter_pos, True)

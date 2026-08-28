@@ -128,7 +128,7 @@ class MainController(QObject):
         # type: (MainController, QWidget) -> None
         book_view = self.views.get(View.book_view)
         if book_view is not None:
-            book_view.stats_dock.resetSession()
+            book_view.resetSessionStatistics()
         self.console.clear()
 
         if view is self._view:

@@ -3,7 +3,7 @@
 This file is the project's committed home for project-intrinsic agent knowledge: build, test, release, architecture, and sharp-edge notes that should travel with the code.
 
 - Add durable project-specific notes here as they are discovered through real work.
-- Chord congratulations use the typed `ValidatedChord` domain event in `retype/services/chord_detection.py`; preserve its separate Likely timing metric and the limitation documented in `docs/source/book-view.rst`.
+- Chord successes use the typed `ValidatedChord` domain event in `retype/services/chord_detection.py`; keep Likely timing observations separate. `retype/services/chord_mastery.py` is session-only and cannot infer direct-entry evidence from its timing fields; see `docs/source/book-view.rst`.
 - Run GUI checks through `uv run --group test pytest`. On macOS, all assertions can pass but Qt teardown can then print `QBasicTimer::start` warnings and exit 139; report this as a teardown limitation, not a green process. Timer cleanup is centralized in `tests/gui/conftest.py`.
 
 ## Maintaining this file

@@ -247,6 +247,8 @@ def test_validated_chord_event_drives_banner_counter_and_chart(
     assert result.dictionary_key == 'the'
     assert result.expected_word == 'the'
     assert result.duration_ms == 20.0
+    # The independent session service consumes the same authoritative event.
+    assert book_view.chord_mastery.progress_for('the').successful_uses == 1
 
     # A timing-only observation remains diagnostic: it changes neither the
     # validated counter, green outcome segments, nor the congratulations UI.

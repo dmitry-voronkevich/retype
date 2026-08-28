@@ -116,3 +116,22 @@ device detector or attribution claim. A fast ordinary typist or macro can
 receive the same feedback, notably for a valid short known word such as ``at``;
 slower, interrupted, or mixed output can miss it. No USB, serial, HID, Web
 Serial, raw-device, or device-companion access is used.
+
+Session-only chord mastery statistics
+-------------------------------------
+
+``ChordMasteryTracker`` is a domain service that separately consumes only
+``ValidatedChord`` results. It retains per-dictionary-key successful-use
+counts, word identities, timing summaries, and final event position data for
+the current session, and emits debug console logs for progress and threshold
+transitions. It does not store data, change lesson selection, or drive a UI.
+Timing-only observations and ordinary typed characters never enter these
+statistics.
+
+A chord requires at least ten validated successes before it can be considered
+for mastery. The available event reports a rapid character stream, but cannot
+reliably prove that the same word was no longer entered character-by-character:
+a fast typist or macro can produce the same result. Therefore the initial
+tracker records a ten-use mastery candidate and logs that limitation, but does
+not mark it mastered until a future authoritative source can supply direct-entry
+evidence.
