@@ -37,6 +37,7 @@ class ChordMasteryStorage:
         # type: (str | None) -> None
         self.path = os.path.join(user_dir, MASTERY_PROGRESS_FILENAME) \
             if user_dir else None
+        self._raw_data = {}  # type: dict[str, object]
         self._raw_progress = {}  # type: dict[object, object]
         self.writable = True
 
@@ -61,6 +62,7 @@ class ChordMasteryStorage:
                            'preserving it without overwriting')
             return {}
 
+        self._raw_data = dict(data)
         self._raw_progress = dict(data['progress'])
         progress = {}
         for key, uses in self._raw_progress.items():
@@ -79,7 +81,9 @@ class ChordMasteryStorage:
             return False
         merged = dict(self._raw_progress)
         merged.update(progress)
-        data = {'version': MASTERY_PROGRESS_FORMAT, 'progress': merged}
+        data = dict(self._raw_data)
+        data['version'] = MASTERY_PROGRESS_FORMAT
+        data['progress'] = merged
         try:
             with open(self.path, 'w', encoding='utf-8') as file:
                 json.dump(data, file, indent=2, sort_keys=True)

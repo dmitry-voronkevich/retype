@@ -36,6 +36,7 @@ def test_missing_data_starts_empty_and_partial_data_is_preserved(tmp_path):
     partial = {
         'version': 1,
         'progress': {'the': 3, 'broken': 'unknown future data'},
+        'future': {'preserve': True},
     }
     progress = _progress(tmp_path, partial)
     assert progress.progress_for('the').successful_uses == 3
@@ -44,6 +45,7 @@ def test_missing_data_starts_empty_and_partial_data_is_preserved(tmp_path):
     saved = json.loads((tmp_path / MASTERY_PROGRESS_FILENAME).read_text())
     assert saved['progress'] == {
         'the': 3, 'and': 1, 'broken': 'unknown future data'}
+    assert saved['future'] == {'preserve': True}
 
 
 def test_corrupt_or_unknown_storage_is_not_overwritten(tmp_path):

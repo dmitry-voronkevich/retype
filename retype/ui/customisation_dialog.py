@@ -198,12 +198,11 @@ class CustomisationDialog(QDialog):
         lyt.addRow("Chords JSON:", self.selectors['chords_path'])
         lyt.addRow(descl("Leave empty to disable chord hints. A --chords\
  command-line argument overrides this for a single run."))
-        adaptive = QCheckBox(
-            "Limit chord lessons to five unmastered chords (recommended)")
-        adaptive.setChecked(self.config_edited.get(
-            'adaptive_chord_lessons', True))
-        adaptive.stateChanged.connect(
-            lambda state: self.update_('adaptive_chord_lessons', bool(state)))
+        adaptive = CheckBox(
+            "Limit chord lessons to five unmastered chords (recommended)",
+            self.config_edited.get('adaptive_chord_lessons', True))
+        adaptive.changed.connect(
+            lambda value: self.update_('adaptive_chord_lessons', value))
         self.selectors['adaptive_chord_lessons'] = adaptive
         lyt.addRow(adaptive)
         lyt.addRow(descl("Uncheck to show the full loaded chord list."))
