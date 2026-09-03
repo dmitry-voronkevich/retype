@@ -67,7 +67,7 @@ def _decode_output(codes):
 
 @dataclass(frozen=True)
 class ChordLayout:
-    """The authoritative character-to-switch data from one backup layout.
+    """The authoritative character-to-switch data from one device layout.
 
     ``char_to_switch`` deliberately stores lowercase character keys.  This is
     the same normalization used by ChordMentor and lets physical conversion
@@ -93,10 +93,10 @@ def parse_layout(layout):
     # type: (object) -> ChordLayout | None
     """Parse a CharaChorder layout record without any Qt or file I/O.
 
-    CharaChorder backups store the base layout as the first list in the
-    layout record.  A layout starts a character mapping at each switch-center
-    code (600--617).  Malformed or absent records produce ``None`` so callers
-    never mistake raw chord input order for physical order.
+    Snapshot and internal fixture data store the base layout as the first list
+    in the layout record.  A layout starts a character mapping at each
+    switch-center code (600--617).  Malformed or absent records produce
+    ``None``; callers never mistake raw chord input order for physical order.
     """
     if not isinstance(layout, list) or not layout:
         return None
@@ -120,7 +120,7 @@ def parse_layout(layout):
                 seen_switches.add(code)
         elif current_switch is not None and _is_printable_ascii(code):
             # The first mapping wins, matching ChordMentor's stable layout
-            # parsing when a backup contains a repeated character.
+            # parsing when a snapshot contains a repeated character.
             key = chr(code).lower()
             if key not in mapped_keys:
                 mapped.append((key, current_switch))
