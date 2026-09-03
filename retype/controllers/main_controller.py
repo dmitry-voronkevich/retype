@@ -13,7 +13,7 @@ from retype.controllers import SafeConfig, MenuController, LibraryController
 from retype.console import Console
 from retype.constants import iswindows
 from retype.services.icon_set import Icons
-from retype.services import load_chords
+from retype.services import ChordMasteryProgress, ChordMasteryStorage, load_chords
 from retype.resource_handler import getIconsPath
 
 logger = logging.getLogger(__name__)
@@ -40,6 +40,8 @@ class MainController(QObject):
         super().__init__()
         self.config = SafeConfig(config_dir, library_paths)
         self._chords_path_override = chords_path
+        self.chord_progress = ChordMasteryProgress(
+            ChordMasteryStorage(self.config['user_dir']))
         # Keep view state local to a controller. This also makes multiple
         # isolated GUI runs in one QApplication deterministic.
         self.views = {}
@@ -99,8 +101,10 @@ class MainController(QObject):
         rdict = self.config['rdict']
         bookview_settings = self.config['bookview']
         chords = self._loadChordMap()
-        self.views[View.book_view] = BookView(self._window, self, sdict, rdict,
-                                              bookview_settings, chords)
+        self.views[View.book_view] = BookView(
+            self._window, self, sdict, rdict, bookview_settings, chords,
+            chord_progress=self.chord_progress,
+            adaptive_chord_lessons=self.config['adaptive_chord_lessons'])
 
         self.customisation_dialog = CustomisationDialog(
             self.config.raw, self._window,
@@ -256,7 +260,14 @@ class MainController(QObject):
         self.views[View.book_view].setRdict(config['rdict'])
 
         # Update chords (the CLI override, if any, keeps precedence)
-        self.views[View.book_view].setChords(self._loadChordMap())
+        book_view = self.views[View.book_view]
+        book_view.setChords(self._loadChordMap())
+        book_view.setAdaptiveChordLessons(config['adaptive_chord_lessons'])
+        if self.chord_progress.storage.path != os.path.join(
+                config['user_dir'], 'chord-mastery.json'):
+            self.chord_progress = ChordMasteryProgress(
+                ChordMasteryStorage(config['user_dir']))
+            book_view.setChordProgress(self.chord_progress)
 
         # Update steno kdict
         if View.steno_view in self.views:

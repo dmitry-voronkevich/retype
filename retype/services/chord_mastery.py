@@ -80,6 +80,31 @@ class _AccumulatedChordStats:
             self.expected_words = set()
 
 
+def is_validated_chord_result(result):
+    # type: (object) -> bool
+    """Whether ``result`` is an authoritative success eligible for progress."""
+    if not isinstance(result, ValidatedChord):
+        return False
+    if not all(isinstance(value, str) and value for value in (
+            result.word, result.dictionary_key, result.expected_word)):
+        return False
+    if result.word != result.expected_word or \
+       result.dictionary_key != result.word.lower():
+        return False
+    if not isinstance(result.completed_on_line_end, bool):
+        return False
+    if not all(isinstance(value, int) and not isinstance(value, bool) and
+               value >= 0 for value in (
+                   result.book_cursor, result.editor_token_start)):
+        return False
+    if not all(isinstance(value, (int, float)) and
+               not isinstance(value, bool) and isfinite(value) and
+               value >= 0 for value in (
+                   result.duration_ms, result.max_intercharacter_ms)):
+        return False
+    return result.max_intercharacter_ms <= result.duration_ms
+
+
 class ChordMasteryTracker:
     """Accumulate session progress from authoritative chord-success events.
 
@@ -100,29 +125,7 @@ class ChordMasteryTracker:
         self._stats = {}  # type: dict[str, _AccumulatedChordStats]
         logger.debug("Chord mastery session reset")
 
-    @staticmethod
-    def _valid_result(result):
-        # type: (object) -> bool
-        if not isinstance(result, ValidatedChord):
-            return False
-        if not all(isinstance(value, str) and value for value in (
-                result.word, result.dictionary_key, result.expected_word)):
-            return False
-        if result.word != result.expected_word or \
-                result.dictionary_key != result.word.lower():
-            return False
-        if not isinstance(result.completed_on_line_end, bool):
-            return False
-        if not all(isinstance(value, int) and not isinstance(value, bool) and
-                   value >= 0 for value in (
-                       result.book_cursor, result.editor_token_start)):
-            return False
-        if not all(isinstance(value, (int, float)) and
-                   not isinstance(value, bool) and isfinite(value) and
-                   value >= 0 for value in (
-                       result.duration_ms, result.max_intercharacter_ms)):
-            return False
-        return result.max_intercharacter_ms <= result.duration_ms
+    _valid_result = staticmethod(is_validated_chord_result)
 
     @staticmethod
     def _mastery(successful_uses):

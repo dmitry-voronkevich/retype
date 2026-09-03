@@ -105,8 +105,8 @@ Pastes, selection replacement, IME-like or programmatic edits, ambiguous timing
 resets, and uncorrected prefixes fail closed. One typed validated-chord result
 is emitted only after all of those checks; the banner, ``Chords`` counter,
 and green chart segments consume that same result. Its word identity, cursor,
-and timing fields are available to the session mastery tracker and future
-adaptive-lesson consumers without coupling their storage to this UI. Only expiry of the
+and timing fields are available to the session mastery tracker and adaptive
+lesson consumers without coupling their storage to this UI. Only expiry of the
 single-shot timer hides the encouragement; console clears, automatic
 completion, navigation, and statistics resets do not control its visibility or
 timer.
@@ -128,10 +128,26 @@ transitions. It does not store data, change lesson selection, or drive a UI.
 Timing-only observations and ordinary typed characters never enter these
 statistics.
 
-A chord requires at least ten validated successes before it can be considered
-for mastery. The available event reports a rapid character stream, but cannot
-reliably prove that the same word was no longer entered character-by-character:
-a fast typist or macro can produce the same result. Therefore the initial
-tracker records a ten-use mastery candidate and logs that limitation, but does
-not mark it mastered until a future authoritative source can supply direct-entry
-evidence.
+Adaptive chord lessons
+----------------------
+
+When a chord dictionary is loaded, retype normally teaches at most five
+incomplete chords in a chapter. Chords with recorded progress are presented
+before unseen chords; unseen chords are then ordered by how often their words
+occur in that chapter. A completed target remains available to the hint bar,
+but does not use one of the five teaching places. The cumulative validated-use
+counts are stored as ``chord-mastery.json`` beside ``save.json`` in the user
+directory, so they survive application sessions.
+
+To opt out, open Customisation, choose Paths, and uncheck **Limit chord lessons
+to five unmastered chords**. This restores the full loaded chord list. With no
+loaded dictionary, ordinary typing is unchanged and no chord lesson is active.
+
+A lesson target completes after ten validated successes. This is curriculum
+progress, not a claim that a chord device made the entry: the available event
+reports a rapid character stream but cannot distinguish a fast typist or macro.
+The session tracker therefore continues to report this as a mastery candidate,
+not direct-entry evidence. Corrupt or newer ``chord-mastery.json`` formats are
+never overwritten; retype logs the problem and treats the run as having no
+stored progress. In a valid file, malformed individual entries are ignored for
+selection but preserved when other progress is saved.

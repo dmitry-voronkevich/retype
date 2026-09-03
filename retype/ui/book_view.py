@@ -11,7 +11,8 @@ from retype.ui.modeline import Modeline
 from retype.ui.chord_hint_bar import ChordHintBar
 from retype.services.chord_detection import ValidatedChord
 from retype.services.chords import WORD_RE, chordable_spans
-from retype.services import Autosave, ChordMasteryTracker
+from retype.services import (AdaptiveChordExposure, Autosave,
+                             ChordMasteryProgress, ChordMasteryTracker)
 from retype.stats import StatsDock
 from retype.services.theme import theme, C, Theme
 from retype.services.keymap import keymap, K, Keymap, genActions, keymapUpdate
@@ -180,7 +181,9 @@ class BookView(QWidget):
             rdict=None,  # type: RDict | None
             bookview_settings=None,  # type: BookViewSettings | None
             chords=None,  # type: dict[str, object] | None
-            parent=None  # type: QWidget | None
+            parent=None,  # type: QWidget | None
+            chord_progress=None,  # type: ChordMasteryProgress | None
+            adaptive_chord_lessons=True  # type: bool
     ):
         # type: (...) -> None
         super().__init__(parent)
@@ -191,10 +194,15 @@ class BookView(QWidget):
         self._library = self._controller.library
         self._console = self._controller.console
         self.autosave = None  # type: Autosave | None
-        self.chords = chords or {}
-        # The tracker is a pure session service; this view merely subscribes
-        # it to the authoritative event alongside the existing UI consumers.
+        self.loaded_chords = chords or {}
+        self.chords = {}  # active lesson chords, refreshed for each chapter
+        self.adaptive_chord_lessons = adaptive_chord_lessons
+        # These domain services have no banner or statistics dependencies.
+        # The first is session diagnostics; the second is persisted curriculum
+        # progress and supplies the lesson selector.
         self.chord_mastery = ChordMasteryTracker()
+        self.chord_progress = chord_progress or ChordMasteryProgress()
+        self.chord_exposure = AdaptiveChordExposure(self.chord_progress)
 
         self.c_highlight, self.c_mistake, self.c_chordable = self._loadTheme()
 
@@ -300,6 +308,8 @@ class BookView(QWidget):
             self._showValidatedChordFeedback)
         self.stats_dock.validatedChordDetected.connect(
             self.chord_mastery.record)
+        self.stats_dock.validatedChordDetected.connect(
+            self._recordChordProgress)
 
         self.layout_.addWidget(self.toolbar)
         self.layout_.addWidget(self.splitter)
@@ -553,13 +563,49 @@ class BookView(QWidget):
                 break
         return False
 
-    def setChords(self, chords):
-        # type: (BookView, dict[str, object]) -> None
-        self.chords = chords or {}
+    def _refreshChordExposure(self, chapter_text=''):
+        # type: (BookView, str) -> None
+        """Apply the domain lesson selection without involving presentation."""
+        lesson = self.chord_exposure.select(
+            self.loaded_chords, chapter_text,
+            full_chord_list=not self.adaptive_chord_lessons)
+        self.chords = {key: self.loaded_chords[key] for key in lesson.hint_keys}
         bar = getattr(self, 'chord_hint_bar', None)
         if bar is not None:
             bar.setChords(self.chords)
             self.updateChordHints()
+
+    def _currentChapterText(self):
+        # type: (BookView) -> str
+        display = getattr(self, 'display', None)
+        return display.document().toPlainText() if display is not None else ''
+
+    def _recordChordProgress(self, result):
+        # type: (BookView, object) -> None
+        """Persist only validated successes, then expose the next target."""
+        if self.chord_progress.record(result) is not None:
+            self._refreshChordExposure(self._currentChapterText())
+            self.applyChordHighlighting()
+
+    def setChordProgress(self, progress):
+        # type: (BookView, ChordMasteryProgress) -> None
+        """Replace the storage-backed domain progress after a user-dir change."""
+        self.chord_progress = progress
+        self.chord_exposure = AdaptiveChordExposure(progress)
+        self._refreshChordExposure(self._currentChapterText())
+        self.applyChordHighlighting()
+
+    def setAdaptiveChordLessons(self, enabled):
+        # type: (BookView, bool) -> None
+        """Set the explicit full-dictionary opt-out mode."""
+        self.adaptive_chord_lessons = bool(enabled)
+        self._refreshChordExposure(self._currentChapterText())
+        self.applyChordHighlighting()
+
+    def setChords(self, chords):
+        # type: (BookView, dict[str, object]) -> None
+        self.loaded_chords = chords or {}
+        self._refreshChordExposure(self._currentChapterText())
         self.applyChordHighlighting()
 
     def highlight(self, full=False):
@@ -579,6 +625,8 @@ class BookView(QWidget):
                                  QUrl(image['link']), pixmap)
 
         self.display.setDocument(document)
+        self._refreshChordExposure(chapter.get('plain',
+                                               document.toPlainText()))
         self.applyChordHighlighting()
 
     def applyChordHighlighting(self):

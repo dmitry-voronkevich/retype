@@ -24,6 +24,15 @@ Library search paths
 
 Paths where *retype* should look for epub files.
 
+Chord lessons
+^^^^^^^^^^^^^
+
+The Chords JSON path selects a CharaChorder device backup for chord hints.
+When **Limit chord lessons to five unmastered chords (recommended)** is
+checked, the Book View teaches at most five incomplete chords at a time;
+uncheck it to show the full loaded chord list. With no chord dictionary loaded,
+this setting has no effect.
+
 Console
 -------
 
