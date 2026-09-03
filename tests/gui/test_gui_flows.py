@@ -550,7 +550,29 @@ def test_startup_installs_only_complete_device_snapshot(make_controller, qtbot):
     book_view = controller.view()
     assert book_view.chords == {'the': 't+h+e'}
     assert book_view.chords['the'].device_order == 't+h+e'
-    assert 'Loaded 1 chord hints' in controller._window.statusBar().currentMessage()
+    assert 'Loaded 1 usable retype hints from 1 CharaChorder CML entries' in (
+        controller._window.statusBar().currentMessage())
+
+
+def test_startup_status_distinguishes_600_cml_entries_from_usable_hints(
+        make_controller, qtbot):
+    from retype.services.device_snapshot import DeviceSnapshot
+
+    usable_entries = tuple(
+        ((ord('w'), ord('0')), tuple(map(ord, 'word{}'.format(index))))
+        for index in range(325))
+    filtered_entries = (((ord('x'),), (ord('x'),)),) * 275
+    reader = _SnapshotReader(DeviceSnapshot(
+        'CHARACHORDER TWO S3', '3.0.0', 'A',
+        tuple([606, 116, 608, 104, 607, 101] + [0] * 84),
+        usable_entries + filtered_entries,
+    ))
+    controller = make_controller(reader)
+
+    qtbot.waitUntil(lambda: len(controller.views[View.book_view].loaded_chords) == 325)
+
+    assert controller._window.statusBar().currentMessage() == (
+        'Loaded 325 usable retype hints from 600 CharaChorder CML entries (3.0.0)')
 
 
 def test_startup_failure_leaves_chords_unavailable(make_controller, qtbot):

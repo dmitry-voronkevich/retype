@@ -4,10 +4,14 @@ The checked-in cho fixture records the physical Two S3 identity and profile-A
 keymap but not individual CML C1 replies, so the C1 examples below encode the
 published/report format rather than claiming to be a hardware capture.
 """
+import sys
+import types
+
 import pytest
 
 from retype.services.device_snapshot import (
-    DeviceCancelled, DeviceReadError, DeviceSnapshotReader, UnsupportedDevice,
+    DeviceCancelled, DeviceReadError, DeviceSnapshotReader, PySerialTransport,
+    UnsupportedDevice,
     decode_chord_hex, decode_phrase_hex, is_chara_chorder_port,
     parse_cml_count, parse_cml_entry, snapshot_to_chords)
 
@@ -32,6 +36,7 @@ class FakeTransport:
         self.on_read = on_read
         self.open_error = open_error
         self.commands = []
+        self.writes = []
         self.opened = False
         self.close_count = 0
 
@@ -41,6 +46,7 @@ class FakeTransport:
             raise self.open_error
 
     def write(self, data):
+        self.writes.append(data)
         self.commands.append(data.decode().strip())
 
     def readline(self, _timeout):
@@ -52,6 +58,25 @@ class FakeTransport:
 
     def close(self):
         self.close_count += 1
+
+
+class SerializedFakeTransport(FakeTransport):
+    """Fail if a request is sent before its predecessor has been read."""
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.request_in_flight = False
+
+    def write(self, data):
+        assert not self.request_in_flight
+        super().write(data)
+        self.request_in_flight = True
+
+    def readline(self, timeout):
+        assert self.request_in_flight
+        try:
+            return super().readline(timeout)
+        finally:
+            self.request_in_flight = False
 
 
 def _reader(transport, *, total_timeout=10):
@@ -78,6 +103,49 @@ def _complete_replies(chords=None):
 
 def test_discovery_accepts_pyserial_integer_espressif_vid():
     assert is_chara_chorder_port(type('Port', (), {'vid': 0x303A, 'manufacturer': ''})())
+
+
+def test_pyserial_transport_writes_framed_commands_without_flush(monkeypatch):
+    opened = []
+
+    class PortWithoutFlush:
+        def __init__(self, path, baudrate, timeout, write_timeout):
+            self.path = path
+            self.baudrate = baudrate
+            self.timeout = timeout
+            self.write_timeout = write_timeout
+            self.writes = []
+            self.close_count = 0
+            opened.append(self)
+
+        def write(self, data):
+            self.writes.append(data)
+
+        def close(self):
+            self.close_count += 1
+
+    monkeypatch.setitem(sys.modules, 'serial', types.SimpleNamespace(
+        Serial=PortWithoutFlush))
+    transport = PySerialTransport('/dev/fake-charachorder')
+
+    transport.open()
+    transport.write(b'ID\r\n')
+    transport.write(b'CML C0\r\n')
+    transport.close()
+    transport.close()
+
+    assert opened[0].writes == [b'ID\r\n', b'CML C0\r\n']
+    assert opened[0].close_count == 1
+
+
+def test_reader_serializes_framed_requests_without_transport_flush():
+    transport = SerializedFakeTransport(_complete_replies())
+
+    _reader(transport).read()
+
+    assert not transport.request_in_flight
+    assert all(write.endswith(b'\r\n') for write in transport.writes)
+    assert transport.commands[:2] == ['ID', 'VERSION']
 
 
 def test_cml_parsing_strictly_decodes_ccos_three_replies():
@@ -118,6 +186,18 @@ def test_identity_retries_after_usb_serial_endpoint_settles():
     assert snapshot.identity == 'CHARACHORDER TWO S3'
     assert transport.commands[:2] == ['ID', 'ID']
     assert transport.close_count == 1
+
+
+def test_reading_600_cml_entries_reports_device_entry_progress():
+    entries = [([116, 104], [116, 104])] * 600
+    progress = []
+
+    snapshot = _reader(FakeTransport(_complete_replies(entries))).read(progress.append)
+
+    assert len(snapshot.chords) == 600
+    assert progress[-1] == 'Reading CharaChorder CML entries: 600 of 600…'
+    assert 'Reading CharaChorder CML entries: 1 of 600…' in progress
+    assert 'Reading CharaChorder CML entries: 50 of 600…' in progress
 
 
 def test_complete_snapshot_is_immutable_and_adapts_positional_layout():

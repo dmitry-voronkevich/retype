@@ -76,7 +76,6 @@ class PySerialTransport:
         if self._port is None:
             raise DeviceReadError("serial port was not opened")
         self._port.write(data)
-        self._port.flush()
 
     def readline(self, timeout: float) -> bytes:
         if self._port is None:
@@ -281,7 +280,8 @@ class DeviceSnapshotReader:
                 chords.append(parse_cml_entry(
                     self._request("CML C1 {}".format(index), deadline), index))
                 if progress and (index == 0 or index + 1 == total or (index + 1) % 50 == 0):
-                    progress("Reading CharaChorder chords: {} of {}…".format(index + 1, total))
+                    progress("Reading CharaChorder CML entries: {} of {}…".format(
+                        index + 1, total))
             return DeviceSnapshot(identity, version, "A", keymap, tuple(chords))
         finally:
             self._transport.close()

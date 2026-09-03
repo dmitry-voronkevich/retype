@@ -9,10 +9,13 @@ with ``CML C0`` and ``CML C1 <index>``. The operation is read-only and releases
 the port once the attempt finishes.
 
 The snapshot runs in a Qt worker thread, so the window remains usable while
-large chord maps are enumerated. A short non-blocking status-bar message was
-chosen instead of a progress bar because the existing window has no startup
-progress surface and the message reports both availability and actionable
-failure without adding a second stateful UI control.
+large chord maps are enumerated. Progress reports the number of device CML
+entries read. Once the complete snapshot is filtered, the final status reports
+the number of usable retype hints separately from that device-entry count. A
+short non-blocking status-bar message was chosen instead of a progress bar
+because the existing window has no startup progress surface and the message
+reports both availability and actionable failure without adding a second
+stateful UI control.
 
 Failure behavior
 ----------------

@@ -113,8 +113,9 @@ class MainController(QObject):
             return
         self.views[View.book_view].setChords(chords)
         self._setDeviceStatus(
-            "Loaded {} chord hints from CharaChorder Two S3 ({})".format(
-                len(chords), snapshot.version))
+            "Loaded {} usable retype hints from {} "
+            "CharaChorder CML entries ({})".format(
+                len(chords), len(snapshot.chords), snapshot.version))
 
     def _deviceChordLoadFailed(self, message):
         # type: (MainController, str) -> None
