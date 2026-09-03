@@ -140,8 +140,10 @@ counts are stored as ``chord-mastery.json`` beside ``save.json`` in the user
 directory, so they survive application sessions.
 
 To opt out, open Customisation, choose Paths, and uncheck **Limit chord lessons
-to five unmastered chords**. This restores the full loaded chord list. With no
-loaded dictionary, ordinary typing is unchanged and no chord lesson is active.
+to five unmastered chords**. This restores the full loaded chord list, and
+changing the setting or loaded dictionary refreshes the current chapter's
+underlines and hints immediately. With no loaded dictionary, ordinary typing
+is unchanged and no chord lesson is active.
 
 A lesson target completes after ten validated successes. This is curriculum
 progress, not a claim that a chord device made the entry: the available event
