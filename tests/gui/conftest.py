@@ -6,6 +6,17 @@ import pytest
 from qt import QDialog, QTimer
 
 from retype.controllers import MainController
+from retype.services.device_snapshot import DeviceReadError
+
+
+class _NoDeviceReader:
+    """Keep ordinary GUI tests independent of physical serial hardware."""
+
+    def read(self, _progress):
+        raise DeviceReadError("no test device configured")
+
+    def cancel(self):
+        pass
 
 
 @pytest.fixture
@@ -14,13 +25,15 @@ def make_controller(qapp, qtbot, tmp_path):
     library_dir = str(Path(__file__).parents[2] / "library")
     controllers = []
 
-    def factory(chords_path=None):
+    def factory(device_reader=None):
         user_dir = tmp_path / f"user-{len(controllers)}"
+        if device_reader is None:
+            device_reader = _NoDeviceReader()
         user_dir.mkdir()
         controller = MainController(
-            chords_path=str(chords_path) if chords_path else None,
             config_dir=str(user_dir),
             library_paths=[library_dir],
+            device_reader=device_reader,
         )
         controller.show()
         qtbot.wait(20)

@@ -13,7 +13,9 @@ from retype.controllers import SafeConfig, MenuController, LibraryController
 from retype.console import Console
 from retype.constants import iswindows
 from retype.services.icon_set import Icons
-from retype.services import ChordMasteryProgress, ChordMasteryStorage, load_chords
+from retype.services import (ChordMasteryProgress, ChordMasteryStorage,
+                             DeviceSnapshotReader, DeviceStartupLoader,
+                             snapshot_to_chords)
 from retype.resource_handler import getIconsPath
 
 logger = logging.getLogger(__name__)
@@ -35,11 +37,13 @@ class MainController(QObject):
     customisationDialogRequested = pyqtSignal()
     aboutDialogRequested = pyqtSignal(str)
 
-    def __init__(self, chords_path=None, config_dir=None, library_paths=None):
-        # type: (MainController, str | None, str | None, list[str] | None) -> None
+    def __init__(self, config_dir=None, library_paths=None,
+                 device_reader=None):
+        # type: (MainController, str | None, list[str] | None, DeviceSnapshotReader | None) -> None
         super().__init__()
         self.config = SafeConfig(config_dir, library_paths)
-        self._chords_path_override = chords_path
+        self._device_reader = device_reader
+        self._device_loader = None  # type: DeviceStartupLoader | None
         self.chord_progress = ChordMasteryProgress(
             ChordMasteryStorage(self.config['user_dir']))
         # Keep view state local to a controller. This also makes multiple
@@ -76,22 +80,55 @@ class MainController(QObject):
         self._connectConsole()
         self._populateLibrary()
         self._verifyUserDir()
+        self._startDeviceChordLoad()
 
-    def _loadChordMap(self):
-        # type: (MainController) -> dict[str, object]
-        """Resolve the chords JSON path (CLI override wins over config) and
-         load it. Returns an empty map when no path is set or it can't be
-         read."""
-        path = self._chords_path_override or self.config['chords_path']
-        if not path:
-            return {}
-        if not os.path.isfile(path):
-            logger.warning("chords_path '%s' does not exist; no chord hints",
-                           path)
-            return {}
-        chords = load_chords(path)
-        logger.info("Loaded %d chords from '%s'", len(chords), path)
-        return chords
+    def _setDeviceStatus(self, message):
+        # type: (MainController, str) -> None
+        logger.info("CharaChorder: %s", message)
+        self._window.statusBar().showMessage(message)
+
+    def _startDeviceChordLoad(self):
+        # type: (MainController) -> None
+        """Read once in a worker; BookView remains empty until it is complete."""
+        self._setDeviceStatus("Looking for a CharaChorder Two S3…")
+        loader = DeviceStartupLoader(self._device_reader)
+        self._device_loader = loader
+        loader.status.connect(self._setDeviceStatus)
+        loader.snapshotReady.connect(self._installDeviceSnapshot)
+        loader.failed.connect(self._deviceChordLoadFailed)
+        loader.thread.finished.connect(lambda: logger.debug(
+            "CharaChorder startup reader stopped"))
+        self._window.closing.connect(self._stopDeviceChordLoad)
+        loader.start()
+
+    def _installDeviceSnapshot(self, snapshot):
+        # type: (MainController, object) -> None
+        """Cross the sole chord-map boundary only after a full read succeeds."""
+        try:
+            chords = snapshot_to_chords(snapshot)  # type: ignore[arg-type]
+        except Exception:
+            logger.exception("Could not adapt complete CharaChorder snapshot")
+            self._deviceChordLoadFailed(
+                "CharaChorder data could not be used; chord features are unavailable")
+            return
+        self.views[View.book_view].setChords(chords)
+        self._setDeviceStatus(
+            "Loaded {} chord hints from CharaChorder Two S3 ({})".format(
+                len(chords), snapshot.version))
+
+    def _deviceChordLoadFailed(self, message):
+        # type: (MainController, str) -> None
+        self._setDeviceStatus(
+            "CharaChorder chord hints unavailable: {}".format(message))
+
+    def _stopDeviceChordLoad(self):
+        # type: (MainController) -> None
+        loader = self._device_loader
+        if loader is not None and loader.thread.isRunning():
+            loader.cancel()
+            # A serial request has a bounded one-second timeout; waiting here
+            # releases the port before Qt tears down the process.
+            loader.thread.wait(1500)
 
     def _instantiateViews(self):
         # type: (MainController) -> None
@@ -100,9 +137,8 @@ class MainController(QObject):
         sdict = self.config['sdict']
         rdict = self.config['rdict']
         bookview_settings = self.config['bookview']
-        chords = self._loadChordMap()
         self.views[View.book_view] = BookView(
-            self._window, self, sdict, rdict, bookview_settings, chords,
+            self._window, self, sdict, rdict, bookview_settings, {},
             chord_progress=self.chord_progress,
             adaptive_chord_lessons=self.config['adaptive_chord_lessons'])
 
@@ -259,9 +295,9 @@ class MainController(QObject):
         # Update rdict
         self.views[View.book_view].setRdict(config['rdict'])
 
-        # Update chords (the CLI override, if any, keeps precedence)
+        # Device data is read once at startup and is intentionally not
+        # replaced by configuration saves.
         book_view = self.views[View.book_view]
-        book_view.setChords(self._loadChordMap())
         book_view.setAdaptiveChordLessons(config['adaptive_chord_lessons'])
         if self.chord_progress.storage.path != os.path.join(
                 config['user_dir'], 'chord-mastery.json'):

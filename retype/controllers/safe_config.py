@@ -50,6 +50,11 @@ Attempting to load config from: {}".format(user_dir, custom_path))
             if not config:
                 config = deepcopy(self.defaults)
                 config['user_dir'] = user_dir
+        # Chord maps now come only from the one-shot device read. Drop the
+        # retired file setting while migrating an existing configuration, so a
+        # later save cannot preserve a misleading fallback path.
+        if config.pop('chords_path', None) is not None:
+            logger.info("Removed obsolete chords_path configuration setting")
         return config
 
     def _load(self, path):

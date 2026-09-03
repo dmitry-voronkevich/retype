@@ -9,7 +9,6 @@ never compares or approves a golden image.
 from __future__ import annotations
 
 import argparse
-import json
 import logging
 import platform
 import sys
@@ -22,6 +21,7 @@ from qt import QApplication
 
 from retype.controllers import MainController
 from retype.services.chord_detection import BACKSPACE_KEY
+from retype.services.device_snapshot import DeviceSnapshot
 
 ROOT = Path(__file__).resolve().parents[1]
 LIBRARY = ROOT / "library"
@@ -61,8 +61,8 @@ def parser() -> argparse.ArgumentParser:
     return p
 
 
-def write_chords(path: Path) -> None:
-    """Create a deterministic multi-hint backup with authoritative layout data."""
+def chord_snapshot() -> DeviceSnapshot:
+    """Create a deterministic complete device snapshot for visual evidence."""
     chords = [
         [[111, 102], [111, 102]],              # of
         [[116, 104, 101], [116, 104, 101]],    # the
@@ -83,18 +83,26 @@ def write_chords(path: Path) -> None:
         [[104, 121, 100, 101],
          [104, 121, 100, 101]],                  # hyde
     ]
-    layout = [[
+    keymap = [
         606, *map(ord, "abcdefghi"),
         608, *map(ord, "jklmnopqr"),
         607, *map(ord, "stuvwxyz"),
-    ]]
-    path.write_text(
-        json.dumps({"history": [[
-            {"type": "chords", "chords": chords},
-            {"type": "layout", "layout": layout},
-        ]]}),
-        encoding="utf-8",
-    )
+    ]
+    keymap.extend([0] * (90 - len(keymap)))
+    return DeviceSnapshot(
+        "CHARACHORDER TWO S3", "3.0.0", "A", tuple(keymap),
+        tuple((tuple(inputs), tuple(outputs)) for inputs, outputs in chords))
+
+
+class StaticSnapshotReader:
+    def __init__(self, snapshot: DeviceSnapshot):
+        self.snapshot = snapshot
+
+    def read(self, _progress):
+        return self.snapshot
+
+    def cancel(self):
+        pass
 
 
 def capture_scenario(app: QApplication, scenario: str, output: Path) -> dict:
@@ -102,15 +110,12 @@ def capture_scenario(app: QApplication, scenario: str, output: Path) -> dict:
     with tempfile.TemporaryDirectory(prefix="retype-capture-") as temp:
         user_dir = Path(temp) / "user"
         user_dir.mkdir()
-        chords_path = None
-        if scenario == "chords":
-            chords_path = Path(temp) / "chords.json"
-            write_chords(chords_path)
-
+        device_reader = StaticSnapshotReader(chord_snapshot()) \
+            if scenario == "chords" else None
         controller = MainController(
-            chords_path=str(chords_path) if chords_path else None,
             config_dir=str(user_dir),
             library_paths=[str(LIBRARY)],
+            device_reader=device_reader,
         )
         window = controller._window
         window.resize(960, 720)

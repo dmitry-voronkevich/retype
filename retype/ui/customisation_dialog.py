@@ -187,17 +187,6 @@ class CustomisationDialog(QDialog):
             lambda paths: self.update_("library_paths", paths))
         lyt.addRow(self.selectors['library_paths'])
         lyt.addRow(hline())
-        # chords_path
-        lyt.addRow(QLabel("CharaChorder device backup (JSON) for chord hints."))
-        self.selectors['chords_path'] = PathSelector(
-            self.config_edited['chords_path'],
-            window_title="Select CharaChorder backup JSON",
-            pick_file=True, name_filter="JSON files (*.json);;All files (*)")
-        self.selectors['chords_path'].changed.connect(
-            lambda t: self.update_("chords_path", t))
-        lyt.addRow("Chords JSON:", self.selectors['chords_path'])
-        lyt.addRow(descl("Leave empty to disable chord hints. A --chords\
- command-line argument overrides this for a single run."))
         adaptive = CheckBox(
             "Limit chord lessons to five unmastered chords (recommended)",
             self.config_edited.get('adaptive_chord_lessons', True))
