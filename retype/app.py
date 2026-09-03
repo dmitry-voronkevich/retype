@@ -24,8 +24,7 @@ def run():
 
     logging.info(ver_str)
 
-    controller = MainController(chords_path=args.chords[0] if args.chords
-                               else None)
+    controller = MainController()
     controller.show()
     sys.exit(app.exec())
 
@@ -39,11 +38,6 @@ def _parseArgs(desc):
         default=default_loglevel, choices=level_names,
         help=f'Set logging output level to one of:\
  {", ".join(level_names)}')
-    parser.add_argument(
-        '-c', '--chords', type=str, nargs=1, metavar='PATH',
-        default=None,
-        help='Path to a CharaChorder device backup JSON. Enables chord hints\
- above the words you type. Overrides the chords_path setting for this run.')
     return parser.parse_args()
 
 

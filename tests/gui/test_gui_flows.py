@@ -1,7 +1,5 @@
 """High-value GUI wiring checks; service and pure tests remain separate."""
 
-import json
-
 import pytest
 from qt import Qt, QWidget
 
@@ -522,27 +520,44 @@ def test_nonmoving_chapter_navigation_preserves_chord_feedback(
     assert book_view._chord_feedback_timer.isActive()
 
 
-def test_loads_chords_and_updates_hint_state(make_controller, qtbot, tmp_path):
-    chords_path = tmp_path / "chords.json"
-    chords_path.write_text(
-        json.dumps({"history": [[
-            {"type": "chords", "chords": [
-                [[116, 104, 101], [116, 104, 101]],
-            ]},
-            {"type": "layout", "layout": [[
-                606, 116, 608, 104, 607, 101,
-            ]]},
-        ]]}),
-        encoding="utf-8",
-    )
-    controller = make_controller(chords_path)
+class _SnapshotReader:
+    def __init__(self, snapshot=None, error=None):
+        self.snapshot = snapshot
+        self.error = error
+        self.cancelled = False
+
+    def read(self, _progress):
+        if self.error:
+            raise self.error
+        return self.snapshot
+
+    def cancel(self):
+        self.cancelled = True
+
+
+def test_startup_installs_only_complete_device_snapshot(make_controller, qtbot):
+    from retype.services.device_snapshot import DeviceSnapshot
+
+    reader = _SnapshotReader(DeviceSnapshot(
+        'CHARACHORDER TWO S3', '3.0.0', 'A',
+        tuple([606, 116, 608, 104, 607, 101] + [0] * 84),
+        (((116, 104, 101), (116, 104, 101)),),
+    ))
+    controller = make_controller(reader)
     controller.loadBookRequested.emit(0)
-    qtbot.wait(20)
+    qtbot.waitUntil(lambda: 'the' in controller.view().loaded_chords)
 
     book_view = controller.view()
-    assert book_view.chords == {"the": "t+h+e"}
-    assert book_view.chords["the"].device_order == "t+h+e"
-    assert book_view.chord_hint_bar.isVisible()
-    assert book_view.chord_hint_bar.objectName() == "chord-hint-bar"
-    book_view.chord_hint_bar.update_("the", 0)
-    assert "device order:" in book_view.chord_hint_bar.text()
+    assert book_view.chords == {'the': 't+h+e'}
+    assert book_view.chords['the'].device_order == 't+h+e'
+    assert 'Loaded 1 chord hints' in controller._window.statusBar().currentMessage()
+
+
+def test_startup_failure_leaves_chords_unavailable(make_controller, qtbot):
+    from retype.services.device_snapshot import DeviceReadError
+    reader = _SnapshotReader(error=DeviceReadError('serial permission denied'))
+    controller = make_controller(reader)
+    qtbot.waitUntil(lambda: 'unavailable' in
+                    controller._window.statusBar().currentMessage())
+    assert controller.views[View.book_view].loaded_chords == {}
+    assert 'serial permission denied' in controller._window.statusBar().currentMessage()

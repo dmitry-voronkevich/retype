@@ -21,6 +21,7 @@ Contents
    build-instructions
    build-docs
    dependencies
+   device-startup
    features
 
 .. toctree::

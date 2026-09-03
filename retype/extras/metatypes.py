@@ -77,14 +77,13 @@ Config = TypedDict(
     {'user_dir': str, 'library_paths': list[str], 'icon_set': str,
      'prompt': str, 'console_font': str, 'sdict': SDict, 'rdict': RDict,
      'bookview': BookViewSettings, 'window': Geometry, 'auto_newline': bool,
-     'chords_path': str, 'adaptive_chord_lessons': bool,
+     'adaptive_chord_lessons': bool,
      'steno': StenoSettings, 'hide_sysconsole': bool},
     total=False)
 
 
 class ConfigKeyTypes:
-    str = Literal['user_dir', 'icon_set', 'prompt', 'console_font',
-                  'chords_path']
+    str = Literal['user_dir', 'icon_set', 'prompt', 'console_font']
     bool = Literal['adaptive_chord_lessons', 'auto_newline', 'hide_sysconsole']
     liststr = Literal['library_paths']
     SDict = Literal['sdict']

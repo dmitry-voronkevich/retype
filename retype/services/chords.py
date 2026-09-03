@@ -1,4 +1,4 @@
-"""Parse CharaChorder backups into word and device-order chord hints.
+"""Adapt CharaChorder device data into word and device-order chord hints.
 
 The word-order notation is ordered by the first appearance of each key's
 character in the produced word.  The device-order notation uses the selected
@@ -9,15 +9,10 @@ Only real, single-word chords are kept: the produced phrase must be a single
 word (no whitespace) and the chord must use at least two keys.
 """
 import html
-import json
-import logging
 import re
 from dataclasses import dataclass
-from pathlib import Path
 
 from typing import TYPE_CHECKING
-
-logger = logging.getLogger(__name__)
 
 # What counts as a "word" for chord lookup, in both the hint bar and the
 # inline highlighting. Kept here so the two stay in lockstep.
@@ -139,7 +134,7 @@ def parse_layout(layout):
 def _input_codes(input_codes):
     # type: (object) -> list[int]
     """Keep raw positive input codes, including duplicate/action codes."""
-    if not isinstance(input_codes, list):
+    if not isinstance(input_codes, (list, tuple)):
         return []
     return [code for code in input_codes
             if isinstance(code, int) and code > 0]
@@ -224,56 +219,25 @@ class Chord(str):
         return self.input_codes
 
 
-def _backup_chords_and_layout(data):
-    # type: (object) -> tuple[list, ChordLayout | None]
-    """Select the chord and layout records from a backup."""
-    chords = None
-    layout = None
-    if isinstance(data, dict) and "history" in data:
-        history = data["history"]
-        if history and isinstance(history[0], list):
-            for item in history[0]:
-                if not isinstance(item, dict):
-                    continue
-                if item.get("type") == "chords":
-                    chords = item.get("chords")
-                elif item.get("type") == "layout":
-                    layout = item.get("layout")
-    if chords is None and isinstance(data, dict):
-        chords = data.get("chords")
-    if layout is None and isinstance(data, dict):
-        layout = data.get("layout")
-    return (chords or [], parse_layout(layout))
-
-
-def _iter_raw_chords(data):
-    # type: (object) -> list
-    """Locate the list of ``[input, output]`` chord pairs in a backup dict."""
-    return _backup_chords_and_layout(data)[0]
-
-
-def load_chords(json_path):
-    # type: (str) -> dict[str, Chord]
-    """Load a CharaChorder backup into ``{word_lower: Chord}``.
+def build_chords(raw_chords, layout_data):
+    # type: (object, object) -> dict[str, Chord]
+    """Build ``{word_lower: Chord}`` from one complete device snapshot.
 
     Entries are limited to single-word phrases produced by two or more keys.
     When the same word has several chords, the one with the fewest input keys
-    wins, retaining the existing first-entry tie behavior.
+    wins, retaining the existing first-entry tie behavior.  ``layout_data`` is
+    the profile-A keymap read through ``VAR B3``, never a disk backup.
     """
-    try:
-        data = json.loads(Path(json_path).read_text(encoding="utf-8"))
-    except (OSError, ValueError) as e:
-        logger.error("Could not read chords file '%s': %s", json_path, e)
+    layout = parse_layout(layout_data)
+    if not isinstance(raw_chords, (list, tuple)):
         return {}
-
-    raw_chords, layout = _backup_chords_and_layout(data)
     best = {}  # type: dict[str, tuple[list[int], str]]
     for entry in raw_chords:
-        if not (isinstance(entry, list) and len(entry) == 2):
+        if not (isinstance(entry, (list, tuple)) and len(entry) == 2):
             continue
         input_codes, output_codes = entry
-        if not (isinstance(input_codes, list)
-                and isinstance(output_codes, list)):
+        if not (isinstance(input_codes, (list, tuple))
+                and isinstance(output_codes, (list, tuple))):
             continue
 
         phrase = _decode_output(output_codes).strip()

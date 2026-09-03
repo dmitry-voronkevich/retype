@@ -12,6 +12,7 @@ dependencies = [
     "PyQt5>=5.15,<6",
     "ebooklib>=0.18,<1",
     "tinycss2>=1.2,<2",
+    "pyserial>=3.5,<4",
 ]
 
 [tool.setuptools]

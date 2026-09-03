@@ -14,13 +14,13 @@ def make_controller(qapp, qtbot, tmp_path):
     library_dir = str(Path(__file__).parents[2] / "library")
     controllers = []
 
-    def factory(chords_path=None):
+    def factory(device_reader=None):
         user_dir = tmp_path / f"user-{len(controllers)}"
         user_dir.mkdir()
         controller = MainController(
-            chords_path=str(chords_path) if chords_path else None,
             config_dir=str(user_dir),
             library_paths=[library_dir],
+            device_reader=device_reader,
         )
         controller.show()
         qtbot.wait(20)

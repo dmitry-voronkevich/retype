@@ -80,17 +80,19 @@ You can add more library search paths and customise retype’s operation in the 
 CharaChorder chord library
 ^^^^^^^^^^^^^^^^^^^^^^^^^
 
-You can use a CharaChorder device backup JSON to practice with your chord library. Pass the backup file with ``--chords`` (or its short form ``-c``):
+At startup, *retype* makes one read-only connection to a supported
+CharaChorder Two S3 running CCOS 3.x. It reads profile A's layout and complete
+chord map, then releases the serial port. Chord hints become available when
+that read completes; ordinary typing stays available while it runs.
 
-.. code-block:: console
-
-   $ bin/retype --chords ~/Downloads/charachorder-backup.json
-
-The file should be a CharaChorder device backup in JSON format, containing its ``chords`` data and, optionally, its ``layout`` data (as produced by the device backup/export). The command-line option overrides the ``chords_path`` setting for that run. Alternatively, in the Customisation Dialog's ``Filesystem > Paths`` section, use the ``Chords JSON`` file selector to save the backup path in the configuration; leave it empty to disable chord hints.
+If the device is disconnected, busy, unsupported, or cannot be read completely,
+chord features remain unavailable for that session. The window status message
+and application log explain the failure and how to recover (connect the
+supported device and restart *retype*). No partial device data is used.
 
 By default, retype teaches at most five unmastered chords at a time, prioritising chords already in progress. Words in the active lesson are highlighted with a dotted underline. Completed chords remain available as hints but are not new teaching targets. To restore the full loaded chord list, uncheck **Limit chord lessons to five unmastered chords (recommended)** in Customisation. The detailed lesson and progress-storage behavior is documented in the Book View reference.
 
-The chording-hints banner above the words you type shows the current or next known chord, followed by upcoming words with known chords. Each hint labels its word-order notation and, when the backup includes layout data, shows a second device-order row beneath it. The banner is hidden when no chord library is loaded.
+The chording-hints banner above the words you type shows the current or next known chord, followed by upcoming words with known chords. Each hint labels its word-order notation and shows a second device-order row derived from the profile-A layout. The banner is hidden when no device chord library is available.
 
 More information on the user interface and available features can be found in the documentation_.
 

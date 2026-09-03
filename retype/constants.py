@@ -77,7 +77,6 @@ default_config = {
         "save_splitters_on_quit": True
     },
     "auto_newline": True,
-    "chords_path": "",
     "adaptive_chord_lessons": True,
     "steno": {
         "kdict": default_steno_kdict

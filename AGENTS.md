@@ -5,6 +5,7 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 - Add durable project-specific notes here as they are discovered through real work.
 - Chord successes use the typed `ValidatedChord` domain event in `retype/services/chord_detection.py`; keep Likely timing observations separate. `retype/services/chord_mastery.py` is session-only and cannot infer direct-entry evidence from its timing fields; see `docs/source/book-view.rst`.
 - Run GUI checks through `uv run --group test pytest`. On macOS, all assertions can pass but Qt teardown can then print `QBasicTimer::start` warnings and exit 139; report this as a teardown limitation, not a green process. Timer cleanup is centralized in `tests/gui/conftest.py`.
+- The supported device path is only CharaChorder Two S3 / CCOS 3.x profile A; `retype/services/device_snapshot.py` owns its one-shot serial read and atomic handoff to `BookView.setChords`.
 
 ## Maintaining this file
 

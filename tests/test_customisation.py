@@ -1,5 +1,9 @@
+import json
+from copy import deepcopy
+
 from qt import pyqtSignal, QObject
 
+from retype.controllers.safe_config import SafeConfig
 from retype.ui import CustomisationDialog
 from retype.constants import default_config
 
@@ -14,6 +18,17 @@ def _setup():
 
 
 class TestCustomisation:
+    def test_chord_json_setting_is_removed(self, tmp_path):
+        dialog = _setup()
+        assert 'chords_path' not in default_config
+        assert 'chords_path' not in dialog.selectors
+
+        legacy = deepcopy(default_config)
+        legacy['user_dir'] = str(tmp_path)
+        legacy['chords_path'] = '/old/backup.json'
+        (tmp_path / 'config.json').write_text(json.dumps(legacy))
+        assert 'chords_path' not in SafeConfig(str(tmp_path)).raw
+
     def test_auto_newline_default_value(self):
         dialog = _setup()
         key = 'auto_newline'

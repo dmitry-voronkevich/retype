@@ -114,8 +114,10 @@ timer.
 This is a bounded timing heuristic for the observed study conditions, not a
 device detector or attribution claim. A fast ordinary typist or macro can
 receive the same feedback, notably for a valid short known word such as ``at``;
-slower, interrupted, or mixed output can miss it. No USB, serial, HID, Web
-Serial, raw-device, or device-companion access is used.
+slower, interrupted, or mixed output can miss it. The detector uses no USB,
+serial, HID, Web Serial, raw-device, or device-companion live-key access. A
+separate one-time startup read may provide its chord dictionary; it never
+attributes typed keys to the device.
 
 Session-only chord mastery statistics
 -------------------------------------
