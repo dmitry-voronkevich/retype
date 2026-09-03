@@ -333,4 +333,5 @@ class DeviceStartupLoader(QObject):
         else:
             self.snapshotReady.emit(snapshot)
         finally:
+            self.thread.quit()
             self.finished.emit()
