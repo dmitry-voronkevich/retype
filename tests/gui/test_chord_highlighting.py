@@ -124,6 +124,30 @@ def test_replacing_chords_and_chapters_refreshes_active_highlights(
     assert _hinted_words(book_view, second['plain'])[0] == 'two'
 
 
+def test_source_underlines_survive_chord_highlight_refresh(
+        make_controller, qtbot):
+    controller = make_controller()
+    controller.loadBookRequested.emit(0)
+    qtbot.wait(20)
+    book_view = controller.view()
+    chapter = _chapter('one two', '<p><u>one</u> two</p>')
+
+    book_view.setChords({'one': '1', 'two': '2'})
+    _show_chapter(book_view, chapter)
+    cursor = QTextCursor(book_view.display.document())
+    cursor.setPosition(0)
+    cursor.setPosition(3, QTextCursor.MoveMode.KeepAnchor)
+    assert cursor.charFormat().underlineStyle() == \
+        QTextCharFormat.UnderlineStyle.DotLine
+
+    book_view.setChords({'two': '2'})
+    cursor = QTextCursor(book_view.display.document())
+    cursor.setPosition(0)
+    cursor.setPosition(3, QTextCursor.MoveMode.KeepAnchor)
+    assert cursor.charFormat().underlineStyle() == \
+        QTextCharFormat.UnderlineStyle.SingleUnderline
+
+
 def test_empty_adaptive_lesson_map_clears_chord_formats(
         make_controller, qtbot):
     controller = make_controller()

@@ -23,6 +23,8 @@ logger = logging.getLogger(__name__)
 # This distinguishes the temporary chord overlay from source and mistake
 # formatting when the active lesson changes.
 CHORD_HIGHLIGHT_PROPERTY = QTextFormat.UserProperty + 1
+CHORD_UNDERLINE_STYLE_PROPERTY = QTextFormat.UserProperty + 2
+CHORD_UNDERLINE_COLOR_PROPERTY = QTextFormat.UserProperty + 3
 
 
 @theme('BookView.BookDisplay',
@@ -652,16 +654,23 @@ class BookView(QWidget):
 
         if not spans:
             return
-        clear_format = QTextCharFormat()
-        clear_format.setUnderlineStyle(
-            QTextCharFormat.UnderlineStyle.NoUnderline)
-        clear_format.setProperty(CHORD_HIGHLIGHT_PROPERTY, False)
         cursor = QTextCursor(document)
         cursor.beginEditBlock()
         for start, end in spans:
-            cursor.setPosition(start)
-            cursor.setPosition(end, QTextCursor.MoveMode.KeepAnchor)
-            cursor.mergeCharFormat(clear_format)
+            for position in range(start, end):
+                cursor.setPosition(position)
+                cursor.setPosition(position + 1,
+                                   QTextCursor.MoveMode.KeepAnchor)
+                source_format = cursor.charFormat()
+                style = source_format.property(CHORD_UNDERLINE_STYLE_PROPERTY)
+                color = source_format.property(CHORD_UNDERLINE_COLOR_PROPERTY)
+                clear_format = QTextCharFormat()
+                clear_format.setProperty(CHORD_HIGHLIGHT_PROPERTY, False)
+                if style is not None:
+                    clear_format.setUnderlineStyle(style)
+                if color is not None:
+                    clear_format.setUnderlineColor(color)
+                cursor.mergeCharFormat(clear_format)
         cursor.endEditBlock()
 
     def applyChordHighlighting(self):
@@ -686,9 +695,17 @@ class BookView(QWidget):
         cursor = QTextCursor(document)
         cursor.beginEditBlock()
         for start, end in spans:
-            cursor.setPosition(start)
-            cursor.setPosition(end, QTextCursor.MoveMode.KeepAnchor)
-            cursor.mergeCharFormat(self.chord_format)
+            for position in range(start, end):
+                cursor.setPosition(position)
+                cursor.setPosition(position + 1,
+                                   QTextCursor.MoveMode.KeepAnchor)
+                source_format = cursor.charFormat()
+                overlay = QTextCharFormat(self.chord_format)
+                overlay.setProperty(CHORD_UNDERLINE_STYLE_PROPERTY,
+                                    source_format.underlineStyle())
+                overlay.setProperty(CHORD_UNDERLINE_COLOR_PROPERTY,
+                                    source_format.underlineColor())
+                cursor.mergeCharFormat(overlay)
         cursor.endEditBlock()
 
     def anchorClicked(self, link):
