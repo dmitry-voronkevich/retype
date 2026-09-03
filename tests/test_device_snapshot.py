@@ -109,6 +109,17 @@ def test_malformed_cml_entries_fail_closed(line):
         parse_cml_entry(line, 0)
 
 
+def test_identity_retries_after_usb_serial_endpoint_settles():
+    replies = _complete_replies()
+    attempts = iter([b'', b'ID CHARACHORDER TWO S3\r\n'])
+    replies['ID'] = lambda: next(attempts)
+    transport = FakeTransport(replies)
+    snapshot = _reader(transport).read()
+    assert snapshot.identity == 'CHARACHORDER TWO S3'
+    assert transport.commands[:2] == ['ID', 'ID']
+    assert transport.close_count == 1
+
+
 def test_complete_snapshot_is_immutable_and_adapts_positional_layout():
     transport = FakeTransport(_complete_replies([
         ([ord('e'), ord('h'), ord('t')], [ord('t'), ord('h'), ord('e')]),

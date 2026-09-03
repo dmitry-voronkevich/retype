@@ -20,6 +20,10 @@ BAUD_RATE = 921600
 KEY_COUNT = 90
 MAX_CHORD_COUNT = 10000
 REQUEST_TIMEOUT_SECONDS = 1.0
+# Opening a USB CDC port can wake an otherwise idle device. Retrying only the
+# harmless identity request lets its serial endpoint settle without relaxing
+# the strict reply contract or retrying any snapshot data.
+IDENTITY_REQUEST_ATTEMPTS = 3
 TOTAL_TIMEOUT_SECONDS = 150.0
 _SUPPORTED_ID = ("CHARACHORDER", "TWO", "S3")
 _HEX = re.compile(r"[0-9a-fA-F]+$")
@@ -225,7 +229,20 @@ class DeviceSnapshotReader:
         return line
 
     def _identity(self, deadline: float) -> tuple[str, str]:
-        id_parts = self._request("ID", deadline).split()
+        id_line = None
+        for attempt in range(IDENTITY_REQUEST_ATTEMPTS):
+            try:
+                id_line = self._request("ID", deadline)
+                break
+            except DeviceReadError as exc:
+                # A CDC endpoint can need one request timeout after open before
+                # it accepts commands. Do not retry malformed/unsupported
+                # replies: those are definitive and must fail closed.
+                if (attempt + 1 == IDENTITY_REQUEST_ATTEMPTS or
+                        not str(exc).startswith("timeout waiting for reply")):
+                    raise
+        assert id_line is not None
+        id_parts = id_line.split()
         if tuple(id_parts) != ("ID",) + _SUPPORTED_ID:
             got = " ".join(id_parts[1:]) if len(id_parts) > 1 else "invalid reply"
             raise UnsupportedDevice(
