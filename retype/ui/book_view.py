@@ -1,6 +1,6 @@
 import logging
 from qt import (QWidget, QVBoxLayout, QTextBrowser, QTextDocument, QUrl,
-                QTextCursor, QTextCharFormat, QPainter, QPixmap,
+                QTextCursor, QTextCharFormat, QTextFormat, QPainter, QPixmap,
                 QToolBar, QFont, QKeySequence, Qt, QApplication, pyqtSignal,
                 QSplitter, QSize, QGuiApplication, QLabel, QTimer)
 
@@ -19,6 +19,12 @@ from retype.services.keymap import keymap, K, Keymap, genActions, keymapUpdate
 from retype.constants import default_font_family, default_font_size
 
 logger = logging.getLogger(__name__)
+
+# This distinguishes the temporary chord overlay from source and mistake
+# formatting when the active lesson changes.
+CHORD_HIGHLIGHT_PROPERTY = QTextFormat.UserProperty + 1
+CHORD_UNDERLINE_STYLE_PROPERTY = QTextFormat.UserProperty + 2
+CHORD_UNDERLINE_COLOR_PROPERTY = QTextFormat.UserProperty + 3
 
 
 @theme('BookView.BookDisplay',
@@ -256,6 +262,7 @@ class BookView(QWidget):
         self.chord_format.setUnderlineStyle(
             QTextCharFormat.UnderlineStyle.DotLine)
         self.chord_format.setUnderlineColor(self.c_chordable.fg())
+        self.chord_format.setProperty(CHORD_HIGHLIGHT_PROPERTY, True)
         feedback = getattr(self, 'chord_feedback', None)
         if feedback is not None:
             feedback.setStyleSheet(
@@ -629,26 +636,76 @@ class BookView(QWidget):
                                                document.toPlainText()))
         self.applyChordHighlighting()
 
+    def _clearChordHighlighting(self, document):
+        # type: (BookView, QTextDocument) -> None
+        """Remove only dotted underlines previously added for chord hints."""
+        spans = []  # type: list[tuple[int, int]]
+        block = document.begin()
+        while block.isValid():
+            fragments = block.begin()
+            while not fragments.atEnd():
+                fragment = fragments.fragment()
+                if fragment.isValid() and bool(fragment.charFormat().property(
+                        CHORD_HIGHLIGHT_PROPERTY)):
+                    spans.append((fragment.position(),
+                                  fragment.position() + fragment.length()))
+                fragments += 1
+            block = block.next()
+
+        if not spans:
+            return
+        cursor = QTextCursor(document)
+        cursor.beginEditBlock()
+        for start, end in spans:
+            for position in range(start, end):
+                cursor.setPosition(position)
+                cursor.setPosition(position + 1,
+                                   QTextCursor.MoveMode.KeepAnchor)
+                source_format = cursor.charFormat()
+                style = source_format.property(CHORD_UNDERLINE_STYLE_PROPERTY)
+                color = source_format.property(CHORD_UNDERLINE_COLOR_PROPERTY)
+                clear_format = QTextCharFormat()
+                clear_format.setProperty(CHORD_HIGHLIGHT_PROPERTY, False)
+                if style is not None:
+                    clear_format.setUnderlineStyle(style)
+                if color is not None:
+                    clear_format.setUnderlineColor(color)
+                cursor.mergeCharFormat(clear_format)
+        cursor.endEditBlock()
+
     def applyChordHighlighting(self):
         # type: (BookView) -> None
-        """Give every chordable word in the current chapter a dotted underline.
+        """Refresh dotted underlines for the current chord lesson.
 
-        Applied once per chapter (positions index the freshly set document);
-         the formats then travel with their characters as the mistake-tracker
-         inserts and removes text, so it needn't run on every keystroke."""
+        Chord maps can change without replacing the chapter document. Clear
+        the previous presentation overlay first, leaving source and mistake
+        formatting untouched, then apply the active lesson's spans."""
         display = getattr(self, 'display', None)
-        if display is None or not self.chords:
+        if display is None:
             return
         document = display.document()
+        if not isinstance(document, QTextDocument):
+            return
+        self._clearChordHighlighting(document)
+        if not self.chords:
+            return
         spans = chordable_spans(document.toPlainText(), self.chords)
         if not spans:
             return
         cursor = QTextCursor(document)
         cursor.beginEditBlock()
         for start, end in spans:
-            cursor.setPosition(start)
-            cursor.setPosition(end, QTextCursor.MoveMode.KeepAnchor)
-            cursor.mergeCharFormat(self.chord_format)
+            for position in range(start, end):
+                cursor.setPosition(position)
+                cursor.setPosition(position + 1,
+                                   QTextCursor.MoveMode.KeepAnchor)
+                source_format = cursor.charFormat()
+                overlay = QTextCharFormat(self.chord_format)
+                overlay.setProperty(CHORD_UNDERLINE_STYLE_PROPERTY,
+                                    source_format.underlineStyle())
+                overlay.setProperty(CHORD_UNDERLINE_COLOR_PROPERTY,
+                                    source_format.underlineColor())
+                cursor.mergeCharFormat(overlay)
         cursor.endEditBlock()
 
     def anchorClicked(self, link):
