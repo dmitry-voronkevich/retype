@@ -5,7 +5,7 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 - Add durable project-specific notes here as they are discovered through real work.
 - Chord successes use the typed `ValidatedChord` domain event in `retype/services/chord_detection.py`; keep Likely timing observations separate. `retype/services/chord_mastery.py` is session-only and cannot infer direct-entry evidence from its timing fields; see `docs/source/book-view.rst`.
 - Run GUI checks through `uv run --group test pytest`. On macOS, all assertions can pass but Qt teardown can then print `QBasicTimer::start` warnings and exit 139; report this as a teardown limitation, not a green process. Timer cleanup is centralized in `tests/gui/conftest.py`.
-- The one-shot CharaChorder startup contract and supported profile are documented in `docs/source/device-startup.rst`; `retype/services/device_snapshot.py` owns the read and atomic handoff to `BookView.setChords`. Do not restore a per-command `PySerialTransport.flush()`: on the verified Two S3 it stalls CML reads around entry 302.
+- The one-shot CharaChorder startup contract and supported profile are documented in `docs/source/device-startup.rst`; `retype/services/device_snapshot.py` owns the read and atomic handoff to `BookView.setChords`. The owner document also records the no-per-command-flush transport invariant.
 
 ## Maintaining this file
 

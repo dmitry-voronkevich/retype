@@ -32,10 +32,12 @@ Developer protocol boundary
 
 ``retype.services.device_snapshot`` owns serial discovery, request ordering,
 strict response parsing, cancellation, deadlines, and port closure. Its narrow
-``SerialTransport`` protocol is injectable for tests. It allows one request in
-flight, bounds both individual request and complete-read time, and supports
-only the verified profile-A path; do not generalize this to other devices,
-firmware, or profiles without hardware evidence.
+``SerialTransport`` protocol is injectable for tests. Commands are CRLF-framed
+and written directly; do not restore a per-command ``PySerialTransport.flush()``
+because it stalls CML reads on the verified Two S3. The reader allows one
+request in flight, bounds both individual request and complete-read time, and
+supports only the verified profile-A path; do not generalize this to other
+devices, firmware, or profiles without hardware evidence.
 
 The protocol tests use generated/sanitized CML C1 lines. The available physical
 Two S3 / CCOS 3.0.0 reference fixture records identity and profile-A keymap but
