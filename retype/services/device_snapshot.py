@@ -247,15 +247,11 @@ class DeviceSnapshotReader:
             raise DeviceReadError("profile-A keymap did not contain a usable layout")
         return tuple(values)
 
-    def read(self, progress: Callable[[str], None] | None = None) -> DeviceSnapshot:
-        deadline = time.monotonic() + self.total_timeout
+    def _read_candidate(self, path: str, deadline: float,
+                        progress: Callable[[str], None] | None) -> DeviceSnapshot:
+        # A hardware identity check follows discovery; do not trust USB metadata.
+        self._transport = self.transport_factory(path)
         try:
-            candidates = [port for port in self.list_ports()
-                          if is_chara_chorder_port(port)]
-            if not candidates:
-                raise DeviceReadError("no CharaChorder serial device found; connect a Two S3 running CCOS 3.x and restart retype")
-            # A hardware identity check follows discovery; do not trust USB metadata.
-            self._transport = self.transport_factory(_port_path(candidates[0]))
             self._transport.open()
             identity, version = self._identity(deadline)
             if progress:
@@ -270,6 +266,28 @@ class DeviceSnapshotReader:
                 if progress and (index == 0 or index + 1 == total or (index + 1) % 50 == 0):
                     progress("Reading CharaChorder chords: {} of {}…".format(index + 1, total))
             return DeviceSnapshot(identity, version, "A", keymap, tuple(chords))
+        finally:
+            self._transport.close()
+            self._transport = None
+
+    def read(self, progress: Callable[[str], None] | None = None) -> DeviceSnapshot:
+        deadline = time.monotonic() + self.total_timeout
+        try:
+            candidates = [port for port in self.list_ports()
+                          if is_chara_chorder_port(port)]
+            if not candidates:
+                raise DeviceReadError("no CharaChorder serial device found; connect a Two S3 running CCOS 3.x and restart retype")
+            last_error = None
+            for candidate in candidates:
+                self._check(deadline)
+                try:
+                    return self._read_candidate(_port_path(candidate), deadline, progress)
+                except DeviceCancelled:
+                    raise
+                except (DeviceReadError, OSError) as exc:
+                    last_error = exc
+            assert last_error is not None
+            raise last_error
         finally:
             self.close()
 

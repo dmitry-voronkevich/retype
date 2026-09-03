@@ -134,6 +134,29 @@ def test_partial_cml_snapshot_is_never_returned_and_port_closes_once():
     assert transport.close_count == 1
 
 
+def test_probe_continues_after_unsupported_candidate_and_closes_each_once():
+    first = Port()
+    first.device = '/dev/first'
+    second = Port()
+    second.device = '/dev/second'
+    rejected = FakeTransport(_complete_replies())
+    rejected.replies['ID'] = b'ID CHARACHORDER ONE M0\r\n'
+    supported = FakeTransport(_complete_replies())
+    transports = {first.device: rejected, second.device: supported}
+    reader = DeviceSnapshotReader(
+        list_ports=lambda: [first, second],
+        transport_factory=lambda path: transports[path],
+        request_timeout=0.01,
+        total_timeout=10,
+    )
+
+    snapshot = reader.read()
+
+    assert snapshot.identity == 'CHARACHORDER TWO S3'
+    assert rejected.close_count == 1
+    assert supported.close_count == 1
+
+
 def test_timeout_unsupported_command_and_identity_close_the_port_once():
     timeout = FakeTransport(_complete_replies())
     timeout.replies['ID'] = b''
