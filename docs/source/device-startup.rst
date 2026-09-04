@@ -34,6 +34,16 @@ is retried exactly once. If both replies fail, retype logs the requested index,
 escaped raw output when received, and its specific reason; it still reads later
 cells for diagnostics, then discards the entire snapshot.
 
+After a failed CML exchange, retype first reads until the CDC connection has
+been quiet for 150 milliseconds. This bounded recovery drain records and
+discards a delayed tail before the required retry or later diagnostic request.
+It prevents a fragment such as ``CML C1`` or a late ``C1 <index>`` suffix from
+being attributed to the next request, while retaining strict validation rather
+than accepting the fragment. The published Serial API requires a restful
+request/response sequence, at least 100 microseconds between commands, and
+warns that overflowing the device input buffer can crash it. The local Cho
+reference reader uses the same quiet-period approach for USB CDC replies.
+
 Developer protocol boundary
 ---------------------------
 

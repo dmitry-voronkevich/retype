@@ -21,6 +21,11 @@ KEY_COUNT = 90
 MAX_CHORD_COUNT = 10000
 REQUEST_TIMEOUT_SECONDS = 1.0
 INTER_REQUEST_DELAY_SECONDS = 0.0001
+# CCOS can finish emitting a rejected or truncated CML line after the host has
+# already timed out. Keep the port quiet before writing its retry; ccprobe's
+# reference reader uses the same 150ms quiet boundary for USB CDC replies.
+RECOVERY_QUIET_SECONDS = 0.15
+RECOVERY_DRAIN_MAX_SECONDS = 1.0
 # Opening a USB CDC port can wake an otherwise idle device. Retrying only the
 # harmless identity request lets its serial endpoint settle without relaxing
 # the strict reply contract or retrying any snapshot data.
@@ -75,6 +80,7 @@ class CmlSnapshotFailed(DeviceReadError):
 class SerialTransport(Protocol):
     def open(self) -> None: ...
     def exchange(self, request: bytes, timeout: float) -> bytes: ...
+    def drain_until_quiet(self, timeout: float) -> bytes: ...
     def close(self) -> None: ...
 
 
@@ -118,6 +124,33 @@ class PySerialTransport:
         self._has_written = True
         self._port.timeout = timeout
         return self._port.read_until(b"\n")
+
+    def drain_until_quiet(self, timeout: float) -> bytes:
+        """Read delayed output until USB CDC has been quiet for ``timeout``.
+
+        A failed CML response can be only the first fragment of a line.  It
+        cannot be allowed to become the next request's reply: the Serial API
+        requires restful request/response sequencing and warns that filling the
+        device input buffer can crash the firmware.
+        """
+        if self._port is None:
+            raise DeviceReadError("serial port was not opened")
+        collected = bytearray()
+        started = time.monotonic()
+        hard_deadline = started + RECOVERY_DRAIN_MAX_SECONDS
+        quiet_deadline = min(hard_deadline, started + timeout)
+        while True:
+            now = time.monotonic()
+            if now >= hard_deadline:
+                return bytes(collected)
+            remaining = quiet_deadline - now
+            if remaining <= 0:
+                return bytes(collected)
+            self._port.timeout = remaining
+            chunk = self._port.read(self._port.in_waiting or 1)
+            if chunk:
+                collected.extend(chunk)
+                quiet_deadline = min(hard_deadline, time.monotonic() + timeout)
 
     def close(self) -> None:
         if not self._closed:
@@ -364,6 +397,27 @@ class DeviceSnapshotReader:
         """Represent untrusted device bytes safely in one log field."""
         return repr(raw) if raw is not None else "<no output>"
 
+    def _drain_cml_tail(self, index: int, deadline: float) -> None:
+        """Quiesce delayed CML output before the next serialized request."""
+        assert self._transport is not None
+        remaining = max(0.0, deadline - time.monotonic())
+        if not remaining:
+            return
+        drain = getattr(self._transport, "drain_until_quiet", None)
+        if drain is None:
+            return
+        try:
+            stale = drain(min(RECOVERY_QUIET_SECONDS, remaining))
+        except (DeviceReadError, OSError) as exc:
+            logger.warning(
+                "CharaChorder CML C1 request index=%d recovery drain failed: %s; raw=%s",
+                index, exc, self._escaped_raw(None))
+            return
+        if stale:
+            logger.warning(
+                "CharaChorder CML C1 request index=%d discarded delayed stale output; raw=%s",
+                index, self._escaped_raw(stale))
+
     def _read_cml_entry(
             self, index: int, deadline: float
     ) -> tuple[tuple[int, ...], tuple[int, ...]] | None:
@@ -386,6 +440,9 @@ class DeviceSnapshotReader:
                 logger.warning(
                     "CharaChorder CML C1 request index=%d attempt=%d failed: %s; raw=%s",
                     index, attempt, exc, self._escaped_raw(raw))
+                # Do not put the retry or a later diagnostic CML request in
+                # front of a delayed tail from this failed exchange.
+                self._drain_cml_tail(index, deadline)
         return None
 
     def _read_candidate(self, path: str, deadline: float,

@@ -36,12 +36,14 @@ def _c1(index, input_codes, output_codes):
 class FakeTransport:
     """A serialized fake: each exchange returns only its command's reply."""
     def __init__(self, replies=None, on_exchange=None, open_error=None,
-                 exchange_error=None):
+                 exchange_error=None, delayed_output=None):
         self.replies = replies or {}
         self.on_exchange = on_exchange
         self.open_error = open_error
         self.exchange_error = exchange_error
+        self.delayed_output = list(delayed_output or [])
         self.commands = []
+        self.drain_calls = []
         self.opened = False
         self.close_count = 0
 
@@ -61,6 +63,10 @@ class FakeTransport:
         if isinstance(reply, list):
             reply = reply.pop(0) if reply else b''
         return reply() if callable(reply) else reply
+
+    def drain_until_quiet(self, timeout):
+        self.drain_calls.append(timeout)
+        return self.delayed_output.pop(0) if self.delayed_output else b''
 
     def close(self):
         self.close_count += 1
@@ -234,6 +240,29 @@ def test_pyserial_transport_waits_between_writes_without_flushing(monkeypatch):
     assert port.flushes == 0
 
 
+def test_pyserial_transport_drains_delayed_bytes_until_quiet(monkeypatch):
+    class FakeSerialPort:
+        in_waiting = 1
+
+        def __init__(self):
+            self.timeout = None
+            self.chunks = [b' delayed-tail\r\n', b'']
+
+        def read(self, _size):
+            chunk = self.chunks.pop(0)
+            clock[0] += 0.01 if chunk else 0.20
+            return chunk
+
+    clock = [0.0]
+    transport = device_snapshot.PySerialTransport('/dev/fake')
+    port = FakeSerialPort()
+    transport._port = port
+    monkeypatch.setattr(device_snapshot.time, 'monotonic', lambda: clock[0])
+
+    assert transport.drain_until_quiet(0.15) == b' delayed-tail\r\n'
+    assert port.timeout == pytest.approx(0.15)
+
+
 def test_cml_cell_retries_once_then_returns_a_complete_snapshot():
     replies = _complete_replies([([116, 104], [116, 104])])
     replies['CML C1 0'] = [b'CML C1 0 malformed\r\n',
@@ -266,6 +295,53 @@ def test_two_cml_failures_continue_later_cells_log_raw_and_fail_atomically(caplo
     assert 'index=0 attempt=1 failed: malformed CML C1 reply' in caplog.text
     assert "raw=b'CML C1 0 malformed\\r\\n'" in caplog.text
     assert 'index=0 attempt=2 failed: malformed CML C1 reply' in caplog.text
+
+
+@pytest.mark.parametrize('index, raw', [
+    (56, b'C1 56 00000000000000000000000000000000 61\r\n'),
+    (182, b'C1 182 00000000000000000000000000000000 61\r\n'),
+    (400, b'CML 400 00000000000000000000000000000000 61\r\n'),
+    (401, b'CML C1 00000000000000000000000000000000 61\r\n'),
+    (417, b'CML C1 00000000000000000000000000000000 61\r\n'),
+    (446, b'CML C1'),
+])
+def test_observed_cml_fragments_retry_once_and_are_never_accepted(index, raw):
+    command = 'CML C1 {}'.format(index)
+    transport = FakeTransport({command: [raw, raw]})
+    reader = _reader(transport)
+    reader._transport = transport
+
+    assert reader._read_cml_entry(index, device_snapshot.time.monotonic() + 1) is None
+    assert transport.commands == [command, command]
+    assert len(transport.drain_calls) == 2
+
+
+def test_delayed_cml_tail_is_drained_before_the_retry(caplog):
+    replies = _complete_replies([([116], [116])])
+    replies['CML C1 0'] = [b'CML C1', _c1(0, [116], [116])]
+    transport = FakeTransport(replies, delayed_output=[b' 0 stale-tail\r\n'])
+    caplog.set_level(logging.WARNING, logger='retype.services.device_snapshot')
+
+    snapshot = _reader(transport).read()
+
+    assert snapshot.chords[0][0][0] == 116
+    assert transport.commands.count('CML C1 0') == 2
+    assert "discarded delayed stale output; raw=b' 0 stale-tail\\r\\n'" in caplog.text
+
+
+def test_cascading_timeout_after_a_bare_cml_prefix_keeps_later_diagnostics():
+    chords = [([116], [116])] * 448
+    replies = _complete_replies(chords)
+    replies['CML C1 446'] = [b'CML C1', b'']
+    replies['CML C1 447'] = [b'', b'']
+    transport = FakeTransport(replies)
+
+    with pytest.raises(CmlSnapshotFailed, match='446, 447'):
+        _reader(transport).read()
+
+    assert transport.commands.count('CML C1 446') == 2
+    assert transport.commands.count('CML C1 447') == 2
+    assert transport.close_count == 1
 
 
 def test_failed_cml_snapshot_cannot_fall_through_to_another_device():
