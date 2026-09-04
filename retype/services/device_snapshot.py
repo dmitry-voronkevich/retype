@@ -28,6 +28,7 @@ IDENTITY_REQUEST_ATTEMPTS = 3
 TOTAL_TIMEOUT_SECONDS = 150.0
 _SUPPORTED_ID = ("CHARACHORDER", "TWO", "S3")
 _HEX = re.compile(r"[0-9a-fA-F]+$")
+_STRICT_STATUS = re.compile(r"(?:0|[1-9][0-9]*)$")
 _VERSION = re.compile(r"3\.\d+\.\d+(?:[-+][A-Za-z0-9.]+)?$")
 
 
@@ -158,6 +159,12 @@ def _parse_decimal(value: str, description: str, maximum: int | None = None) -> 
     return result
 
 
+def _parse_status(value: str) -> int:
+    if not _STRICT_STATUS.fullmatch(value):
+        raise MalformedDeviceReply("malformed device status in device reply")
+    return int(value)
+
+
 def decode_chord_hex(value: str) -> tuple[int, ...]:
     """Decode the 12 ten-bit slots in a CML C1 chord input word."""
     if len(value) != 32 or not _HEX.fullmatch(value):
@@ -208,7 +215,7 @@ def parse_cml_count(line: str) -> int:
     parts = line.split()
     if len(parts) not in (3, 4) or parts[:2] != ["CML", "C0"]:
         raise MalformedDeviceReply("malformed CML C0 reply")
-    if len(parts) == 4 and parts[3] != "0":
+    if len(parts) == 4 and _parse_status(parts[3]) != 0:
         raise DeviceRejected("CML C0 was rejected by the device")
     return _parse_decimal(parts[2], "chord count", MAX_CHORD_COUNT)
 
@@ -219,7 +226,7 @@ def parse_cml_entry(line: str, expected_index: int) -> tuple[tuple[int, ...], tu
         raise MalformedDeviceReply("malformed CML C1 reply")
     if _parse_decimal(parts[2], "chord index") != expected_index:
         raise DeviceIndexMismatch("CML C1 reply index did not match its request")
-    if len(parts) == 6 and parts[5] != "0":
+    if len(parts) == 6 and _parse_status(parts[5]) != 0:
         raise DeviceRejected("CML C1 was rejected by the device")
     return decode_chord_hex(parts[3]), decode_phrase_hex(parts[4])
 
