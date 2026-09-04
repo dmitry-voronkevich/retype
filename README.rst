@@ -54,6 +54,7 @@ Dependencies
 - ``PyQt5``
 - ``ebooklib``
 - ``tinycss2``
+- ``pyserial`` -- used for the one-time supported CharaChorder startup read
 
 Install these from the locked ``pyproject.toml`` contract with ``uv sync --locked``;
 do not install them into global Python. See ``CONTRIBUTING.md`` for the macOS

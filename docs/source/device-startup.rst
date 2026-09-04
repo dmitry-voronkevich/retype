@@ -72,3 +72,7 @@ Two S3 / CCOS 3.0.0 reference fixture records identity and profile-A keymap but
 not a captured CML C1 response, so C1 fixture values are format tests rather
 than a claim of a physical capture. Live key attribution is deliberately out of
 scope: chord detection continues to use ordinary Qt keyboard events.
+
+Physical re-testing is required before considering serial-session recovery
+hardware-validated. If the device remains unavailable after retype has quit,
+disconnect or power-cycle it before trying again.
