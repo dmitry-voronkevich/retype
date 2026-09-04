@@ -205,7 +205,7 @@ def parse_keymap_entry(line: str, expected_index: int) -> int:
     if index != expected_index:
         raise DeviceIndexMismatch("VAR B3 A1 reply index did not match its request")
     action = _parse_decimal(parts[4], "keymap action", 1023)
-    status = _parse_decimal(parts[5], "keymap status")
+    status = _parse_status(parts[5])
     if status != 0:
         raise DeviceRejected("VAR B3 A1 was rejected by the device")
     return action

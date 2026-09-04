@@ -135,6 +135,8 @@ def test_var_keymap_rejection_and_malformed_fields_have_distinct_failures():
         parse_keymap_entry('VAR B3 A1 0 nope 0', 0)
     with pytest.raises(MalformedDeviceReply):
         parse_keymap_entry('VAR B3 A1 0 606 nope', 0)
+    with pytest.raises(MalformedDeviceReply):
+        parse_keymap_entry('VAR B3 A1 0 606 01', 0)
     with pytest.raises(DeviceRejected):
         parse_keymap_entry('VAR B3 A1 0 606 1', 0)
     with pytest.raises(DeviceIndexMismatch):
