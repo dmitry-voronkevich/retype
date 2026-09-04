@@ -80,10 +80,11 @@ You can add more library search paths and customise retype’s operation in the 
 CharaChorder chord library
 ^^^^^^^^^^^^^^^^^^^^^^^^^
 
-At startup, *retype* makes one read-only connection to a supported
-CharaChorder Two S3 running CCOS 3.x. It reads profile A's layout and complete
-chord map, then releases the serial port. Chord hints become available when
-that read completes; ordinary typing stays available while it runs.
+At startup, *retype* makes one read-only startup attempt, discovering candidate
+serial ports as needed, for a supported CharaChorder Two S3 running CCOS 3.x. It
+reads profile A's layout and complete chord map, then releases each serial
+port. Chord hints become available when that read completes; ordinary typing
+stays available while it runs.
 
 If the device is disconnected, busy, unsupported, or cannot be read completely,
 chord features remain unavailable for that session. The window status message

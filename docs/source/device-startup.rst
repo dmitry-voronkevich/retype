@@ -17,10 +17,11 @@ failure without adding a second stateful UI control.
 Failure behavior
 ----------------
 
-No device, unsupported identity/version, malformed reply, unsupported command,
-timeout, cancellation, or an incomplete keymap/chord enumeration leaves chord
-features unavailable. The Book View receives a new map only after one immutable
-snapshot has been fully validated and converted. retype never reuses old or
+No device, unsupported identity/version, malformed payload, explicit device
+rejection, transport timeout, missing framing, index mismatch, cancellation, or
+an incomplete keymap/chord enumeration leaves chord features unavailable. The
+Book View receives a new map only after one immutable snapshot has been fully
+validated and converted. retype never reuses old or
 partial device data. Connect the supported device and restart to retry; the
 window status message and application log include the reason.
 
