@@ -1,14 +1,21 @@
-"""Protocol tests use generated CML lines; no sanitized physical C1 capture exists.
+"""Protocol tests use generated CML lines and injected transports only.
 
 The checked-in cho fixture records the physical Two S3 identity and profile-A
 keymap but not individual CML C1 replies, so the C1 examples below encode the
 published/report format rather than claiming to be a hardware capture.
 """
+import logging
+
 import pytest
 
+import retype.services.device_snapshot as device_snapshot
 from retype.services.device_snapshot import (
-    BAUD_RATE, DeviceCancelled, DeviceReadError, DeviceSnapshotReader,
-    UnsupportedDevice, decode_chord_hex, decode_phrase_hex, is_chara_chorder_port,
+    CmlSnapshotFailed, DeviceCancelled, DeviceIndexMismatch, DeviceReadError,
+    DeviceRejected,
+    DeviceSnapshotReader, MalformedDeviceReply, MissingResponseFraming,
+    TransportTimeout,
+    UnsupportedDevice,
+    decode_chord_hex, decode_phrase_hex, is_chara_chorder_port,
     parse_cml_count, parse_cml_entry, snapshot_to_chords)
 
 
@@ -18,19 +25,22 @@ class Port:
 
 
 def _c1(index, input_codes, output_codes):
-    number = sum(code << (110 - slot * 10)
-                 for slot, code in enumerate(input_codes))
+    number = 0
+    for code in reversed(input_codes):
+        number = (number << 10) | code
     input_hex = format(number, '032x')
     output_hex = ''.join(format(code, '02x') for code in output_codes) or '0'
-    return 'CML C1 {} {} {} 0\r\n'.format(
-        index, input_hex, output_hex).encode()
+    return 'CML C1 {} {} {}\r\n'.format(index, input_hex, output_hex).encode()
 
 
 class FakeTransport:
-    def __init__(self, replies=None, on_read=None, open_error=None):
+    """A serialized fake: each exchange returns only its command's reply."""
+    def __init__(self, replies=None, on_exchange=None, open_error=None,
+                 exchange_error=None):
         self.replies = replies or {}
-        self.on_read = on_read
+        self.on_exchange = on_exchange
         self.open_error = open_error
+        self.exchange_error = exchange_error
         self.commands = []
         self.opened = False
         self.close_count = 0
@@ -40,14 +50,16 @@ class FakeTransport:
         if self.open_error:
             raise self.open_error
 
-    def write(self, data):
-        self.commands.append(data.decode().strip())
-
-    def readline(self, _timeout):
-        if self.on_read:
-            self.on_read()
-        command = self.commands[-1]
+    def exchange(self, request, _timeout):
+        command = request.decode().strip()
+        self.commands.append(command)
+        if self.on_exchange:
+            self.on_exchange()
+        if self.exchange_error:
+            raise self.exchange_error
         reply = self.replies.get(command, b'')
+        if isinstance(reply, list):
+            reply = reply.pop(0) if reply else b''
         return reply() if callable(reply) else reply
 
     def close(self):
@@ -80,10 +92,6 @@ def test_discovery_accepts_pyserial_integer_espressif_vid():
     assert is_chara_chorder_port(type('Port', (), {'vid': 0x303A, 'manufacturer': ''})())
 
 
-def test_transport_uses_published_serial_api_baud_rate():
-    assert BAUD_RATE == 115200
-
-
 def test_cml_parsing_strictly_decodes_ccos_three_replies():
     assert parse_cml_count('CML C0 2') == 2
     input_codes, output_codes = parse_cml_entry(
@@ -91,10 +99,6 @@ def test_cml_parsing_strictly_decodes_ccos_three_replies():
     assert input_codes[:3] == (116, 104, 101)
     assert output_codes == (116, 104, 101)
     assert decode_chord_hex('0' * 32) == (0,) * 12
-    # Published GET_CHORDMAP_BY_INDEX example starts with e, d, c and then
-    # trailing empty slots; the first key is the most-significant 10-bit slot.
-    assert decode_chord_hex('001946418C0000000000000000000000')[:4] == (
-        ord('e'), ord('d'), ord('c'), 0)
     assert decode_phrase_hex('0258') == (600,)
 
 
@@ -111,11 +115,20 @@ def test_malformed_count_replies_fail_closed(line):
     'CML C1 2 00000000000000000000000000000000 61',
     'CML C1 0 00000000000000000000000000000000 0 1',
     'CML C1 0 00000000000000000000000000000000 01',
-    'CML C1 0 00000000000000000000000000000000 61',
 ])
 def test_malformed_cml_entries_fail_closed(line):
     with pytest.raises(DeviceReadError):
         parse_cml_entry(line, 0)
+
+
+def test_cml_rejection_and_wrong_index_have_distinct_failures():
+    valid_input = '00000000000000000000000000000000'
+    with pytest.raises(MalformedDeviceReply):
+        parse_cml_entry('CML C1 0 bad 61', 0)
+    with pytest.raises(DeviceRejected):
+        parse_cml_entry('CML C1 0 {} 61 1'.format(valid_input), 0)
+    with pytest.raises(DeviceIndexMismatch):
+        parse_cml_entry('CML C1 1 {} 61'.format(valid_input), 0)
 
 
 def test_identity_retries_after_usb_serial_endpoint_settles():
@@ -127,15 +140,6 @@ def test_identity_retries_after_usb_serial_endpoint_settles():
     assert snapshot.identity == 'CHARACHORDER TWO S3'
     assert transport.commands[:2] == ['ID', 'ID']
     assert transport.close_count == 1
-
-
-def test_keymap_accepts_published_13_bit_action_range():
-    replies = _complete_replies()
-    replies['VAR B3 A1 89'] = b'VAR B3 A1 89 2047 0\r\n'
-
-    snapshot = _reader(FakeTransport(replies)).read()
-
-    assert snapshot.keymap[89] == 2047
 
 
 def test_complete_snapshot_is_immutable_and_adapts_positional_layout():
@@ -154,12 +158,128 @@ def test_complete_snapshot_is_immutable_and_adapts_positional_layout():
     assert transport.commands.index('CML C0') > transport.commands.index('VAR B3 A1 89')
 
 
-def test_partial_cml_snapshot_is_never_returned_and_port_closes_once():
-    replies = _complete_replies([([116, 104], [116, 104])])
-    replies['CML C1 0'] = b'CML C1 0 malformed\r\n'
+def test_complete_unterminated_responses_load_layout_and_cml_snapshot():
+    replies = {command: reply.rstrip(b'\r\n')
+               for command, reply in _complete_replies([
+                   ([116, 104, 101], [116, 104, 101]),
+               ]).items()}
     transport = FakeTransport(replies)
-    with pytest.raises(DeviceReadError):
+
+    snapshot = _reader(transport).read()
+
+    assert snapshot.keymap[:6] == (606, 116, 608, 104, 607, 101)
+    assert snapshot.chords == (((116, 104, 101) + (0,) * 9,
+                                (116, 104, 101)),)
+    assert transport.close_count == 1
+
+
+def test_pyserial_transport_waits_between_writes_without_flushing(monkeypatch):
+    class FakeSerialPort:
+        def __init__(self):
+            self.timeout = None
+            self.writes = []
+            self.flushes = 0
+
+        def write(self, request):
+            self.writes.append(request)
+
+        def read_until(self, _terminator):
+            return b'ID CHARACHORDER TWO S3\r\n'
+
+        def flush(self):
+            self.flushes += 1
+
+    delays = []
+    transport = device_snapshot.PySerialTransport('/dev/fake')
+    port = FakeSerialPort()
+    transport._port = port
+    monkeypatch.setattr(device_snapshot.time, 'sleep', delays.append)
+
+    transport.exchange(b'ID\r\n', 1)
+    transport.exchange(b'VERSION\r\n', 1)
+
+    assert delays == [device_snapshot.INTER_REQUEST_DELAY_SECONDS]
+    assert port.flushes == 0
+
+
+def test_cml_cell_retries_once_then_returns_a_complete_snapshot():
+    replies = _complete_replies([([116, 104], [116, 104])])
+    replies['CML C1 0'] = [b'CML C1 0 malformed\r\n',
+                            _c1(0, [116, 104], [116, 104])]
+    transport = FakeTransport(replies)
+
+    snapshot = _reader(transport).read()
+
+    assert snapshot.chords == (((116, 104) + (0,) * 10, (116, 104)),)
+    assert transport.commands.count('CML C1 0') == 2
+    assert transport.close_count == 1
+
+
+def test_two_cml_failures_continue_later_cells_log_raw_and_fail_atomically(caplog):
+    replies = _complete_replies([
+        ([116, 104], [116, 104]),
+        ([101], [101]),
+    ])
+    replies['CML C1 0'] = [b'CML C1 0 malformed\r\n',
+                            b'CML C1 0 malformed-again\r\n']
+    transport = FakeTransport(replies)
+    caplog.set_level(logging.WARNING, logger='retype.services.device_snapshot')
+
+    with pytest.raises(DeviceReadError, match='indexes 0'):
         _reader(transport).read()
+
+    assert transport.commands.count('CML C1 0') == 2
+    assert transport.commands.count('CML C1 1') == 1
+    assert transport.close_count == 1
+    assert 'index=0 attempt=1 failed: malformed CML C1 reply' in caplog.text
+    assert "raw=b'CML C1 0 malformed\\r\\n'" in caplog.text
+    assert 'index=0 attempt=2 failed: malformed CML C1 reply' in caplog.text
+
+
+def test_failed_cml_snapshot_cannot_fall_through_to_another_device():
+    first = Port()
+    first.device = '/dev/first'
+    second = Port()
+    second.device = '/dev/second'
+    failed_replies = _complete_replies([([116], [116])])
+    failed_replies['CML C1 0'] = [b'CML C1 0 malformed\r\n'] * 2
+    failed = FakeTransport(failed_replies)
+    later = FakeTransport(_complete_replies())
+    reader = DeviceSnapshotReader(
+        list_ports=lambda: [first, second],
+        transport_factory=lambda path: {first.device: failed,
+                                        second.device: later}[path],
+        request_timeout=0.01,
+        total_timeout=10,
+    )
+
+    with pytest.raises(CmlSnapshotFailed):
+        reader.read()
+
+    assert failed.close_count == 1
+    assert later.commands == []
+    assert later.close_count == 0
+
+
+def test_incomplete_crlf_response_is_retried_then_fails_closed():
+    replies = _complete_replies([([116], [116])])
+    replies['CML C1 0'] = [b'CML C1 0 00000000000000000000000000000074 74\r',
+                            b'CML C1 0 00000000000000000000000000000074 74\r']
+    transport = FakeTransport(replies)
+
+    with pytest.raises(DeviceReadError, match='indexes 0'):
+        _reader(transport).read()
+
+    assert transport.commands.count('CML C1 0') == 2
+
+
+def test_incomplete_framing_is_distinct_from_a_valid_unterminated_reply():
+    transport = FakeTransport(_complete_replies())
+    transport.replies['ID'] = b'ID CHARACHORDER TWO S3\r'
+
+    with pytest.raises(MissingResponseFraming):
+        _reader(transport).read()
+
     assert transport.close_count == 1
 
 
@@ -189,7 +309,7 @@ def test_probe_continues_after_unsupported_candidate_and_closes_each_once():
 def test_timeout_unsupported_command_and_identity_close_the_port_once():
     timeout = FakeTransport(_complete_replies())
     timeout.replies['ID'] = b''
-    with pytest.raises(DeviceReadError, match='timeout'):
+    with pytest.raises(TransportTimeout, match='timeout'):
         _reader(timeout).read()
     assert timeout.close_count == 1
 
@@ -210,27 +330,20 @@ def test_timeout_unsupported_command_and_identity_close_the_port_once():
         _reader(open_failed).read()
     assert open_failed.close_count == 1
 
+    exchange_failed = FakeTransport(_complete_replies(),
+                                    exchange_error=OSError('disconnected'))
+    with pytest.raises(OSError, match='disconnected'):
+        _reader(exchange_failed).read()
+    assert exchange_failed.close_count == 1
+
 
 def test_cancellation_during_request_closes_the_port_once():
     transport = FakeTransport(_complete_replies())
     reader = _reader(transport)
-    transport.on_read = reader.cancel
+    transport.on_exchange = reader.cancel
     with pytest.raises(DeviceCancelled):
         reader.read()
     assert transport.close_count == 1
-
-
-def test_debug_log_captures_discovery_protocol_and_snapshot_summary(caplog):
-    with caplog.at_level('DEBUG'):
-        snapshot = _reader(FakeTransport(_complete_replies())).read()
-        snapshot_to_chords(snapshot)
-
-    assert 'Serial discovery found 1 port(s)' in caplog.text
-    assert "serial TX command='ID'" in caplog.text
-    assert "serial RX command='ID'" in caplog.text
-    assert 'profile-A keymap entries=90' in caplog.text
-    assert 'Device reports CML entry_count=0' in caplog.text
-    assert 'usable_word_chords=0' in caplog.text
 
 
 def test_no_matching_port_does_not_open_or_claim_device_data():

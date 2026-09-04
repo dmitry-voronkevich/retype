@@ -14,20 +14,6 @@ chosen instead of a progress bar because the existing window has no startup
 progress surface and the message reports both availability and actionable
 failure without adding a second stateful UI control.
 
-Hardware diagnostics
---------------------
-
-For a device-assisted diagnosis, start retype from the repository root and
-capture a debug log::
-
-   uv run --locked python bin/retype -l DEBUG 2>&1 | tee charachorder.log
-
-The log records discovered serial-port metadata, the selected baud rate,
-request/reply timing and raw Serial API replies, keymap and CML counts, and the
-number of usable word chords produced. Raw CML replies contain the phrases in
-your personal chord library; inspect or redact ``charachorder.log`` before
-sharing it publicly.
-
 Failure behavior
 ----------------
 
@@ -38,17 +24,25 @@ snapshot has been fully validated and converted. retype never reuses old or
 partial device data. Connect the supported device and restart to retry; the
 window status message and application log include the reason.
 
+Each command uses one serialized request/response exchange. A syntactically
+complete response is accepted when CCOS omits its trailing LF, but incomplete
+CRLF framing, multiple replies, non-ASCII data, and malformed or mismatched
+payloads fail closed. The transport waits about 100 microseconds between writes
+without flushing individual commands. For each ``CML C1`` cell, a failed reply
+is retried exactly once. If both replies fail, retype logs the requested index,
+escaped raw output when received, and its specific reason; it still reads later
+cells for diagnostics, then discards the entire snapshot.
+
 Developer protocol boundary
 ---------------------------
 
 ``retype.services.device_snapshot`` owns serial discovery, request ordering,
 strict response parsing, cancellation, deadlines, and port closure. Its narrow
-``SerialTransport`` protocol is injectable for tests. It uses the published
-115200-bps rate, allows one request in flight, enforces the protocol's minimum
-100-microsecond inter-command interval, bounds both individual request and
-complete-read time, and supports only the verified profile-A path; do not
-generalize this to other devices, firmware, or profiles without hardware
-evidence.
+``SerialTransport`` exchange protocol is injectable for tests; test transports
+must be fake and must not enumerate or open a physical device. It allows one
+request in flight, bounds both individual request and complete-read time, and
+supports only the verified profile-A path; do not generalize this to other
+devices, firmware, or profiles without hardware evidence.
 
 The protocol tests use generated/sanitized CML C1 lines. The available physical
 Two S3 / CCOS 3.0.0 reference fixture records identity and profile-A keymap but
