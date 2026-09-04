@@ -326,6 +326,30 @@ def test_pyserial_transport_cancels_and_verifies_a_single_close():
     assert transport._port is None
 
 
+def test_pyserial_transport_preserves_cancel_error_after_verified_close():
+    class CancelFailingSerialPort:
+        def __init__(self):
+            self.is_open = True
+            self.closes = 0
+
+        def cancel_read(self):
+            raise OSError('cancel failed')
+
+        def close(self):
+            self.closes += 1
+            self.is_open = False
+
+    transport = device_snapshot.PySerialTransport('/dev/fake')
+    port = CancelFailingSerialPort()
+    transport._port = port
+
+    with pytest.raises(OSError, match='cancel failed'):
+        transport.close()
+
+    assert port.closes == 1
+    assert transport._port is None
+
+
 def test_pyserial_transport_rejects_an_unverified_close():
     class StuckSerialPort:
         is_open = True
@@ -349,9 +373,18 @@ def test_new_pyserial_session_discards_only_preexisting_input(monkeypatch):
 
         def __init__(self):
             self.reset_calls = 0
+            self.timeout = None
+            self.in_waiting = 1
+            self.read_calls = 0
 
         def reset_input_buffer(self):
             self.reset_calls += 1
+
+        def read(self, _size):
+            self.read_calls += 1
+            self.in_waiting = 0
+            clock[0] += 0.01 if self.read_calls == 1 else 0.15
+            return b'late-session-tail' if self.read_calls == 1 else b''
 
         def cancel_read(self):
             pass
@@ -359,6 +392,8 @@ def test_new_pyserial_session_discards_only_preexisting_input(monkeypatch):
         def close(self):
             self.is_open = False
 
+    clock = [0.0]
+    monkeypatch.setattr(device_snapshot.time, 'monotonic', lambda: clock[0])
     port = FakeSerialPort()
     fake_serial = type('FakeSerialModule', (), {
         'Serial': staticmethod(lambda *_args, **_kwargs: port),
@@ -370,6 +405,7 @@ def test_new_pyserial_session_discards_only_preexisting_input(monkeypatch):
     transport.close()
 
     assert port.reset_calls == 1
+    assert port.read_calls == 2
 
 
 def test_cml_cell_retries_once_then_returns_a_complete_snapshot():

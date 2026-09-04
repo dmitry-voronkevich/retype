@@ -116,6 +116,7 @@ class PySerialTransport:
         # A new startup attempt must not attribute output left by a previous
         # closed session to its first request.
         self._port.reset_input_buffer()
+        self.drain_until_quiet(RECOVERY_QUIET_SECONDS)
 
     def exchange(self, request: bytes, timeout: float) -> bytes:
         """Write one request and receive its one serialized response.
@@ -184,13 +185,26 @@ class PySerialTransport:
             if port is not None:
                 # PySerial close is synchronous. Interrupting a pending read
                 # first makes closing during GUI shutdown deterministic.
+                cancel_error = None
                 try:
                     self.cancel_pending_read()
+                except Exception as exc:
+                    cancel_error = exc
+
+                close_error = None
+                try:
+                    port.close()
+                except Exception as exc:
+                    close_error = exc
                 finally:
                     self._port = None
-                    port.close()
+
                 if getattr(port, "is_open", False):
                     raise DeviceCloseError("serial port remained open after close")
+                if close_error is not None:
+                    raise close_error
+                if cancel_error is not None:
+                    raise cancel_error
 
 
 def is_chara_chorder_port(port: object) -> bool:
