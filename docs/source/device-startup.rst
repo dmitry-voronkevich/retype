@@ -25,10 +25,12 @@ cancellation, an incomplete keymap/chord enumeration, or a CML reply with the
 wrong command or index leaves chord features unavailable. A newline-delimited
 CML C1 reply that unambiguously belongs to its requested index but has malformed
 payload is skipped and counted in diagnostics; retype still enumerates every
-other CML entry. This never continues after a timeout or mismatched reply, so a
-late response cannot be assigned to a later request. The Book View receives a
-new map only after one immutable snapshot has been fully enumerated and
-converted. retype never reuses old device data. Connect the supported device
+other CML entry. Other malformed replies, including framing, command, or index
+mismatches, abort the snapshot. This never continues after a timeout or
+mismatched reply, so a late response cannot be assigned to a later request.
+The Book View receives a new map only after one immutable snapshot has been
+fully enumerated and converted. retype never reuses old device data. Connect
+the supported device
 and restart to retry; the window status message and application log include the
 reason.
 
@@ -39,7 +41,8 @@ Developer protocol boundary
 strict response parsing, cancellation, deadlines, and port closure. Its narrow
 ``SerialTransport`` protocol is injectable for tests. Commands are CRLF-framed
 and written directly; do not restore a per-command ``PySerialTransport.flush()``
-because it stalls CML reads on the verified Two S3. The reader allows one
+because it stalls CML reads on the verified Two S3. CML C1 accepts CCOS's
+optional trailing success field when it is ``0``. The reader allows one
 request in flight, bounds both individual request and complete-read time, and
 supports only the verified profile-A path; do not generalize this to other
 devices, firmware, or profiles without hardware evidence.

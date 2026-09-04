@@ -86,9 +86,11 @@ chord map, then releases the serial port. Chord hints become available when
 that read completes; ordinary typing stays available while it runs.
 
 If the device is disconnected, busy, unsupported, or cannot be read completely,
-chord features remain unavailable for that session. The window status message
-and application log explain the failure and how to recover (connect the
-supported device and restart *retype*). No partial device data is used.
+chord features remain unavailable for that session. The detailed startup
+behavior, including diagnostics for recoverable CML entries, is documented in
+the device-startup reference. The window status message and application log
+explain failures and how to recover (connect the supported device and restart
+*retype*). No partial snapshot is installed.
 
 By default, retype teaches at most five unmastered chords at a time, prioritising chords already in progress. Words in the active lesson are highlighted with a dotted underline. Completed chords remain available as hints but are not new teaching targets. To restore the full loaded chord list, uncheck **Limit chord lessons to five unmastered chords (recommended)** in Customisation. The detailed lesson and progress-storage behavior is documented in the Book View reference.
 
