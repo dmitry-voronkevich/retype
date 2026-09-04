@@ -16,10 +16,17 @@ from retype.services.chords import build_chords, parse_layout
 
 logger = logging.getLogger(__name__)
 
-BAUD_RATE = 921600
+# The published Serial API specifies 115200 bps.  In particular, this is not
+# the higher baud rate used by some older CharaChorder tooling.
+BAUD_RATE = 115200
 KEY_COUNT = 90
+MAX_KEYMAP_ACTION = 2047
 MAX_CHORD_COUNT = 10000
 REQUEST_TIMEOUT_SECONDS = 1.0
+# CCOS requires at least 100 microseconds between commands.  Responses normally
+# take longer than this, but enforcing it in the transport keeps fast/fake CDC
+# implementations from overrunning the device input buffer.
+INTER_REQUEST_DELAY_SECONDS = 0.0001
 # Opening a USB CDC port can wake an otherwise idle device. Retrying only the
 # harmless identity request lets its serial endpoint settle without relaxing
 # the strict reply contract or retrying any snapshot data.
@@ -65,18 +72,27 @@ class PySerialTransport:
         self.path = path
         self._port = None
         self._closed = False
+        self._last_write = None  # type: float | None
 
     def open(self) -> None:
         import serial
+        logger.info("Opening CharaChorder candidate port=%s baud=%d", self.path,
+                    BAUD_RATE)
         self._port = serial.Serial(self.path, BAUD_RATE,
                                    timeout=REQUEST_TIMEOUT_SECONDS,
                                    write_timeout=REQUEST_TIMEOUT_SECONDS)
+        logger.debug("Opened serial port=%s", self.path)
 
     def write(self, data: bytes) -> None:
         if self._port is None:
             raise DeviceReadError("serial port was not opened")
+        if self._last_write is not None:
+            remaining = INTER_REQUEST_DELAY_SECONDS - (
+                time.monotonic() - self._last_write)
+            if remaining > 0:
+                time.sleep(remaining)
         self._port.write(data)
-        self._port.flush()
+        self._last_write = time.monotonic()
 
     def readline(self, timeout: float) -> bytes:
         if self._port is None:
@@ -89,6 +105,7 @@ class PySerialTransport:
             self._closed = True
             if self._port is not None:
                 self._port.close()
+                logger.debug("Closed serial port=%s", self.path)
 
 
 def is_chara_chorder_port(port: object) -> bool:
@@ -130,7 +147,9 @@ def decode_chord_hex(value: str) -> tuple[int, ...]:
         raise DeviceReadError("malformed CML C1 chord input")
     number = int(value, 16)
     # The top eight bits are a chain id; profile-A chord hints do not use it.
-    return tuple((number >> shift) & 0x3ff for shift in range(0, 120, 10))
+    # The protocol prints key 1 in the most-significant 10-bit slot and trailing
+    # unused slots as zeroes. Preserve that documented order here.
+    return tuple((number >> shift) & 0x3ff for shift in range(110, -1, -10))
 
 
 def decode_phrase_hex(value: str) -> tuple[int, ...]:
@@ -157,21 +176,22 @@ def decode_phrase_hex(value: str) -> tuple[int, ...]:
 
 def parse_cml_count(line: str) -> int:
     parts = line.split()
-    if len(parts) not in (3, 4) or parts[:2] != ["CML", "C0"]:
+    # GET_CHORDMAP_COUNT has no trailing status field in the published API.
+    if len(parts) != 3 or parts[:2] != ["CML", "C0"]:
         raise DeviceReadError("malformed CML C0 reply")
-    if len(parts) == 4 and parts[3] != "0":
-        raise DeviceReadError("CML C0 was rejected by the device")
     return _parse_decimal(parts[2], "chord count", MAX_CHORD_COUNT)
 
 
 def parse_cml_entry(line: str, expected_index: int) -> tuple[tuple[int, ...], tuple[int, ...]]:
     parts = line.split()
-    if len(parts) not in (5, 6) or parts[:2] != ["CML", "C1"]:
+    # GET_CHORDMAP_BY_INDEX always returns its success/error status as field 5.
+    if len(parts) != 6 or parts[:2] != ["CML", "C1"]:
         raise DeviceReadError("malformed CML C1 reply")
     if _parse_decimal(parts[2], "chord index") != expected_index:
         raise DeviceReadError("CML C1 reply index did not match its request")
-    if len(parts) == 6 and parts[5] != "0":
-        raise DeviceReadError("CML C1 was rejected by the device")
+    if parts[5] != "0":
+        raise DeviceReadError("CML C1 was rejected by the device (status {})".format(
+            parts[5]))
     return decode_chord_hex(parts[3]), decode_phrase_hex(parts[4])
 
 
@@ -211,16 +231,27 @@ class DeviceSnapshotReader:
     def _request(self, command: str, deadline: float) -> str:
         self._check(deadline)
         assert self._transport is not None
-        self._transport.write((command + "\r\n").encode("ascii"))
+        request = (command + "\r\n").encode("ascii")
+        started = time.monotonic()
+        logger.debug("CharaChorder serial TX command=%r bytes=%r", command,
+                     request)
+        self._transport.write(request)
         timeout = min(self.request_timeout, max(0.0, deadline - time.monotonic()))
         raw = self._transport.readline(timeout)
+        elapsed_ms = (time.monotonic() - started) * 1000
+        logger.debug(
+            "CharaChorder serial RX command=%r elapsed_ms=%.1f bytes=%r",
+            command, elapsed_ms, raw)
         self._check(deadline)
         if not raw.endswith(b"\n"):
-            raise DeviceReadError('timeout waiting for reply to "{}"'.format(command))
+            raise DeviceReadError(
+                'timeout or incomplete reply to "{}" after {:.1f} ms; raw={!r}'.format(
+                    command, elapsed_ms, raw))
         try:
             line = raw.decode("ascii").strip()
         except UnicodeDecodeError as exc:
-            raise DeviceReadError("device reply was not ASCII") from exc
+            raise DeviceReadError(
+                "device reply was not ASCII; raw={!r}".format(raw)) from exc
         if not line:
             raise DeviceReadError("empty device reply")
         if line.startswith("UKN "):
@@ -232,6 +263,8 @@ class DeviceSnapshotReader:
         id_line = None
         for attempt in range(IDENTITY_REQUEST_ATTEMPTS):
             try:
+                logger.debug("Requesting device identity attempt=%d/%d",
+                             attempt + 1, IDENTITY_REQUEST_ATTEMPTS)
                 id_line = self._request("ID", deadline)
                 break
             except DeviceReadError as exc:
@@ -239,7 +272,8 @@ class DeviceSnapshotReader:
                 # it accepts commands. Do not retry malformed/unsupported
                 # replies: those are definitive and must fail closed.
                 if (attempt + 1 == IDENTITY_REQUEST_ATTEMPTS or
-                        not str(exc).startswith("timeout waiting for reply")):
+                        not str(exc).startswith(("timeout waiting for reply",
+                                                 "timeout or incomplete reply"))):
                     raise
         assert id_line is not None
         id_parts = id_line.split()
@@ -247,10 +281,12 @@ class DeviceSnapshotReader:
             got = " ".join(id_parts[1:]) if len(id_parts) > 1 else "invalid reply"
             raise UnsupportedDevice(
                 "unsupported device '{}'; retype supports CharaChorder Two S3 / CCOS 3.x".format(got))
+        logger.info("Validated CharaChorder identity=%s", " ".join(_SUPPORTED_ID))
         version_parts = self._request("VERSION", deadline).split()
         if len(version_parts) != 2 or version_parts[0] != "VERSION" or not _VERSION.fullmatch(version_parts[1]):
             raise UnsupportedDevice(
                 "unsupported CCOS version; retype supports CharaChorder Two S3 / CCOS 3.x")
+        logger.info("Validated CharaChorder CCOS version=%s", version_parts[1])
         return " ".join(_SUPPORTED_ID), version_parts[1]
 
     def _keymap(self, deadline: float) -> tuple[int, ...]:
@@ -259,9 +295,15 @@ class DeviceSnapshotReader:
             parts = self._request("VAR B3 A1 {}".format(index), deadline).split()
             if len(parts) != 6 or parts[:3] != ["VAR", "B3", "A1"] or parts[3] != str(index) or parts[5] != "0":
                 raise DeviceReadError("malformed or rejected VAR B3 A1 reply")
-            values.append(_parse_decimal(parts[4], "keymap action", 1023))
-        if parse_layout([values]) is None:
+            values.append(_parse_decimal(
+                parts[4], "keymap action", MAX_KEYMAP_ACTION))
+        layout = parse_layout([values])
+        if layout is None:
             raise DeviceReadError("profile-A keymap did not contain a usable layout")
+        logger.info(
+            "Read profile-A keymap entries=%d switches=%d mapped_characters=%d",
+            len(values), len(layout.switch_order), len(layout.char_to_switch))
+        logger.debug("CharaChorder profile-A keymap=%r", values)
         return tuple(values)
 
     def _read_candidate(self, path: str, deadline: float,
@@ -269,12 +311,14 @@ class DeviceSnapshotReader:
         # A hardware identity check follows discovery; do not trust USB metadata.
         self._transport = self.transport_factory(path)
         try:
+            logger.info("Probing CharaChorder candidate port=%s", path)
             self._transport.open()
             identity, version = self._identity(deadline)
             if progress:
                 progress("Reading CharaChorder profile-A layout…")
             keymap = self._keymap(deadline)
             total = parse_cml_count(self._request("CML C0", deadline))
+            logger.info("Device reports CML entry_count=%d", total)
             chords = []
             for index in range(total):
                 self._check(deadline)
@@ -282,6 +326,8 @@ class DeviceSnapshotReader:
                     self._request("CML C1 {}".format(index), deadline), index))
                 if progress and (index == 0 or index + 1 == total or (index + 1) % 50 == 0):
                     progress("Reading CharaChorder chords: {} of {}…".format(index + 1, total))
+            logger.info("Completed CharaChorder snapshot keymap_entries=%d cml_entries=%d",
+                        len(keymap), len(chords))
             return DeviceSnapshot(identity, version, "A", keymap, tuple(chords))
         finally:
             self._transport.close()
@@ -290,8 +336,16 @@ class DeviceSnapshotReader:
     def read(self, progress: Callable[[str], None] | None = None) -> DeviceSnapshot:
         deadline = time.monotonic() + self.total_timeout
         try:
-            candidates = [port for port in self.list_ports()
-                          if is_chara_chorder_port(port)]
+            ports = self.list_ports()
+            logger.info("Serial discovery found %d port(s)", len(ports))
+            for port in ports:
+                logger.info(
+                    "Serial port path=%r vid=%r pid=%r manufacturer=%r product=%r candidate=%s",
+                    getattr(port, "device", getattr(port, "path", None)),
+                    getattr(port, "vid", getattr(port, "vendorId", None)),
+                    getattr(port, "pid", None), getattr(port, "manufacturer", None),
+                    getattr(port, "product", None), is_chara_chorder_port(port))
+            candidates = [port for port in ports if is_chara_chorder_port(port)]
             if not candidates:
                 raise DeviceReadError("no CharaChorder serial device found; connect a Two S3 running CCOS 3.x and restart retype")
             last_error = None
@@ -302,6 +356,8 @@ class DeviceSnapshotReader:
                 except DeviceCancelled:
                     raise
                 except (DeviceReadError, OSError) as exc:
+                    logger.warning("CharaChorder candidate port=%s failed: %s",
+                                   getattr(candidate, "device", "<unknown>"), exc)
                     last_error = exc
             assert last_error is not None
             raise last_error
@@ -311,7 +367,10 @@ class DeviceSnapshotReader:
 
 def snapshot_to_chords(snapshot: DeviceSnapshot) -> dict[str, object]:
     """Adapt a complete device snapshot to the existing BookView map contract."""
-    return build_chords(snapshot.chords, [list(snapshot.keymap)])
+    chords = build_chords(snapshot.chords, [list(snapshot.keymap)])
+    logger.info("Converted CharaChorder snapshot cml_entries=%d usable_word_chords=%d",
+                len(snapshot.chords), len(chords))
+    return chords
 
 
 class DeviceStartupLoader(QObject):

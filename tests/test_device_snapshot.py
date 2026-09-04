@@ -7,8 +7,8 @@ published/report format rather than claiming to be a hardware capture.
 import pytest
 
 from retype.services.device_snapshot import (
-    DeviceCancelled, DeviceReadError, DeviceSnapshotReader, UnsupportedDevice,
-    decode_chord_hex, decode_phrase_hex, is_chara_chorder_port,
+    BAUD_RATE, DeviceCancelled, DeviceReadError, DeviceSnapshotReader,
+    UnsupportedDevice, decode_chord_hex, decode_phrase_hex, is_chara_chorder_port,
     parse_cml_count, parse_cml_entry, snapshot_to_chords)
 
 
@@ -18,12 +18,12 @@ class Port:
 
 
 def _c1(index, input_codes, output_codes):
-    number = 0
-    for code in reversed(input_codes):
-        number = (number << 10) | code
+    number = sum(code << (110 - slot * 10)
+                 for slot, code in enumerate(input_codes))
     input_hex = format(number, '032x')
     output_hex = ''.join(format(code, '02x') for code in output_codes) or '0'
-    return 'CML C1 {} {} {}\r\n'.format(index, input_hex, output_hex).encode()
+    return 'CML C1 {} {} {} 0\r\n'.format(
+        index, input_hex, output_hex).encode()
 
 
 class FakeTransport:
@@ -80,6 +80,10 @@ def test_discovery_accepts_pyserial_integer_espressif_vid():
     assert is_chara_chorder_port(type('Port', (), {'vid': 0x303A, 'manufacturer': ''})())
 
 
+def test_transport_uses_published_serial_api_baud_rate():
+    assert BAUD_RATE == 115200
+
+
 def test_cml_parsing_strictly_decodes_ccos_three_replies():
     assert parse_cml_count('CML C0 2') == 2
     input_codes, output_codes = parse_cml_entry(
@@ -87,6 +91,10 @@ def test_cml_parsing_strictly_decodes_ccos_three_replies():
     assert input_codes[:3] == (116, 104, 101)
     assert output_codes == (116, 104, 101)
     assert decode_chord_hex('0' * 32) == (0,) * 12
+    # Published GET_CHORDMAP_BY_INDEX example starts with e, d, c and then
+    # trailing empty slots; the first key is the most-significant 10-bit slot.
+    assert decode_chord_hex('001946418C0000000000000000000000')[:4] == (
+        ord('e'), ord('d'), ord('c'), 0)
     assert decode_phrase_hex('0258') == (600,)
 
 
@@ -103,6 +111,7 @@ def test_malformed_count_replies_fail_closed(line):
     'CML C1 2 00000000000000000000000000000000 61',
     'CML C1 0 00000000000000000000000000000000 0 1',
     'CML C1 0 00000000000000000000000000000000 01',
+    'CML C1 0 00000000000000000000000000000000 61',
 ])
 def test_malformed_cml_entries_fail_closed(line):
     with pytest.raises(DeviceReadError):
@@ -118,6 +127,15 @@ def test_identity_retries_after_usb_serial_endpoint_settles():
     assert snapshot.identity == 'CHARACHORDER TWO S3'
     assert transport.commands[:2] == ['ID', 'ID']
     assert transport.close_count == 1
+
+
+def test_keymap_accepts_published_13_bit_action_range():
+    replies = _complete_replies()
+    replies['VAR B3 A1 89'] = b'VAR B3 A1 89 2047 0\r\n'
+
+    snapshot = _reader(FakeTransport(replies)).read()
+
+    assert snapshot.keymap[89] == 2047
 
 
 def test_complete_snapshot_is_immutable_and_adapts_positional_layout():
@@ -200,6 +218,19 @@ def test_cancellation_during_request_closes_the_port_once():
     with pytest.raises(DeviceCancelled):
         reader.read()
     assert transport.close_count == 1
+
+
+def test_debug_log_captures_discovery_protocol_and_snapshot_summary(caplog):
+    with caplog.at_level('DEBUG'):
+        snapshot = _reader(FakeTransport(_complete_replies())).read()
+        snapshot_to_chords(snapshot)
+
+    assert 'Serial discovery found 1 port(s)' in caplog.text
+    assert "serial TX command='ID'" in caplog.text
+    assert "serial RX command='ID'" in caplog.text
+    assert 'profile-A keymap entries=90' in caplog.text
+    assert 'Device reports CML entry_count=0' in caplog.text
+    assert 'usable_word_chords=0' in caplog.text
 
 
 def test_no_matching_port_does_not_open_or_claim_device_data():
