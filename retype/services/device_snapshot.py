@@ -123,7 +123,11 @@ class PySerialTransport:
         self._port.write(request)
         self._has_written = True
         self._port.timeout = timeout
-        return self._port.read_until(b"\n")
+        first_line = self._port.read_until(b"\n")
+        buffered = self._port.in_waiting
+        if buffered:
+            first_line += self._port.read(buffered)
+        return first_line
 
     def drain_until_quiet(self, timeout: float) -> bytes:
         """Read delayed output until USB CDC has been quiet for ``timeout``.

@@ -213,6 +213,8 @@ def test_complete_unterminated_responses_load_layout_and_cml_snapshot():
 
 def test_pyserial_transport_waits_between_writes_without_flushing(monkeypatch):
     class FakeSerialPort:
+        in_waiting = 0
+
         def __init__(self):
             self.timeout = None
             self.writes = []
@@ -238,6 +240,33 @@ def test_pyserial_transport_waits_between_writes_without_flushing(monkeypatch):
 
     assert delays == [device_snapshot.INTER_REQUEST_DELAY_SECONDS]
     assert port.flushes == 0
+
+
+def test_pyserial_transport_surfaces_immediately_buffered_second_reply():
+    class FakeSerialPort:
+        def __init__(self):
+            self.in_waiting = len(b'VERSION 3.0.0\r\n')
+            self.read_sizes = []
+
+        def write(self, _request):
+            pass
+
+        def read_until(self, _terminator):
+            return b'ID CHARACHORDER TWO S3\r\n'
+
+        def read(self, size):
+            self.read_sizes.append(size)
+            self.in_waiting = 0
+            return b'VERSION 3.0.0\r\n'
+
+    transport = device_snapshot.PySerialTransport('/dev/fake')
+    port = FakeSerialPort()
+    transport._port = port
+
+    raw = transport.exchange(b'ID\r\n', 1)
+
+    assert raw == b'ID CHARACHORDER TWO S3\r\nVERSION 3.0.0\r\n'
+    assert port.read_sizes == [len(b'VERSION 3.0.0\r\n')]
 
 
 def test_pyserial_transport_drains_delayed_bytes_until_quiet(monkeypatch):
