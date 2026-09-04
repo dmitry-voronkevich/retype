@@ -189,6 +189,21 @@ def decode_phrase_hex(value: str) -> tuple[int, ...]:
     return tuple(decoded)
 
 
+def parse_keymap_entry(line: str, expected_index: int) -> int:
+    """Parse one strict VAR B3 A1 response and classify its status."""
+    parts = line.split()
+    if len(parts) != 6 or parts[:3] != ["VAR", "B3", "A1"]:
+        raise MalformedDeviceReply("malformed VAR B3 A1 reply")
+    index = _parse_decimal(parts[3], "keymap index")
+    if index != expected_index:
+        raise DeviceIndexMismatch("VAR B3 A1 reply index did not match its request")
+    action = _parse_decimal(parts[4], "keymap action", 1023)
+    status = _parse_decimal(parts[5], "keymap status")
+    if status != 0:
+        raise DeviceRejected("VAR B3 A1 was rejected by the device")
+    return action
+
+
 def parse_cml_count(line: str) -> int:
     parts = line.split()
     if len(parts) not in (3, 4) or parts[:2] != ["CML", "C0"]:
@@ -328,10 +343,8 @@ class DeviceSnapshotReader:
     def _keymap(self, deadline: float) -> tuple[int, ...]:
         values = []
         for index in range(KEY_COUNT):
-            parts = self._request("VAR B3 A1 {}".format(index), deadline).split()
-            if len(parts) != 6 or parts[:3] != ["VAR", "B3", "A1"] or parts[3] != str(index) or parts[5] != "0":
-                raise DeviceReadError("malformed or rejected VAR B3 A1 reply")
-            values.append(_parse_decimal(parts[4], "keymap action", 1023))
+            values.append(parse_keymap_entry(
+                self._request("VAR B3 A1 {}".format(index), deadline), index))
         if parse_layout([values]) is None:
             raise DeviceReadError("profile-A keymap did not contain a usable layout")
         return tuple(values)

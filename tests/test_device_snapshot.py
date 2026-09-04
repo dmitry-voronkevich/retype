@@ -16,7 +16,7 @@ from retype.services.device_snapshot import (
     TransportTimeout,
     UnsupportedDevice,
     decode_chord_hex, decode_phrase_hex, is_chara_chorder_port,
-    parse_cml_count, parse_cml_entry, snapshot_to_chords)
+    parse_cml_count, parse_cml_entry, parse_keymap_entry, snapshot_to_chords)
 
 
 class Port:
@@ -119,6 +119,17 @@ def test_malformed_count_replies_fail_closed(line):
 def test_malformed_cml_entries_fail_closed(line):
     with pytest.raises(DeviceReadError):
         parse_cml_entry(line, 0)
+
+
+def test_var_keymap_rejection_and_malformed_fields_have_distinct_failures():
+    with pytest.raises(MalformedDeviceReply):
+        parse_keymap_entry('VAR B3 A1 0 nope 0', 0)
+    with pytest.raises(MalformedDeviceReply):
+        parse_keymap_entry('VAR B3 A1 0 606 nope', 0)
+    with pytest.raises(DeviceRejected):
+        parse_keymap_entry('VAR B3 A1 0 606 1', 0)
+    with pytest.raises(DeviceIndexMismatch):
+        parse_keymap_entry('VAR B3 A1 1 606 0', 0)
 
 
 def test_cml_rejection_and_wrong_index_have_distinct_failures():
