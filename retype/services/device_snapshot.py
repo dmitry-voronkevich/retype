@@ -215,9 +215,10 @@ def parse_cml_count(line: str) -> int:
     parts = line.split()
     if len(parts) not in (3, 4) or parts[:2] != ["CML", "C0"]:
         raise MalformedDeviceReply("malformed CML C0 reply")
+    count = _parse_decimal(parts[2], "chord count", MAX_CHORD_COUNT)
     if len(parts) == 4 and _parse_status(parts[3]) != 0:
         raise DeviceRejected("CML C0 was rejected by the device")
-    return _parse_decimal(parts[2], "chord count", MAX_CHORD_COUNT)
+    return count
 
 
 def parse_cml_entry(line: str, expected_index: int) -> tuple[tuple[int, ...], tuple[int, ...]]:
@@ -226,9 +227,11 @@ def parse_cml_entry(line: str, expected_index: int) -> tuple[tuple[int, ...], tu
         raise MalformedDeviceReply("malformed CML C1 reply")
     if _parse_decimal(parts[2], "chord index") != expected_index:
         raise DeviceIndexMismatch("CML C1 reply index did not match its request")
+    chord_input = decode_chord_hex(parts[3])
+    phrase_output = decode_phrase_hex(parts[4])
     if len(parts) == 6 and _parse_status(parts[5]) != 0:
         raise DeviceRejected("CML C1 was rejected by the device")
-    return decode_chord_hex(parts[3]), decode_phrase_hex(parts[4])
+    return chord_input, phrase_output
 
 
 class DeviceSnapshotReader:

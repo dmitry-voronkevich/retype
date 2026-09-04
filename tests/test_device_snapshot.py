@@ -115,6 +115,8 @@ def test_cml_count_status_distinguishes_rejection_from_malformed_status():
         parse_cml_count('CML C0 1 abc')
     with pytest.raises(MalformedDeviceReply):
         parse_cml_count('CML C0 1 01')
+    with pytest.raises(MalformedDeviceReply):
+        parse_cml_count('CML C0 nope 1')
     with pytest.raises(DeviceRejected):
         parse_cml_count('CML C0 1 1')
 
@@ -149,6 +151,10 @@ def test_cml_rejection_and_wrong_index_have_distinct_failures():
         parse_cml_entry('CML C1 0 bad 61', 0)
     with pytest.raises(MalformedDeviceReply):
         parse_cml_entry('CML C1 0 {} 61 abc'.format(valid_input), 0)
+    with pytest.raises(MalformedDeviceReply):
+        parse_cml_entry('CML C1 0 bad 61 1', 0)
+    with pytest.raises(MalformedDeviceReply):
+        parse_cml_entry('CML C1 0 {} bad 1'.format(valid_input), 0)
     with pytest.raises(MalformedDeviceReply):
         parse_cml_entry('CML C1 0 {} 61 01'.format(valid_input), 0)
     with pytest.raises(DeviceRejected):
