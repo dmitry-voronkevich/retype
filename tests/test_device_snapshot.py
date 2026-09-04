@@ -5,12 +5,13 @@ keymap but not individual CML C1 replies, so the C1 examples below encode the
 published/report format rather than claiming to be a hardware capture.
 """
 import logging
+import sys
 
 import pytest
 
 import retype.services.device_snapshot as device_snapshot
 from retype.services.device_snapshot import (
-    CmlSnapshotFailed, DeviceCancelled, DeviceIndexMismatch, DeviceReadError,
+    CmlSnapshotFailed, DeviceCancelled, DeviceCloseError, DeviceIndexMismatch, DeviceReadError,
     DeviceRejected,
     DeviceSnapshotReader, MalformedDeviceReply, MissingResponseFraming,
     TransportTimeout,
@@ -36,14 +37,16 @@ def _c1(index, input_codes, output_codes):
 class FakeTransport:
     """A serialized fake: each exchange returns only its command's reply."""
     def __init__(self, replies=None, on_exchange=None, open_error=None,
-                 exchange_error=None, delayed_output=None):
+                 exchange_error=None, delayed_output=None, close_error=None):
         self.replies = replies or {}
         self.on_exchange = on_exchange
         self.open_error = open_error
         self.exchange_error = exchange_error
         self.delayed_output = list(delayed_output or [])
+        self.close_error = close_error
         self.commands = []
         self.drain_calls = []
+        self.cancel_read_count = 0
         self.opened = False
         self.close_count = 0
 
@@ -68,8 +71,13 @@ class FakeTransport:
         self.drain_calls.append(timeout)
         return self.delayed_output.pop(0) if self.delayed_output else b''
 
+    def cancel_pending_read(self):
+        self.cancel_read_count += 1
+
     def close(self):
         self.close_count += 1
+        if self.close_error:
+            raise self.close_error
 
 
 def _reader(transport, *, total_timeout=10):
@@ -292,6 +300,78 @@ def test_pyserial_transport_drains_delayed_bytes_until_quiet(monkeypatch):
     assert port.timeout == pytest.approx(0.15)
 
 
+def test_pyserial_transport_cancels_and_verifies_a_single_close():
+    class FakeSerialPort:
+        def __init__(self):
+            self.is_open = True
+            self.cancel_reads = 0
+            self.closes = 0
+
+        def cancel_read(self):
+            self.cancel_reads += 1
+
+        def close(self):
+            self.closes += 1
+            self.is_open = False
+
+    transport = device_snapshot.PySerialTransport('/dev/fake')
+    port = FakeSerialPort()
+    transport._port = port
+
+    transport.close()
+    transport.close()
+
+    assert port.cancel_reads == 1
+    assert port.closes == 1
+    assert transport._port is None
+
+
+def test_pyserial_transport_rejects_an_unverified_close():
+    class StuckSerialPort:
+        is_open = True
+
+        def cancel_read(self):
+            pass
+
+        def close(self):
+            pass
+
+    transport = device_snapshot.PySerialTransport('/dev/fake')
+    transport._port = StuckSerialPort()
+
+    with pytest.raises(DeviceCloseError, match='remained open'):
+        transport.close()
+
+
+def test_new_pyserial_session_discards_only_preexisting_input(monkeypatch):
+    class FakeSerialPort:
+        is_open = True
+
+        def __init__(self):
+            self.reset_calls = 0
+
+        def reset_input_buffer(self):
+            self.reset_calls += 1
+
+        def cancel_read(self):
+            pass
+
+        def close(self):
+            self.is_open = False
+
+    port = FakeSerialPort()
+    fake_serial = type('FakeSerialModule', (), {
+        'Serial': staticmethod(lambda *_args, **_kwargs: port),
+    })
+    monkeypatch.setitem(sys.modules, 'serial', fake_serial)
+    transport = device_snapshot.PySerialTransport('/dev/fake')
+
+    transport.open()
+    transport.close()
+
+    assert port.reset_calls == 1
+
+
 def test_cml_cell_retries_once_then_returns_a_complete_snapshot():
     replies = _complete_replies([([116, 104], [116, 104])])
     replies['CML C1 0'] = [b'CML C1 0 malformed\r\n',
@@ -371,6 +451,39 @@ def test_cascading_timeout_after_a_bare_cml_prefix_keeps_later_diagnostics():
     assert transport.commands.count('CML C1 446') == 2
     assert transport.commands.count('CML C1 447') == 2
     assert transport.close_count == 1
+
+
+def test_partial_cml_then_no_responses_cancels_and_closes_once():
+    chords = [([116], [116])] * 250
+    replies = _complete_replies(chords)
+    replies['CML C1 248'] = [b'CML C1 248 ', b'']
+    transport = FakeTransport(replies)
+    reader = _reader(transport)
+    replies['CML C1 249'] = lambda: (reader.cancel(), b'')[1]
+
+    with pytest.raises(DeviceCancelled):
+        reader.read()
+
+    assert transport.commands.count('CML C1 248') == 2
+    assert transport.commands.count('CML C1 249') == 1
+    assert transport.cancel_read_count == 1
+    assert transport.close_count == 1
+
+
+def test_failed_startup_closes_before_a_new_reader_starts_cleanly():
+    failed_replies = _complete_replies([([116], [116])])
+    failed_replies['CML C1 0'] = [b'CML C1 0 ', b'']
+    failed = FakeTransport(failed_replies, delayed_output=[b'old-session-tail\r\n'])
+    fresh = FakeTransport(_complete_replies([([116], [116])]))
+
+    with pytest.raises(CmlSnapshotFailed):
+        _reader(failed).read()
+    snapshot = _reader(fresh).read()
+
+    assert failed.close_count == 1
+    assert fresh.close_count == 1
+    assert snapshot.chords[0][0][0] == 116
+    assert fresh.commands[0] == 'ID'
 
 
 def test_failed_cml_snapshot_cannot_fall_through_to_another_device():
@@ -472,6 +585,11 @@ def test_timeout_unsupported_command_and_identity_close_the_port_once():
     with pytest.raises(OSError, match='disconnected'):
         _reader(exchange_failed).read()
     assert exchange_failed.close_count == 1
+
+    close_failed = FakeTransport(_complete_replies(), close_error=OSError('close failed'))
+    with pytest.raises(OSError, match='close failed'):
+        _reader(close_failed).read()
+    assert close_failed.close_count == 1
 
 
 def test_cancellation_during_request_closes_the_port_once():

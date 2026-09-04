@@ -77,10 +77,15 @@ class CmlSnapshotFailed(DeviceReadError):
     """One or more required CML cells still failed after their retry."""
 
 
+class DeviceCloseError(DeviceReadError):
+    """The host serial handle did not close cleanly."""
+
+
 class SerialTransport(Protocol):
     def open(self) -> None: ...
     def exchange(self, request: bytes, timeout: float) -> bytes: ...
     def drain_until_quiet(self, timeout: float) -> bytes: ...
+    def cancel_pending_read(self) -> None: ...
     def close(self) -> None: ...
 
 
@@ -101,12 +106,16 @@ class PySerialTransport:
         self._port = None
         self._closed = False
         self._has_written = False
+        self._read_cancelled = False
 
     def open(self) -> None:
         import serial
         self._port = serial.Serial(self.path, BAUD_RATE,
                                    timeout=REQUEST_TIMEOUT_SECONDS,
                                    write_timeout=REQUEST_TIMEOUT_SECONDS)
+        # A new startup attempt must not attribute output left by a previous
+        # closed session to its first request.
+        self._port.reset_input_buffer()
 
     def exchange(self, request: bytes, timeout: float) -> bytes:
         """Write one request and receive its one serialized response.
@@ -118,6 +127,8 @@ class PySerialTransport:
         """
         if self._port is None:
             raise DeviceReadError("serial port was not opened")
+        if self._read_cancelled:
+            raise DeviceCancelled("CharaChorder read cancelled during shutdown")
         if self._has_written:
             time.sleep(INTER_REQUEST_DELAY_SECONDS)
         self._port.write(request)
@@ -144,6 +155,8 @@ class PySerialTransport:
         hard_deadline = started + RECOVERY_DRAIN_MAX_SECONDS
         quiet_deadline = min(hard_deadline, started + timeout)
         while True:
+            if self._read_cancelled:
+                return bytes(collected)
             now = time.monotonic()
             if now >= hard_deadline:
                 return bytes(collected)
@@ -156,11 +169,28 @@ class PySerialTransport:
                 collected.extend(chunk)
                 quiet_deadline = min(hard_deadline, time.monotonic() + timeout)
 
+    def cancel_pending_read(self) -> None:
+        """Wake a blocking PySerial read without sending a device command."""
+        self._read_cancelled = True
+        if self._port is not None:
+            cancel_read = getattr(self._port, "cancel_read", None)
+            if cancel_read is not None:
+                cancel_read()
+
     def close(self) -> None:
         if not self._closed:
             self._closed = True
-            if self._port is not None:
-                self._port.close()
+            port = self._port
+            if port is not None:
+                # PySerial close is synchronous. Interrupting a pending read
+                # first makes closing during GUI shutdown deterministic.
+                try:
+                    self.cancel_pending_read()
+                finally:
+                    self._port = None
+                    port.close()
+                if getattr(port, "is_open", False):
+                    raise DeviceCloseError("serial port remained open after close")
 
 
 def is_chara_chorder_port(port: object) -> bool:
@@ -292,6 +322,12 @@ class DeviceSnapshotReader:
 
     def cancel(self) -> None:
         self._cancelled.set()
+        transport = self._transport
+        if transport is not None:
+            try:
+                transport.cancel_pending_read()
+            except (DeviceReadError, OSError):
+                logger.warning("Could not interrupt CharaChorder serial read during shutdown")
 
     def close(self) -> None:
         if not self._closed:
@@ -412,6 +448,9 @@ class DeviceSnapshotReader:
             return
         try:
             stale = drain(min(RECOVERY_QUIET_SECONDS, remaining))
+            self._check(deadline)
+        except DeviceCancelled:
+            raise
         except (DeviceReadError, OSError) as exc:
             logger.warning(
                 "CharaChorder CML C1 request index=%d recovery drain failed: %s; raw=%s",

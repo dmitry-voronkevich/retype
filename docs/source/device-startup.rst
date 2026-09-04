@@ -44,6 +44,18 @@ request/response sequence, at least 100 microseconds between commands, and
 warns that overflowing the device input buffer can crash it. The local Cho
 reference reader uses the same quiet-period approach for USB CDC replies.
 
+Shutdown and later startup attempts
+-----------------------------------
+
+Cancellation interrupts PySerial's pending read before the worker releases the
+port. The synchronous close is attempted exactly once in the reader's
+``finally`` path and verified through PySerial's ``is_open`` state. A new
+transport clears only pre-existing host input bytes before its first request,
+so a late line from a closed session cannot be mistaken for its handshake.
+retype never sends ``RST`` as recovery: if the device's CDC endpoint remains
+unavailable after retype has quit, disconnect or power-cycle the device before
+trying again.
+
 Developer protocol boundary
 ---------------------------
 
