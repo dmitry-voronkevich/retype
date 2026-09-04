@@ -235,6 +235,18 @@ def test_malformed_cml_entry_payload_is_skipped_after_its_reply_is_consumed(
     assert transport.close_count == 1
 
 
+def test_rejected_cml_entry_aborts_before_a_later_request():
+    replies = _complete_replies([([116, 104], [116, 104])] * 2)
+    replies['CML C1 0'] = b'CML C1 0 00000000000000000000000000000000 0 1\r\n'
+    transport = FakeTransport(replies)
+
+    with pytest.raises(DeviceReadError, match='was rejected by the device'):
+        _reader(transport).read()
+
+    assert 'CML C1 1' not in transport.commands
+    assert transport.close_count == 1
+
+
 def test_timeout_does_not_send_another_cml_request_that_could_misattribute_reply():
     replies = _complete_replies([([116, 104], [116, 104])] * 2)
     replies['CML C1 0'] = b''

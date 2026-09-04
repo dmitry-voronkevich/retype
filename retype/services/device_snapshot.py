@@ -176,10 +176,11 @@ def parse_cml_entry(line: str, expected_index: int) -> tuple[tuple[int, ...], tu
 
 
 def is_cml_entry_reply_for_index(line: str, expected_index: int) -> bool:
-    """Whether a newline-delimited reply can safely be assigned to one slot."""
+    """Whether a reply has a valid envelope for one requested slot."""
     parts = line.split()
-    return (len(parts) >= 3 and parts[:2] == ["CML", "C1"] and
-            parts[2].isdecimal() and int(parts[2]) == expected_index)
+    return (len(parts) in (5, 6) and parts[:2] == ["CML", "C1"] and
+            parts[2].isdecimal() and int(parts[2]) == expected_index and
+            (len(parts) == 5 or parts[5] == "0"))
 
 
 class DeviceSnapshotReader:
@@ -298,8 +299,8 @@ class DeviceSnapshotReader:
                     if not is_cml_entry_reply_for_index(line, index):
                         raise
                     skipped_chord_entries += 1
-                    logger.warning("Skipping malformed CML C1 entry %d: %s",
-                                   index, exc)
+                    logger.warning("Skipping malformed CML C1 entry %d (%r): %s",
+                                   index, line, exc)
                 if progress and (index == 0 or index + 1 == total or (index + 1) % 50 == 0):
                     progress("Reading CharaChorder CML entries: {} of {}…".format(
                         index + 1, total))
