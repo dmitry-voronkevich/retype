@@ -150,10 +150,11 @@ def test_reader_serializes_framed_requests_without_transport_flush():
 
 def test_cml_parsing_strictly_decodes_ccos_three_replies():
     assert parse_cml_count('CML C0 2') == 2
-    input_codes, output_codes = parse_cml_entry(
-        _c1(0, [116, 104, 101], [116, 104, 101]).decode().strip(), 0)
+    line = _c1(0, [116, 104, 101], [116, 104, 101]).decode().strip()
+    input_codes, output_codes = parse_cml_entry(line, 0)
     assert input_codes[:3] == (116, 104, 101)
     assert output_codes == (116, 104, 101)
+    assert parse_cml_entry(line + ' 0', 0) == (input_codes, output_codes)
     assert decode_chord_hex('0' * 32) == (0,) * 12
     assert decode_phrase_hex('0258') == (600,)
 
@@ -216,12 +217,45 @@ def test_complete_snapshot_is_immutable_and_adapts_positional_layout():
     assert transport.commands.index('CML C0') > transport.commands.index('VAR B3 A1 89')
 
 
-def test_partial_cml_snapshot_is_never_returned_and_port_closes_once():
-    replies = _complete_replies([([116, 104], [116, 104])])
-    replies['CML C1 0'] = b'CML C1 0 malformed\r\n'
+def test_malformed_cml_entry_payload_is_skipped_after_its_reply_is_consumed(
+        caplog):
+    entries = [([116, 104], [116, 104])] * 260
+    replies = _complete_replies(entries)
+    # cho treats this exact-index, cho-compatible synthetic partial entry as unusable and
+    # continues. retype must do the same only after consuming its full line.
+    replies['CML C1 258'] = b'CML C1 258 0 0\r\n'
     transport = FakeTransport(replies)
-    with pytest.raises(DeviceReadError):
+
+    snapshot = _reader(transport).read()
+
+    assert len(snapshot.chords) == 259
+    assert snapshot.skipped_chord_entries == 1
+    assert 'CML C1 259' in transport.commands
+    assert 'Skipping malformed CML C1 entry 258' in caplog.text
+    assert transport.close_count == 1
+
+
+def test_timeout_does_not_send_another_cml_request_that_could_misattribute_reply():
+    replies = _complete_replies([([116, 104], [116, 104])] * 2)
+    replies['CML C1 0'] = b''
+    transport = FakeTransport(replies)
+
+    with pytest.raises(DeviceReadError, match='timeout waiting for reply to "CML C1 0"'):
         _reader(transport).read()
+
+    assert 'CML C1 1' not in transport.commands
+    assert transport.close_count == 1
+
+
+def test_wrong_index_cml_reply_aborts_before_a_late_reply_can_be_misattributed():
+    replies = _complete_replies([([116, 104], [116, 104])] * 2)
+    replies['CML C1 0'] = _c1(1, [116, 104], [116, 104])
+    transport = FakeTransport(replies)
+
+    with pytest.raises(DeviceReadError, match='index did not match'):
+        _reader(transport).read()
+
+    assert 'CML C1 1' not in transport.commands
     assert transport.close_count == 1
 
 

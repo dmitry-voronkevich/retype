@@ -57,6 +57,7 @@ class DeviceSnapshot:
     profile: str
     keymap: tuple[int, ...]
     chords: tuple[tuple[tuple[int, ...], tuple[int, ...]], ...]
+    skipped_chord_entries: int = 0
 
 
 class PySerialTransport:
@@ -174,6 +175,13 @@ def parse_cml_entry(line: str, expected_index: int) -> tuple[tuple[int, ...], tu
     return decode_chord_hex(parts[3]), decode_phrase_hex(parts[4])
 
 
+def is_cml_entry_reply_for_index(line: str, expected_index: int) -> bool:
+    """Whether a newline-delimited reply can safely be assigned to one slot."""
+    parts = line.split()
+    return (len(parts) >= 3 and parts[:2] == ["CML", "C1"] and
+            parts[2].isdecimal() and int(parts[2]) == expected_index)
+
+
 class DeviceSnapshotReader:
     """Synchronous protocol reader intended to run in ``DeviceStartupLoader``.
 
@@ -275,14 +283,28 @@ class DeviceSnapshotReader:
             keymap = self._keymap(deadline)
             total = parse_cml_count(self._request("CML C0", deadline))
             chords = []
+            skipped_chord_entries = 0
             for index in range(total):
                 self._check(deadline)
-                chords.append(parse_cml_entry(
-                    self._request("CML C1 {}".format(index), deadline), index))
+                line = self._request("CML C1 {}".format(index), deadline)
+                try:
+                    chords.append(parse_cml_entry(line, index))
+                except DeviceReadError as exc:
+                    # A terminated reply with this exact index cannot be a
+                    # delayed response to another request, so discard only its
+                    # malformed payload and continue the complete enumeration.
+                    # Framing, command, or index failures abort instead: sending
+                    # another CML C1 then could misattribute a late response.
+                    if not is_cml_entry_reply_for_index(line, index):
+                        raise
+                    skipped_chord_entries += 1
+                    logger.warning("Skipping malformed CML C1 entry %d: %s",
+                                   index, exc)
                 if progress and (index == 0 or index + 1 == total or (index + 1) % 50 == 0):
                     progress("Reading CharaChorder CML entries: {} of {}…".format(
                         index + 1, total))
-            return DeviceSnapshot(identity, version, "A", keymap, tuple(chords))
+            return DeviceSnapshot(identity, version, "A", keymap, tuple(chords),
+                                  skipped_chord_entries)
         finally:
             self._transport.close()
             self._transport = None

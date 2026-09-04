@@ -554,6 +554,24 @@ def test_startup_installs_only_complete_device_snapshot(make_controller, qtbot):
         controller._window.statusBar().currentMessage())
 
 
+def test_startup_status_reports_skipped_malformed_cml_entry(make_controller, qtbot):
+    from retype.services.device_snapshot import DeviceSnapshot
+
+    reader = _SnapshotReader(DeviceSnapshot(
+        'CHARACHORDER TWO S3', '3.0.0', 'A',
+        tuple([606, 116, 608, 104, 607, 101] + [0] * 84),
+        (((116, 104, 101), (116, 104, 101)),), 1,
+    ))
+    controller = make_controller(reader)
+
+    qtbot.waitUntil(lambda: 'skipped 1 malformed CML entry' in
+                    controller._window.statusBar().currentMessage())
+
+    assert controller._window.statusBar().currentMessage() == (
+        'Loaded 1 usable retype hints from 2 CharaChorder CML entries (3.0.0); '
+        'skipped 1 malformed CML entry')
+
+
 def test_startup_status_distinguishes_600_cml_entries_from_usable_hints(
         make_controller, qtbot):
     from retype.services.device_snapshot import DeviceSnapshot

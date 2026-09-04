@@ -20,12 +20,17 @@ stateful UI control.
 Failure behavior
 ----------------
 
-No device, unsupported identity/version, malformed reply, unsupported command,
-timeout, cancellation, or an incomplete keymap/chord enumeration leaves chord
-features unavailable. The Book View receives a new map only after one immutable
-snapshot has been fully validated and converted. retype never reuses old or
-partial device data. Connect the supported device and restart to retry; the
-window status message and application log include the reason.
+No device, unsupported identity/version, unsupported command, timeout,
+cancellation, an incomplete keymap/chord enumeration, or a CML reply with the
+wrong command or index leaves chord features unavailable. A newline-delimited
+CML C1 reply that unambiguously belongs to its requested index but has malformed
+payload is skipped and counted in diagnostics; retype still enumerates every
+other CML entry. This never continues after a timeout or mismatched reply, so a
+late response cannot be assigned to a later request. The Book View receives a
+new map only after one immutable snapshot has been fully enumerated and
+converted. retype never reuses old device data. Connect the supported device
+and restart to retry; the window status message and application log include the
+reason.
 
 Developer protocol boundary
 ---------------------------

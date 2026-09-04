@@ -112,10 +112,14 @@ class MainController(QObject):
                 "CharaChorder data could not be used; chord features are unavailable")
             return
         self.views[View.book_view].setChords(chords)
-        self._setDeviceStatus(
-            "Loaded {} usable retype hints from {} "
-            "CharaChorder CML entries ({})".format(
-                len(chords), len(snapshot.chords), snapshot.version))
+        status = "Loaded {} usable retype hints from {} CharaChorder CML entries ({})".format(
+            len(chords), len(snapshot.chords) + snapshot.skipped_chord_entries,
+            snapshot.version)
+        if snapshot.skipped_chord_entries:
+            status += "; skipped {} malformed CML entr{}".format(
+                snapshot.skipped_chord_entries,
+                "y" if snapshot.skipped_chord_entries == 1 else "ies")
+        self._setDeviceStatus(status)
 
     def _deviceChordLoadFailed(self, message):
         # type: (MainController, str) -> None
