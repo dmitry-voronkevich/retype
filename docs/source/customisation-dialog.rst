@@ -40,10 +40,17 @@ was unavailable because no supported device could be read, or failed for
 another reason. A new chord map is applied only after the complete snapshot
 has been read successfully; otherwise existing chord data is retained.
 
-When **Limit chord lessons to five unmastered chords (recommended)** is
-checked, the Book View teaches at most five incomplete chords at a time;
-uncheck it to show the full loaded chord list. With no available device chord
-map, this setting has no effect.
+When **Limit number of chords per lesson** is checked, the Book View limits
+incomplete chords according to **Chords introduced per lesson**; uncheck it to
+show the full loaded chord list. The configured number is used again when the
+limit is turned back on. With no available device chord map, these settings
+have no effect.
+
+Chord mastery is shown below the load controls as a table-first overview of the
+currently loaded chords. Each row shows successful-use progress, whether the
+chord is a teaching target or mastered hint, and row actions to mark it
+mastered or unmastered. Manual changes show an Undo strip and a link to restore
+the measured state.
 
 Console
 -------

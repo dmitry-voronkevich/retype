@@ -12,7 +12,8 @@ from qt import (QWidget, QFormLayout, QVBoxLayout, QLabel, QLineEdit,
                 QModelIndex, QItemSelectionModel, QMessageBox, QDialog, QSize,
                 QFont, QFontComboBox, QComboBox, QPainter,
                 QColorDialog, QColor, QTreeView, QStandardItemModel,
-                QAbstractItemView, QItemDelegate, QStandardItem, QSizePolicy)
+                QAbstractItemView, QItemDelegate, QStandardItem, QSizePolicy,
+                QHeaderView, QTableWidget, QTableWidgetItem)
 
 from typing import TYPE_CHECKING
 
@@ -20,6 +21,8 @@ from retype.extras.dict import merge_dicts, update
 from retype.constants import default_config, iswindows, default_steno_kdict
 from retype.services.theme import (Theme, populateThemes, valuesFromQss, theme,
                                    C)
+from retype.services.chord_mastery import MIN_SUCCESSFUL_USES_FOR_MASTERY
+from retype.services.chord_lessons import ChordProgress
 from retype.services.keymap import Keymap, populateKeymaps, getKeymapValues
 from retype.extras.qss import serialiseValuesDict
 from retype.resource_handler import getStylePath
@@ -94,13 +97,16 @@ def descl(text):
 
 class CustomisationDialog(QDialog):
     loadChordsNowRequested = pyqtSignal()
+    saveChordMasteryRequested = pyqtSignal(dict)
     def __init__(self,  # type: CustomisationDialog
                  config,  # type: Config
                  window,  # type: MainWin
                  saveConfig,  # type: pyqtBoundSignal
                  prevView,  # type: pyqtBoundSignal
                  getBookViewFontSize,  # type: Callable[[], int]
-                 parent=None  # type: QWidget | None
+                 parent=None,  # type: QWidget | None
+                 getLoadedChords=None,  # type: Callable[[], dict[str, object]] | None
+                 chordProgress=None  # type: ChordMasteryProgress | None
                  ):
         # type: (...) -> None
         QDialog.__init__(self, parent, Qt.WindowType.WindowCloseButtonHint)
@@ -116,6 +122,8 @@ class CustomisationDialog(QDialog):
         self.prevView = prevView
         self._window = window
         self.getBookViewFontSize = getBookViewFontSize
+        self.getLoadedChords = getLoadedChords or (lambda: {})
+        self.chordProgress = chordProgress
 
         self._initUI()
         self.setModal(True)
@@ -123,7 +131,10 @@ class CustomisationDialog(QDialog):
 
     def sizeHint(self):
         # type: (CustomisationDialog) -> QSize
-        return QSize(500, 500)
+        # The chord mastery table includes two explicit row-action buttons;
+        # leave enough room for them beside the category tree instead of
+        # clipping the table in the default dialog width.
+        return QSize(800, 500)
 
     def getUserDir(self):
         # type: (CustomisationDialog) -> str
@@ -330,13 +341,31 @@ class CustomisationDialog(QDialog):
 
         lyt.addRow(hline())
         adaptive = CheckBox(
-            "Limit chord lessons to five unmastered chords (recommended)",
+            "Limit number of chords per lesson",
             self.config_edited.get('adaptive_chord_lessons', True))
         adaptive.changed.connect(
             lambda value: self.update_('adaptive_chord_lessons', value))
         self.selectors['adaptive_chord_lessons'] = adaptive
         lyt.addRow(adaptive)
         lyt.addRow(descl("Uncheck to show the full loaded chord list."))
+
+        limit = SpinBox()
+        limit.setMinimum(1)
+        limit.setMaximum(99)
+        limit.setValue(self.config_edited.get(
+            'adaptive_chord_lesson_limit', 5))
+        limit.setToolTip("How many unmastered chords to introduce per lesson")
+        limit.changed.connect(
+            lambda value: self.update_('adaptive_chord_lesson_limit', value))
+        self.selectors['adaptive_chord_lesson_limit'] = limit
+        lyt.addRow("Chords introduced per lesson:", limit)
+        lyt.addRow(descl("Used only when chord lessons are limited."))
+
+        lyt.addRow(hline())
+        self.chord_mastery = ChordMasterySection(
+            self.chordProgress, self.getLoadedChords)
+        self.chord_mastery.changed.connect(self._updateDirtyState)
+        lyt.addRow(self.chord_mastery)
 
         return pchords
 
@@ -448,7 +477,14 @@ class CustomisationDialog(QDialog):
         logger.debug("config_edited updated to: {}".format(
             self.config_edited))
 
-        self.revert_btn.setEnabled(self.config_edited != self.config)
+        self._updateDirtyState()
+
+    def _updateDirtyState(self):
+        # type: (CustomisationDialog) -> None
+        self.revert_btn.setEnabled(
+            self.config_edited != self.config or
+            getattr(self, 'chord_mastery', None) is not None and
+            self.chord_mastery.isDirty())
         self.restore_btn.setEnabled(self.config_edited != DEFAULTS)
 
     def themeUpdate(self):
@@ -465,7 +501,9 @@ class CustomisationDialog(QDialog):
         else:
             restore = self.config_edited != DEFAULTS
 
-        self.revert_btn.setEnabled(revert)
+        self.revert_btn.setEnabled(revert or (
+            getattr(self, 'chord_mastery', None) is not None and
+            self.chord_mastery.isDirty()))
         self.restore_btn.setEnabled(restore)
 
     def keymapUpdate(self):
@@ -482,7 +520,9 @@ class CustomisationDialog(QDialog):
         else:
             restore = self.config_edited != DEFAULTS
 
-        self.revert_btn.setEnabled(revert)
+        self.revert_btn.setEnabled(revert or (
+            getattr(self, 'chord_mastery', None) is not None and
+            self.chord_mastery.isDirty()))
         self.restore_btn.setEnabled(restore)
 
     def accept(self):
@@ -516,6 +556,11 @@ class CustomisationDialog(QDialog):
 
         # Save
         self.saveConfig.emit(self.config_edited)
+        if self.chord_mastery.isDirty():
+            self.saveChordMasteryRequested.emit(self.chord_mastery.overrides())
+            if self.chord_mastery.saveFailed():
+                self._updateDirtyState()
+                return
         # Update base config
         self.config = deepcopy(self.config_edited)
 
@@ -525,6 +570,7 @@ class CustomisationDialog(QDialog):
         # Save keymap
         self.keymap.saveCurrent(getStylePath(self.getUserDir()))
 
+        self.chord_mastery.commit()
         self.revert_btn.setEnabled(False)
 
     def setSelectors(self, config):
@@ -549,6 +595,7 @@ class CustomisationDialog(QDialog):
 
         self.theme.revert()
         self.keymap.revert()
+        self.chord_mastery.revert()
 
         self.revert_btn.setEnabled(False)
 
@@ -2611,6 +2658,345 @@ class CategorisedWidget(QWidget):
         else:
             logger.error(f'switchCategory: Data at index {index} is not a '
                          'QWidget')
+
+
+
+class ChordMasterySection(QWidget):
+    changed = pyqtSignal()
+
+    def __init__(self, progress=None, get_loaded_chords=None, parent=None):
+        # type: (ChordMasterySection, object | None, object | None, QWidget | None) -> None
+        QWidget.__init__(self, parent)
+        self.setObjectName('chord-mastery-section')
+        self.progress = progress
+        self.getLoadedChords = get_loaded_chords or (lambda: {})
+        self._saved_overrides = {}  # type: dict[str, bool]
+        if progress is not None:
+            self._saved_overrides = progress.manual_overrides()
+        self._draft_overrides = dict(self._saved_overrides)
+        self._undo_stack = []  # type: list[tuple[str, bool | None]]
+        self._last_changed_key = None  # type: str | None
+        self._save_failed = False
+
+        self._buildUI()
+        self.refresh()
+
+    def _buildUI(self):
+        # type: (ChordMasterySection) -> None
+        lyt = QVBoxLayout(self)
+        lyt.setContentsMargins(0, 0, 0, 0)
+        lyt.setSpacing(6)
+
+        title = QLabel("Chord mastery")
+        title.setObjectName('chord-mastery-title')
+        title.setStyleSheet('font-weight: bold;')
+        lyt.addWidget(title)
+
+        self.summary = WrappedLabel("")
+        self.summary.setObjectName('chord-mastery-summary')
+        self.summary.setAccessibleName('Chord mastery summary')
+        lyt.addWidget(self.summary)
+
+        self.warning = WrappedLabel("")
+        self.warning.setObjectName('chord-mastery-warning')
+        lyt.addWidget(self.warning)
+
+        self.table = QTableWidget(0, 4)
+        self.table.setObjectName('chord-mastery-table')
+        self.table.setAccessibleName('Chord mastery table')
+        self.table.setAccessibleDescription(
+            "Loaded chords, their successful-use progress, and their state. "
+            "Use the arrow keys to move, then Tab to reach row actions.")
+        self.table.setHorizontalHeaderLabels(
+            ['Chord', 'Progress', 'State', 'Actions'])
+        self.table.setSelectionBehavior(
+            QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.setSelectionMode(
+            QAbstractItemView.SelectionMode.SingleSelection)
+        self.table.setEditTriggers(
+            QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.table.setAlternatingRowColors(True)
+        self.table.verticalHeader().setVisible(False)
+        header = self.table.horizontalHeader()
+        header.setStretchLastSection(False)
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        lyt.addWidget(self.table)
+
+        self.confirmation = QFrame()
+        self.confirmation.setObjectName('chord-mastery-confirmation')
+        self.confirmation.setFrameShape(QFrame.Shape.StyledPanel)
+        confirm_lyt = QHBoxLayout(self.confirmation)
+        confirm_lyt.setContentsMargins(8, 4, 8, 4)
+        confirm_lyt.setSpacing(8)
+        self.confirmation_label = WrappedLabel("")
+        self.confirmation_label.setObjectName('chord-mastery-confirmation-label')
+        confirm_lyt.addWidget(self.confirmation_label, 1)
+        self.undo_btn = QPushButton("Undo")
+        self.undo_btn.setObjectName('chord-mastery-undo')
+        self.undo_btn.clicked.connect(self.undo)
+        confirm_lyt.addWidget(self.undo_btn)
+        self.restore_btn = QToolButton()
+        self.restore_btn.setObjectName('chord-mastery-restore')
+        self.restore_btn.setText('Restore measured state')
+        self.restore_btn.setToolButtonStyle(
+            Qt.ToolButtonStyle.ToolButtonTextOnly)
+        self.restore_btn.setAutoRaise(True)
+        self.restore_btn.clicked.connect(self.restoreMeasuredState)
+        confirm_lyt.addWidget(self.restore_btn)
+        self.confirmation.hide()
+        lyt.addWidget(self.confirmation)
+
+        rationale = WrappedLabel(
+            "Why these chords? Unmastered chords are teaching targets. "
+            "Mastered chords remain hint-eligible, and the lesson limit keeps "
+            "only the first N unmastered chords active when enabled.")
+        rationale.setObjectName('chord-mastery-rationale')
+        lyt.addWidget(rationale)
+
+    def _loadedChords(self):
+        # type: (ChordMasterySection) -> dict[str, object]
+        chords = self.getLoadedChords() if callable(self.getLoadedChords) else {}
+        return chords if isinstance(chords, dict) else {}
+
+    def _effectiveProgress(self, key):
+        # type: (ChordMasterySection, str) -> object
+        uses = 0
+        override = self._draft_overrides.get(key)
+        if self.progress is not None:
+            base = self.progress.progress_for(key)
+            if base is not None:
+                uses = base.successful_uses
+        return ChordProgress(key, uses, override)
+
+    def _rowText(self, progress):
+        # type: (ChordProgress) -> tuple[str, str, str]
+        if progress.has_manual_override:
+            state = 'Mastered (manual)' if progress.is_mastered else \
+                'Teaching target (manual)'
+            measured = 'mastered' if progress.measured_is_mastered else \
+                'unmastered'
+            tooltip = f'Measured state: {measured}.'
+        else:
+            state = 'Mastered (hint-eligible)' if progress.is_mastered else \
+                'Teaching target'
+            tooltip = ('Hint-eligible mastered chord.' if progress.is_mastered
+                       else 'Lesson target that is still being learned.')
+        uses_text = '{} / {} successful uses'.format(
+            progress.successful_uses, MIN_SUCCESSFUL_USES_FOR_MASTERY)
+        return uses_text, state, tooltip
+
+    def _setWrappedText(self, widget, text):
+        # type: (ChordMasterySection, WrappedLabel, str) -> None
+        widget.label.setText(text)
+        widget.doc.setPlainText(text)
+        widget.updateGeometry()
+
+    def _setConfirmation(self, message):
+        # type: (ChordMasterySection, str) -> None
+        self._setWrappedText(self.confirmation_label, message)
+        self.confirmation.show()
+
+    def _syncStatus(self):
+        # type: (ChordMasterySection) -> None
+        chords = self._loadedChords()
+        if not chords:
+            self._setWrappedText(self.summary, 'No loaded chords yet.')
+            if self.progress is not None and getattr(
+                    self.progress.storage, 'malformed_entries', 0):
+                count = self.progress.storage.malformed_entries
+                self._setWrappedText(
+                    self.warning,
+                    'Malformed saved progress was ignored for {} entr{} and '
+                    'left on disk.'.format(
+                        count, 'y' if count == 1 else 'ies'))
+            else:
+                self._setWrappedText(self.warning, '')
+            self.confirmation.hide()
+            self.table.setRowCount(0)
+            return
+
+        rows = []
+        for key in sorted(chords):
+            if not isinstance(key, str) or not key:
+                continue
+            progress = self._effectiveProgress(key)
+            rows.append((key, chords[key], progress))
+        rows.sort(key=lambda row: (row[2].is_mastered, row[0]))
+        targets = sum(1 for _, _, progress in rows if not progress.is_mastered)
+        mastered = len(rows) - targets
+        if rows and all(row[2].successful_uses == 0 for row in rows) and \
+           not self._draft_overrides:
+            self._setWrappedText(
+                self.summary,
+                'First use: no mastery has been recorded for these loaded '
+                'chords yet.')
+        else:
+            self._setWrappedText(
+                self.summary,
+                '{} teaching target{} and {} mastered, hint-eligible chord{}.'
+                .format(targets, '' if targets == 1 else 's', mastered,
+                        '' if mastered == 1 else 's'))
+
+        if self.progress is not None and getattr(self.progress.storage,
+                                                'malformed_entries', 0):
+            count = self.progress.storage.malformed_entries
+            self._setWrappedText(
+                self.warning,
+                'Malformed saved progress was ignored for {} entr{} and '
+                'left on disk.'
+                .format(count, 'y' if count == 1 else 'ies'))
+        else:
+            self._setWrappedText(self.warning, '')
+
+        self.table.setRowCount(len(rows))
+        for row_index, (key, chord, progress) in enumerate(rows):
+            chord_item = QTableWidgetItem(key)
+            chord_item.setToolTip(
+                'Device order: {}'.format(getattr(chord, 'device_order', key)))
+            chord_item.setData(Qt.ItemDataRole.UserRole, key)
+            self.table.setItem(row_index, 0, chord_item)
+
+            uses_text, state_text, tooltip = self._rowText(progress)
+            progress_item = QTableWidgetItem(uses_text)
+            progress_item.setToolTip(tooltip)
+            self.table.setItem(row_index, 1, progress_item)
+            state_item = QTableWidgetItem(state_text)
+            state_item.setToolTip(tooltip)
+            self.table.setItem(row_index, 2, state_item)
+
+            actions = QWidget()
+            actions_lyt = QHBoxLayout(actions)
+            actions_lyt.setContentsMargins(0, 0, 0, 0)
+            actions_lyt.setSpacing(4)
+            mastered_btn = QPushButton('Mastered')
+            mastered_btn.setToolTip('Mark this chord mastered')
+            mastered_btn.setAccessibleName(f'Mark {key} mastered')
+            mastered_btn.clicked.connect(
+                lambda _=False, chord_key=key: self.markMastered(chord_key))
+            actions_lyt.addWidget(mastered_btn)
+            unmastered_btn = QPushButton('Unmastered')
+            unmastered_btn.setToolTip('Mark this chord unmastered')
+            unmastered_btn.setAccessibleName(f'Mark {key} unmastered')
+            unmastered_btn.clicked.connect(
+                lambda _=False, chord_key=key: self.markUnmastered(chord_key))
+            actions_lyt.addWidget(unmastered_btn)
+            actions_lyt.addStretch(1)
+            self.table.setCellWidget(row_index, 3, actions)
+
+        self.table.resizeRowsToContents()
+        self.confirmation.setVisible(bool(self._undo_stack))
+
+    def markMastered(self, key):
+        # type: (ChordMasterySection, str) -> None
+        self._applyOverride(key, True)
+
+    def markUnmastered(self, key):
+        # type: (ChordMasterySection, str) -> None
+        self._applyOverride(key, False)
+
+    def _applyOverride(self, key, mastered):
+        # type: (ChordMasterySection, str, bool | None) -> None
+        current = self._draft_overrides.get(key)
+        if current is mastered and (mastered is None or key in self._draft_overrides):
+            return
+        previous = self._draft_overrides.get(key)
+        self._undo_stack.append((key, previous))
+        if mastered is None:
+            self._draft_overrides.pop(key, None)
+        else:
+            self._draft_overrides[key] = mastered
+        self._last_changed_key = key
+        self._save_failed = False
+        action_text = 'mastered' if mastered else 'unmastered'
+        self._setConfirmation(f'Marked {key!r} as {action_text}.')
+        self._syncStatus()
+        self.changed.emit()
+
+    def undo(self):
+        # type: (ChordMasterySection) -> None
+        if not self._undo_stack:
+            return
+        key, previous = self._undo_stack.pop()
+        if previous is None:
+            self._draft_overrides.pop(key, None)
+        else:
+            self._draft_overrides[key] = previous
+        self._last_changed_key = key
+        if self._undo_stack:
+            self._setConfirmation('Undid the last mastery change.')
+        else:
+            self.confirmation.hide()
+        self._syncStatus()
+        self.changed.emit()
+
+    def restoreMeasuredState(self):
+        # type: (ChordMasterySection) -> None
+        if self._last_changed_key is None:
+            return
+        if self._last_changed_key in self._draft_overrides:
+            self._undo_stack.append((
+                self._last_changed_key,
+                self._draft_overrides.get(self._last_changed_key)))
+            self._draft_overrides.pop(self._last_changed_key, None)
+            self._setConfirmation(
+                f'Restored measured state for {self._last_changed_key!r}.')
+            self._syncStatus()
+            self.changed.emit()
+
+    def isDirty(self):
+        # type: (ChordMasterySection) -> bool
+        return self._draft_overrides != self._saved_overrides
+
+    def overrides(self):
+        # type: (ChordMasterySection) -> dict[str, bool]
+        return dict(self._draft_overrides)
+
+    def setProgress(self, progress):
+        # type: (ChordMasterySection, object | None) -> None
+        self.progress = progress
+        self._saved_overrides = {}
+        if progress is not None:
+            self._saved_overrides = progress.manual_overrides()
+        self._save_failed = False
+        self._syncStatus()
+
+    def setSaveFailed(self):
+        # type: (ChordMasterySection) -> None
+        self._save_failed = True
+        self._setConfirmation(
+            'Unable to save mastery changes. They remain pending; try again.')
+        self.changed.emit()
+
+    def setSaveSucceeded(self):
+        # type: (ChordMasterySection) -> None
+        self._save_failed = False
+
+    def saveFailed(self):
+        # type: (ChordMasterySection) -> bool
+        return self._save_failed
+
+    def commit(self):
+        # type: (ChordMasterySection) -> None
+        self._saved_overrides = dict(self._draft_overrides)
+        self._undo_stack = []
+        self.confirmation.hide()
+        self._syncStatus()
+
+    def revert(self):
+        # type: (ChordMasterySection) -> None
+        self._draft_overrides = dict(self._saved_overrides)
+        self._undo_stack = []
+        self._last_changed_key = None
+        self.confirmation.hide()
+        self._syncStatus()
+        self.changed.emit()
+
+    def refresh(self):
+        # type: (ChordMasterySection) -> None
+        self._syncStatus()
 
 
 if TYPE_CHECKING:

@@ -90,7 +90,7 @@ Only a complete snapshot replaces the current chord map, so unavailable,
 cancelled, or failed loads preserve existing chord data. See the device
 loading reference in the documentation_ for protocol and recovery details.
 
-By default, retype teaches at most five unmastered chords at a time, prioritising chords already in progress. Words in the active lesson are highlighted with a dotted underline. Completed chords remain available as hints but are not new teaching targets. To restore the full loaded chord list, uncheck **Limit chord lessons to five unmastered chords (recommended)** in Customisation. The detailed lesson and progress-storage behavior is documented in the Book View reference.
+By default, retype limits the number of unmastered chords taught at a time, prioritising chords already in progress. Words in the active lesson are highlighted with a dotted underline, while completed chords remain available as hints. Configure the lesson limit and number of chords introduced in Customisation > **Chords & CharaChorder**; the detailed lesson and progress-storage behavior is documented in the Book View reference.
 
 The chording-hints banner above the words you type shows the current or next known chord, followed by upcoming words with known chords. Each hint labels its word-order notation and shows a second device-order row derived from the profile-A layout. The banner is hidden when no device chord library is available.
 

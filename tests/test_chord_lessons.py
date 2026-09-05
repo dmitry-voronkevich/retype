@@ -98,6 +98,33 @@ def test_completed_chords_remain_hint_eligible_but_not_targets(tmp_path):
     assert lesson.hint_keys == ('new', 'known')
 
 
+def test_manual_overrides_persist_and_drive_selection(tmp_path):
+    progress = _progress(tmp_path)
+    for _ in range(MIN_SUCCESSFUL_USES_FOR_MASTERY):
+        progress.record(_result('known'))
+    progress.set_manual_override('known', False)
+    progress.set_manual_override('new', True)
+
+    restored = _progress(tmp_path)
+    assert restored.progress_for('known').successful_uses == \
+        MIN_SUCCESSFUL_USES_FOR_MASTERY
+    assert restored.progress_for('known').is_mastered is False
+    assert restored.progress_for('new').is_mastered is True
+    lesson = AdaptiveChordExposure(restored).select(
+        {'known': 'k', 'new': 'n'}, 'known new')
+
+    assert lesson.teaching_keys == ('known',)
+    assert lesson.mastered_hint_keys == ('new',)
+
+
+def test_custom_lesson_limit_is_honoured(tmp_path):
+    progress = _progress(tmp_path)
+    lesson = AdaptiveChordExposure(progress, limit=2).select(
+        {'one': '1', 'two': '2', 'three': '3'})
+
+    assert lesson.teaching_keys == ('one', 'three')
+
+
 def test_full_list_opt_out_and_empty_dictionary(tmp_path):
     selector = AdaptiveChordExposure(_progress(tmp_path))
     chords = {'one': '1', 'two': '2', 'three': '3'}

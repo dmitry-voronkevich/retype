@@ -140,16 +140,18 @@ When a chord dictionary is loaded, retype normally teaches at most five
 incomplete chords in a chapter. Chords with recorded progress are presented
 before unseen chords; unseen chords are then ordered by how often their words
 occur in that chapter. A completed target remains available to the hint bar,
-but does not use one of the five teaching places. The cumulative validated-use
+but does not use one of the teaching places. The cumulative validated-use
 counts are stored as ``chord-mastery.json`` beside ``save.json`` in the user
-directory, so they survive application sessions.
+directory, so they survive application sessions. Manual mastered/unmastered
+overrides are stored there too and win over the measured progress until they
+are restored.
 
 To opt out, open Customisation, choose **Chords & CharaChorder**, and uncheck
-**Limit chord lessons to five unmastered chords**. This restores the full loaded
-chord list, and
-changing the setting or loaded dictionary refreshes the current chapter's
-underlines and hints immediately. With no loaded dictionary, ordinary typing
-is unchanged and no chord lesson is active.
+**Limit number of chords per lesson**. This restores the full loaded chord list;
+when the limit is enabled, **Chords introduced per lesson** controls how many
+incomplete chords are taught. Changing either setting or the loaded dictionary
+refreshes the current chapter's underlines and hints immediately. With no
+loaded dictionary, ordinary typing is unchanged and no chord lesson is active.
 
 A lesson target completes after ten validated successes. This is curriculum
 progress, not a claim that a chord device made the entry: the available event
