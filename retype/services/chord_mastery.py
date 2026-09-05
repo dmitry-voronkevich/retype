@@ -1,7 +1,7 @@
 """Session-only, domain-level progress tracking for validated chords.
 
 This service intentionally consumes only :class:`ValidatedChord` results.  It
-has no Qt, console, banner, or statistics-dock dependencies, so a future
+has no Qt, console, status-bar, or statistics-dock dependencies, so a future
 mastery UI or lesson selector can consume its snapshots without inheriting UI
 lifecycle concerns.
 """

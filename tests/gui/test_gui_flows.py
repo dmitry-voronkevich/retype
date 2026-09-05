@@ -2,12 +2,16 @@
 
 from copy import deepcopy
 from threading import Event
+from types import SimpleNamespace
 
 import pytest
 from qt import Qt, QWidget
 
 from retype.controllers.main_controller import View
 from retype.constants import default_config
+from retype.services import (
+    AdaptiveChordExposure, MIN_SUCCESSFUL_USES_FOR_MASTERY,
+)
 from retype.services.chord_detection import BACKSPACE_KEY, ValidatedChord
 
 
@@ -92,14 +96,13 @@ def test_timing_observations_do_not_affect_user_facing_chord_count(
     assert "Likely" not in stats.accessibleDescription()
     assert stats.wpms_validated_chords[-4:] == [False, False, False, False]
     # Timing observations are not congratulations or user-facing chords.
-    assert not book_view.chord_feedback.isVisible()
+    assert 'Chord detected:' not in _status_bar(controller).currentMessage()
 
     stats.resetSession()
     assert stats.likely_chords == 0
     assert stats.chordCountText() == "Chords: 0"
     assert stats.wpms_validated_chords == []
-    assert not book_view.chord_feedback.isVisible()
-    assert not book_view._chord_feedback_timer.isActive()
+    assert 'Chord detected:' not in _status_bar(controller).currentMessage()
 
 
 def test_cleanup_backspaces_count_once_and_mark_one_burst(
@@ -143,8 +146,8 @@ def test_cleanup_backspaces_count_once_and_mark_one_burst(
     assert stats.likely_chords == 1
     assert encouragements == [1]
     assert stats.wpms_validated_chords == [False] * 8
-    # The neutral Likely count/chart remains independent of congratulations.
-    assert not book_view.chord_feedback.isVisible()
+    # The neutral Likely count/chart remains independent of chord feedback.
+    assert 'Chord detected:' not in _status_bar(controller).currentMessage()
 
 
 def test_non_printable_input_does_not_colour_validated_segment(
@@ -199,6 +202,15 @@ def _type_rapidly(qtbot, monkeypatch, console, stats, text, timestamps):
     qtbot.keyClicks(console, text)
 
 
+def _status_bar(controller):
+    return controller._window.statusBar()
+
+
+def _wait_for_status(qtbot, controller, text, timeout=2500):
+    qtbot.waitUntil(lambda: text in _status_bar(controller).currentMessage(),
+                   timeout=timeout)
+
+
 @pytest.mark.parametrize('word', [
     'the', 'and', 'for', 'was', 'without', 'because', 'with', 'at', "can't",
 ])
@@ -219,11 +231,10 @@ def test_study_words_congratulate_only_after_surviving_token_delimiter(
     qtbot.keyClick(controller.console, Qt.Key.Key_Space)
 
     assert successes == [word]
-    assert book_view.chord_feedback.isVisible()
-    assert word in book_view.chord_feedback.text()
+    _wait_for_status(qtbot, controller, f'Chord detected: {word}')
 
 
-def test_validated_chord_event_drives_banner_counter_and_chart(
+def test_validated_chord_event_drives_status_bar_counter_and_chart(
         make_controller, qtbot):
     controller = make_controller()
     controller.loadBookRequested.emit(0)
@@ -244,8 +255,8 @@ def test_validated_chord_event_drives_banner_counter_and_chart(
     assert stats.successful_chords == 1
     assert stats.chordCountText() == "Chords: 1"
     assert stats.wpms_validated_chords == [True, True, True]
-    assert book_view.chord_feedback.isVisible()
-    assert 'the' in book_view.chord_feedback.text()
+    _wait_for_status(qtbot, controller, 'Chord detected: the')
+    assert not hasattr(book_view, 'chord_feedback')
     assert result.dictionary_key == 'the'
     assert result.expected_word == 'the'
     assert result.duration_ms == 20.0
@@ -264,8 +275,83 @@ def test_validated_chord_event_drives_banner_counter_and_chart(
     assert stats.successful_chords == 0
     assert stats.chordCountText() == "Chords: 0"
     assert stats.wpms_validated_chords == [False] * 4
-    assert book_view.chord_feedback.isVisible()
-    assert book_view._chord_feedback_timer.isActive()
+    assert 'Chord detected: the' in _status_bar(controller).currentMessage()
+
+
+def test_status_bar_rejects_unvalidated_detection_payload(
+        make_controller, qtbot):
+    controller = make_controller()
+    controller.loadBookRequested.emit(0)
+    qtbot.wait(20)
+    controller._window.setBaseStatus('Ready')
+    stats = controller.view().stats_dock
+
+    stats.validatedChordDetected.emit(SimpleNamespace(word='forged'))
+    qtbot.wait(200)
+
+    assert _status_bar(controller).currentMessage() == 'Ready'
+
+
+def test_rapid_validated_detections_coalesce_and_expire(
+        make_controller, qtbot):
+    controller = make_controller()
+    controller.loadBookRequested.emit(0)
+    qtbot.wait(20)
+    controller._window.setBaseStatus('Ready')
+    stats = controller.view().stats_dock
+
+    stats.validatedChordDetected.emit(_validated_result('the'))
+    stats.validatedChordDetected.emit(_validated_result('and'))
+
+    qtbot.waitUntil(
+        lambda: _status_bar(controller).currentMessage() == 'Chord detected: and',
+        timeout=1000)
+    qtbot.waitUntil(
+        lambda: _status_bar(controller).currentMessage() == 'Ready',
+        timeout=2500)
+
+
+def test_progression_feedback_has_priority_and_timeout(
+        make_controller, qtbot):
+    controller = make_controller()
+    controller.loadBookRequested.emit(0)
+    qtbot.wait(20)
+    controller._window.setBaseStatus('Ready')
+    window = controller._window
+
+    window.showChordProgressStatus('Chord learned: the')
+    window.showChordDetectionStatus('Chord detected: and')
+    qtbot.wait(200)
+
+    assert _status_bar(controller).currentMessage() == 'Chord learned: the'
+    qtbot.waitUntil(
+        lambda: _status_bar(controller).currentMessage() == 'Ready',
+        timeout=4500)
+
+
+def test_status_bar_promotes_learned_chords_and_new_targets(
+        make_controller, qtbot):
+    controller = make_controller()
+    controller.loadBookRequested.emit(0)
+    qtbot.wait(20)
+
+    controller._window.setBaseStatus('')
+    book_view = controller.view()
+    book_view.loaded_chords = {'the': 't+h+e', 'and': 'a+n+d'}
+    book_view.chord_progress._uses['the'] = MIN_SUCCESSFUL_USES_FOR_MASTERY - 1
+    book_view.chord_exposure = AdaptiveChordExposure(book_view.chord_progress, 1)
+    book_view.display.setPlainText('the the and')
+    book_view._refreshChordExposure(book_view._currentChapterText())
+    stats = book_view.stats_dock
+    stats.validatedChordDetected.emit(_validated_result('the'))
+
+    _wait_for_status(qtbot, controller, 'Chord learned: the')
+    message = _status_bar(controller).currentMessage()
+    assert 'Chord learned: the' in message
+    assert 'New chord to learn: and' in message
+    assert stats.chordCountText() == 'Chords: 1'
+    assert book_view.chord_progress.progress_for('the').successful_uses == \
+        MIN_SUCCESSFUL_USES_FOR_MASTERY
 
 
 def test_processing_console_clear_preserves_success_feedback(
@@ -276,14 +362,13 @@ def test_processing_console_clear_preserves_success_feedback(
     book_view = controller.view()
     stats = book_view.stats_dock
     stats.validatedChordDetected.emit(_validated_result('the'))
-    assert book_view.chord_feedback.isVisible()
+    _wait_for_status(qtbot, controller, 'Chord detected: the')
 
     controller.console._processing_key_press = True
     controller.console.clear()
     controller.console._processing_key_press = False
 
-    assert book_view.chord_feedback.isVisible()
-    assert book_view._chord_feedback_timer.isActive()
+    assert 'Chord detected: the' in _status_bar(controller).currentMessage()
 
 
 def test_cleanup_prefixes_and_cleanup_gaps_preserve_final_word_only(
@@ -385,13 +470,7 @@ def test_punctuation_newline_and_repeated_delimiters_finalize_once(
     # final character; Return must not emit a second success.
     qtbot.keyClick(controller.console, Qt.Key.Key_Return)
     assert successes == ['the', 'at']
-    assert book_view.chord_feedback.isVisible()
-    assert book_view._chord_feedback_timer.isActive()
     assert book_view.progress == 100
-
-    controller.console.clear()
-    assert book_view.chord_feedback.isVisible()
-    assert book_view._chord_feedback_timer.isActive()
 
 
 def test_nonempty_mutation_selection_replacement_and_reset_fail_closed(
@@ -420,11 +499,9 @@ def test_nonempty_mutation_selection_replacement_and_reset_fail_closed(
     assert successes == []
 
     stats.validatedChordDetected.emit(_validated_result('the'))
-    assert book_view.chord_feedback.isVisible()
-    assert book_view._chord_feedback_timer.isActive()
+    _wait_for_status(qtbot, controller, 'Chord detected: the')
     stats.resetSession()
-    assert book_view.chord_feedback.isVisible()
-    assert book_view._chord_feedback_timer.isActive()
+    assert 'Chord detected: the' in _status_bar(controller).currentMessage()
 
 
 def test_console_clear_preserves_chord_feedback(
@@ -435,17 +512,16 @@ def test_console_clear_preserves_chord_feedback(
 
     book_view = controller.view()
     stats = book_view.stats_dock
+    controller._window.setBaseStatus('')
     # Console clearing is ordinary editor state now; it has no dedicated
     # lifecycle signal or automatic-mode argument for chord feedback.
     assert not hasattr(controller.console, 'cleared')
     stats.validatedChordDetected.emit(_validated_result('the'))
-    assert book_view.chord_feedback.isVisible()
-    assert book_view._chord_feedback_timer.isActive()
+    _wait_for_status(qtbot, controller, 'Chord detected: the')
 
     controller.console.clear()
 
-    assert book_view.chord_feedback.isVisible()
-    assert book_view._chord_feedback_timer.isActive()
+    assert 'Chord detected: the' in _status_bar(controller).currentMessage()
 
 
 def test_chord_feedback_hides_when_timer_expires(make_controller, qtbot):
@@ -453,15 +529,14 @@ def test_chord_feedback_hides_when_timer_expires(make_controller, qtbot):
     controller.loadBookRequested.emit(0)
     qtbot.wait(20)
 
+    controller._window.setBaseStatus('')
     book_view = controller.view()
     book_view.stats_dock.validatedChordDetected.emit(_validated_result('the'))
-    assert book_view.chord_feedback.isVisible()
-    assert book_view._chord_feedback_timer.isActive()
+    _wait_for_status(qtbot, controller, 'Chord detected: the')
 
-    qtbot.waitUntil(lambda: not book_view.chord_feedback.isVisible(), timeout=5000)
+    qtbot.waitUntil(lambda: _status_bar(controller).currentMessage() == '', timeout=5000)
 
-    assert not book_view.chord_feedback.isVisible()
-    assert not book_view._chord_feedback_timer.isActive()
+    assert _status_bar(controller).currentMessage() == ''
 
 
 def test_automatic_chapter_advance_preserves_chord_feedback(
@@ -470,20 +545,19 @@ def test_automatic_chapter_advance_preserves_chord_feedback(
     controller.loadBookRequested.emit(0)
     qtbot.wait(20)
 
+    controller._window.setBaseStatus('')
     book_view = controller.view()
     if len(book_view.book.chapters) < 2:
         pytest.skip('bundled book has no automatic chapter transition')
     stats = book_view.stats_dock
     stats.validatedChordDetected.emit(_validated_result('the'))
+    _wait_for_status(qtbot, controller, 'Chord detected: the')
     assert stats.successful_chords == 1
-    assert book_view.chord_feedback.isVisible()
-    assert book_view._chord_feedback_timer.isActive()
 
     book_view.nextChapter(move_cursor=True, automatic=True)
 
     assert stats.successful_chords == 1
-    assert book_view.chord_feedback.isVisible()
-    assert book_view._chord_feedback_timer.isActive()
+    assert 'Chord detected: the' in _status_bar(controller).currentMessage()
 
 
 def test_cursor_moving_chapter_reset_preserves_chord_feedback(
@@ -492,16 +566,15 @@ def test_cursor_moving_chapter_reset_preserves_chord_feedback(
     controller.loadBookRequested.emit(0)
     qtbot.wait(20)
 
+    controller._window.setBaseStatus('')
     book_view = controller.view()
     stats = book_view.stats_dock
     stats.validatedChordDetected.emit(_validated_result('the'))
-    assert book_view.chord_feedback.isVisible()
-    assert book_view._chord_feedback_timer.isActive()
+    _wait_for_status(qtbot, controller, 'Chord detected: the')
 
     book_view.setChapter(book_view.chapter_pos, move_cursor=True)
 
-    assert book_view.chord_feedback.isVisible()
-    assert book_view._chord_feedback_timer.isActive()
+    assert 'Chord detected: the' in _status_bar(controller).currentMessage()
 
 
 def test_nonmoving_chapter_navigation_preserves_chord_feedback(
@@ -510,18 +583,17 @@ def test_nonmoving_chapter_navigation_preserves_chord_feedback(
     controller.loadBookRequested.emit(0)
     qtbot.wait(20)
 
+    controller._window.setBaseStatus('')
     book_view = controller.view()
     if len(book_view.book.chapters) < 2:
         pytest.skip('bundled book has no chapter navigation target')
     stats = book_view.stats_dock
     stats.validatedChordDetected.emit(_validated_result('the'))
-    assert book_view.chord_feedback.isVisible()
-    assert book_view._chord_feedback_timer.isActive()
+    _wait_for_status(qtbot, controller, 'Chord detected: the')
 
     book_view.nextChapter()
 
-    assert book_view.chord_feedback.isVisible()
-    assert book_view._chord_feedback_timer.isActive()
+    assert 'Chord detected: the' in _status_bar(controller).currentMessage()
 
 
 class _SnapshotReader:
