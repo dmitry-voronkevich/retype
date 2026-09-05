@@ -338,7 +338,7 @@ class CustomisationDialog(QDialog):
 
         lyt.addRow(hline())
         adaptive = CheckBox(
-            "Limit chord lessons to five unmastered chords (recommended)",
+            "Limit number of chords per lesson",
             self.config_edited.get('adaptive_chord_lessons', True))
         adaptive.changed.connect(
             lambda value: self.update_('adaptive_chord_lessons', value))
