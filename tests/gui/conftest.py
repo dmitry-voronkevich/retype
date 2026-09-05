@@ -1,5 +1,7 @@
 """Shared fixtures for deterministic PyQt5 integration tests."""
 
+import json
+from copy import deepcopy
 from pathlib import Path
 
 import pytest
@@ -25,15 +27,19 @@ def make_controller(qapp, qtbot, tmp_path):
     library_dir = str(Path(__file__).parents[2] / "library")
     controllers = []
 
-    def factory(device_reader=None):
+    def factory(device_reader_factory=None, config=None):
         user_dir = tmp_path / f"user-{len(controllers)}"
-        if device_reader is None:
-            device_reader = _NoDeviceReader()
+        if device_reader_factory is None:
+            device_reader_factory = lambda: _NoDeviceReader()
         user_dir.mkdir()
+        if config is not None:
+            data = deepcopy(config)
+            data['user_dir'] = str(user_dir)
+            (user_dir / 'config.json').write_text(json.dumps(data))
         controller = MainController(
             config_dir=str(user_dir),
             library_paths=[library_dir],
-            device_reader=device_reader,
+            device_reader_factory=device_reader_factory,
         )
         controller.show()
         qtbot.wait(20)

@@ -78,6 +78,7 @@ default_config = {
     },
     "auto_newline": True,
     "adaptive_chord_lessons": True,
+    "load_chords_on_startup": True,
     "steno": {
         "kdict": default_steno_kdict
     }

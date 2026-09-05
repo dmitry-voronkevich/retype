@@ -34,6 +34,22 @@ class TestCustomisation:
         key = 'auto_newline'
         assert (dialog.selectors[key].isChecked() == default_config[key])
 
+    def test_chord_settings_defaults_and_persisted_opt_out(self):
+        dialog = _setup()
+        assert dialog.selectors['adaptive_chord_lessons'].isChecked()
+        assert dialog.selectors['load_chords_on_startup'].isChecked()
+
+        dialog.selectors['load_chords_on_startup'].set_(False)
+        assert dialog.config_edited['load_chords_on_startup'] is False
+
+    def test_missing_startup_chord_setting_defaults_to_enabled(self, tmp_path):
+        legacy = deepcopy(default_config)
+        legacy['user_dir'] = str(tmp_path)
+        legacy.pop('load_chords_on_startup')
+        (tmp_path / 'config.json').write_text(json.dumps(legacy))
+
+        assert SafeConfig(str(tmp_path))['load_chords_on_startup'] is True
+
     def test_auto_newline_check_uncheck(self):
         dialog = CustomisationDialog(default_config, FakeWindow(),
                                      None, None, None)

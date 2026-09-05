@@ -38,11 +38,18 @@ class MainController(QObject):
     aboutDialogRequested = pyqtSignal(str)
 
     def __init__(self, config_dir=None, library_paths=None,
-                 device_reader=None):
-        # type: (MainController, str | None, list[str] | None, DeviceSnapshotReader | None) -> None
+                 device_reader=None, device_reader_factory=None):
+        # type: (MainController, str | None, list[str] | None, DeviceSnapshotReader | None, callable | None) -> None
         super().__init__()
         self.config = SafeConfig(config_dir, library_paths)
-        self._device_reader = device_reader
+        if device_reader_factory is not None:
+            self._device_reader_factory = device_reader_factory
+        elif callable(device_reader):
+            self._device_reader_factory = device_reader
+        elif device_reader is not None:
+            self._device_reader_factory = lambda: device_reader
+        else:
+            self._device_reader_factory = DeviceSnapshotReader
         self._device_loader = None  # type: DeviceStartupLoader | None
         self.chord_progress = ChordMasteryProgress(
             ChordMasteryStorage(self.config['user_dir']))
@@ -73,6 +80,8 @@ class MainController(QObject):
         self.customisationDialogRequested.connect(self.showCustomisationDialog)
         self.aboutDialogRequested.connect(self.showAboutDialog)
 
+        self._window.closing.connect(self._stopDeviceChordLoad)
+
         self._initLibrary()
         self._initMenuBar()
         self._instantiateViews()
@@ -82,24 +91,53 @@ class MainController(QObject):
         self._verifyUserDir()
         self._startDeviceChordLoad()
 
-    def _setDeviceStatus(self, message):
-        # type: (MainController, str) -> None
+    def _setDeviceStatus(self, message, loading=False):
+        # type: (MainController, str, bool) -> None
         logger.info("CharaChorder: %s", message)
         self._window.statusBar().showMessage(message)
+        dialog = getattr(self, 'customisation_dialog', None)
+        if dialog is not None:
+            dialog.setChordLoadState(message, loading)
+
+    def _deviceLoaderActive(self):
+        # type: (MainController) -> bool
+        loader = self._device_loader
+        return loader is not None and loader.thread.isRunning()
+
+    def _createDeviceLoader(self):
+        # type: (MainController) -> DeviceStartupLoader
+        return DeviceStartupLoader(self._device_reader_factory())
+
+    def _beginDeviceChordLoad(self, start_message):
+        # type: (MainController, str) -> bool
+        if self._deviceLoaderActive():
+            self._setDeviceStatus("CharaChorder chord load already in progress.", True)
+            return False
+        self._setDeviceStatus(start_message, True)
+        loader = self._createDeviceLoader()
+        self._device_loader = loader
+        loader.status.connect(lambda msg: self._setDeviceStatus(msg, True))
+        loader.snapshotReady.connect(self._installDeviceSnapshot)
+        loader.unavailable.connect(self._deviceChordLoadUnavailable)
+        loader.cancelled.connect(self._deviceChordLoadCancelled)
+        loader.failed.connect(self._deviceChordLoadFailed)
+        loader.finished.connect(self._deviceChordLoadFinished)
+        loader.thread.finished.connect(lambda: logger.debug(
+            "CharaChorder reader stopped"))
+        loader.start()
+        return True
 
     def _startDeviceChordLoad(self):
         # type: (MainController) -> None
         """Read once in a worker; BookView remains empty until it is complete."""
-        self._setDeviceStatus("Looking for a CharaChorder Two S3…")
-        loader = DeviceStartupLoader(self._device_reader)
-        self._device_loader = loader
-        loader.status.connect(self._setDeviceStatus)
-        loader.snapshotReady.connect(self._installDeviceSnapshot)
-        loader.failed.connect(self._deviceChordLoadFailed)
-        loader.thread.finished.connect(lambda: logger.debug(
-            "CharaChorder startup reader stopped"))
-        self._window.closing.connect(self._stopDeviceChordLoad)
-        loader.start()
+        if self.config['load_chords_on_startup']:
+            self._beginDeviceChordLoad("Looking for a CharaChorder Two S3…")
+        else:
+            self._setDeviceStatus("CharaChorder startup loading is disabled.")
+
+    def loadChordsNow(self):
+        # type: (MainController) -> None
+        self._beginDeviceChordLoad("Looking for a CharaChorder Two S3…")
 
     def _installDeviceSnapshot(self, snapshot):
         # type: (MainController, object) -> None
@@ -116,10 +154,26 @@ class MainController(QObject):
             "Loaded {} chord hints from CharaChorder Two S3 ({})".format(
                 len(chords), snapshot.version))
 
-    def _deviceChordLoadFailed(self, message):
+    def _deviceChordLoadUnavailable(self, message):
         # type: (MainController, str) -> None
         self._setDeviceStatus(
             "CharaChorder chord hints unavailable: {}".format(message))
+
+    def _deviceChordLoadCancelled(self):
+        # type: (MainController) -> None
+        self._setDeviceStatus("CharaChorder chord load cancelled.")
+
+    def _deviceChordLoadFailed(self, message):
+        # type: (MainController, str) -> None
+        self._setDeviceStatus(
+            "CharaChorder chord load failed: {}".format(message))
+
+    def _deviceChordLoadFinished(self):
+        # type: (MainController) -> None
+        self._device_loader = None
+        dialog = getattr(self, 'customisation_dialog', None)
+        if dialog is not None:
+            dialog.setChordLoadState(self._window.statusBar().currentMessage())
 
     def _stopDeviceChordLoad(self):
         # type: (MainController) -> None
@@ -147,6 +201,10 @@ class MainController(QObject):
             self.saveConfigRequested, self.prevViewRequested,
             lambda: self.views[View.book_view].font_size,
             self._window)
+        self.customisation_dialog.loadChordsNowRequested.connect(
+            self.loadChordsNow)
+        self.customisation_dialog.setChordLoadState(
+            "Ready to load chords from CharaChorder.")
 
     def _viewFromEnumOrInt(self, view):
         # type: (MainController, View | int) -> QWidget

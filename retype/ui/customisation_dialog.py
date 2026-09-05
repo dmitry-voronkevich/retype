@@ -93,6 +93,7 @@ def descl(text):
 
 
 class CustomisationDialog(QDialog):
+    loadChordsNowRequested = pyqtSignal()
     def __init__(self,  # type: CustomisationDialog
                  config,  # type: Config
                  window,  # type: MainWin
@@ -128,6 +129,15 @@ class CustomisationDialog(QDialog):
         # type: (CustomisationDialog) -> str
         return self.config['user_dir']
 
+    def setChordLoadState(self, text, loading=False):
+        # type: (CustomisationDialog, str, bool) -> None
+        if hasattr(self, 'load_chords_status'):
+            self.load_chords_status.label.setText(text)
+            self.load_chords_status.doc.setPlainText(text)
+            self.load_chords_status.updateGeometry()
+        if hasattr(self, 'load_chords_button'):
+            self.load_chords_button.setDisabled(loading)
+
     def _initUI(self):
         # type: (CustomisationDialog) -> None
         self.selectors = {}  # type: dict[str, Selector]
@@ -137,6 +147,7 @@ class CustomisationDialog(QDialog):
         catw.add("User interface", "Icons", self._iconsSettings())
         catw.add("User interface", "Theme", self._themeSettings())
         catw.add("User interface", "Keymap", self._keymapSettings())
+        catw.add("User interface", "Chords & CharaChorder", self._chordsSettings())
         catw.add("User interface", "Console", self._consoleSettings())
         catw.add("User interface", "Book View", self._bookviewSettings())
         catw.add("User interface", "Window geometry", self._windowSettings())
@@ -186,16 +197,6 @@ class CustomisationDialog(QDialog):
         self.selectors['library_paths'].changed.connect(
             lambda paths: self.update_("library_paths", paths))
         lyt.addRow(self.selectors['library_paths'])
-        lyt.addRow(hline())
-        adaptive = CheckBox(
-            "Limit chord lessons to five unmastered chords (recommended)",
-            self.config_edited.get('adaptive_chord_lessons', True))
-        adaptive.changed.connect(
-            lambda value: self.update_('adaptive_chord_lessons', value))
-        self.selectors['adaptive_chord_lessons'] = adaptive
-        lyt.addRow(adaptive)
-        lyt.addRow(descl("Uncheck to show the full loaded chord list."))
-
         return plib
 
     def _iconsSettings(self):
@@ -297,6 +298,47 @@ class CustomisationDialog(QDialog):
             lambda: self.keymap.exportCurrent(self.getUserDir()))
 
         return pkm
+
+    def _chordsSettings(self):
+        # type: (CustomisationDialog) -> QWidget
+        pchords = QWidget()
+        lyt = QFormLayout(pchords)
+        lyt.addRow(descl("Chord hints can be loaded automatically from a connected CharaChorder Two S3, or on demand."))
+
+        startup = CheckBox(
+            "Load chords from CharaChorder on startup",
+            self.config_edited.get('load_chords_on_startup', True))
+        startup.changed.connect(
+            lambda value: self.update_('load_chords_on_startup', value))
+        self.selectors['load_chords_on_startup'] = startup
+        lyt.addRow(startup)
+
+        load_row = QWidget()
+        load_row_lyt = QHBoxLayout(load_row)
+        load_row_lyt.setContentsMargins(0, 0, 0, 0)
+        self.load_chords_button = QPushButton("Load chords now")
+        self.load_chords_button.setObjectName('load-chords-now')
+        self.load_chords_button.setToolTip(
+            "Read the connected CharaChorder chord snapshot now")
+        self.load_chords_button.clicked.connect(self.loadChordsNowRequested.emit)
+        load_row_lyt.addWidget(self.load_chords_button)
+        self.load_chords_status = WrappedLabel(
+            "Ready to load chords from CharaChorder.")
+        self.load_chords_status.setObjectName('load-chords-status')
+        load_row_lyt.addWidget(self.load_chords_status, 1)
+        lyt.addRow(load_row)
+
+        lyt.addRow(hline())
+        adaptive = CheckBox(
+            "Limit chord lessons to five unmastered chords (recommended)",
+            self.config_edited.get('adaptive_chord_lessons', True))
+        adaptive.changed.connect(
+            lambda value: self.update_('adaptive_chord_lessons', value))
+        self.selectors['adaptive_chord_lessons'] = adaptive
+        lyt.addRow(adaptive)
+        lyt.addRow(descl("Uncheck to show the full loaded chord list."))
+
+        return pchords
 
     def _consoleSettings(self):
         # type: (CustomisationDialog) -> QWidget
@@ -1641,6 +1683,77 @@ class WindowGeometrySelector(QWidget):
                 f'expects Geometry dict, got: {type(value)}')
         for key, selector in self.selectors.items():
             selector.set_(value[key])
+
+
+class ChordSettingsWidget(QWidget):
+    changed = pyqtSignal(dict)
+    loadRequested = pyqtSignal()
+
+    def __init__(self, chord_settings, parent=None):
+        # type: (ChordSettingsWidget, dict, QWidget | None) -> None
+        QWidget.__init__(self, parent)
+
+        self.settings = chord_settings
+        self.selectors = {}  # type: dict[str, Selector]
+
+        startup = CheckBox(
+            "Load chords from CharaChorder on startup",
+            self.settings.get('load_chords_on_startup', True))
+        startup.changed.connect(
+            lambda value: self.updateSetting('load_chords_on_startup', value))
+        self.selectors['load_chords_on_startup'] = startup
+
+        self.load_button = QPushButton("Load chords now")
+        self.load_button.setObjectName('load-chords-now')
+        self.load_button.clicked.connect(self.loadRequested.emit)
+
+        self.load_status = WrappedLabel("Ready to load chords from CharaChorder.")
+        self.load_status.setObjectName('load-chords-status')
+
+        adaptive = CheckBox(
+            "Limit chord lessons to five unmastered chords (recommended)",
+            self.settings.get('adaptive_chord_lessons', True))
+        adaptive.changed.connect(
+            lambda value: self.updateSetting('adaptive_chord_lessons', value))
+        self.selectors['adaptive_chord_lessons'] = adaptive
+
+        lyt = QFormLayout(self)
+        lyt.addRow(descl("Chord hints can be loaded automatically from a connected CharaChorder Two S3, or on demand."))
+        lyt.addRow(startup)
+
+        load_row = QWidget()
+        load_row_lyt = QHBoxLayout(load_row)
+        load_row_lyt.setContentsMargins(0, 0, 0, 0)
+        load_row_lyt.addWidget(self.load_button)
+        load_row_lyt.addWidget(self.load_status, 1)
+        lyt.addRow(load_row)
+
+        lyt.addRow(hline())
+        lyt.addRow(adaptive)
+        lyt.addRow(descl("Uncheck to show the full loaded chord list."))
+
+    def updateSetting(self, name, val):
+        # type: (ChordSettingsWidget, str, object) -> None
+        if name in self.settings.keys():
+            self.settings[name] = val  # type: ignore[literal-required]
+            self.changed.emit(self.settings)
+        else:
+            logger.error(f'updateSetting: Nonexistent key {name}')
+
+    def setLoadState(self, text, loading=False):
+        # type: (ChordSettingsWidget, str, bool) -> None
+        self.load_status.label.setText(text)
+        self.load_status.doc.setPlainText(text)
+        self.load_status.updateGeometry()
+        self.load_button.setDisabled(loading)
+
+    def minimumSizeHint(self):
+        # type: (ChordSettingsWidget) -> QSize
+        return QSize(100, 100)
+
+    def sizeHint(self):
+        # type: (ChordSettingsWidget) -> QSize
+        return self.minimumSizeHint()
 
 
 class BookViewSettingsWidget(QWidget):
