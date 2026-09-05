@@ -131,7 +131,10 @@ class CustomisationDialog(QDialog):
 
     def sizeHint(self):
         # type: (CustomisationDialog) -> QSize
-        return QSize(500, 500)
+        # The chord mastery table includes two explicit row-action buttons;
+        # leave enough room for them beside the category tree instead of
+        # clipping the table in the default dialog width.
+        return QSize(800, 500)
 
     def getUserDir(self):
         # type: (CustomisationDialog) -> str
