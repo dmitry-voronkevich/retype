@@ -24,13 +24,26 @@ Library search paths
 
 Paths where *retype* should look for epub files.
 
-Chord lessons
-^^^^^^^^^^^^^
+Chords & CharaChorder
+---------------------
+
+Chord hints can be loaded from a connected CharaChorder Two S3 running CCOS
+3.x. **Load chords from CharaChorder on startup** is enabled by default,
+including for existing configurations without this saved setting. Uncheck it
+to skip the startup read; this does not clear local or previously loaded chord
+data.
+
+Use **Load chords now** to read the device snapshot on demand, including when
+startup loading is disabled. The action is disabled while a read is active.
+The status text reports progress and whether loading succeeded, was cancelled,
+was unavailable because no supported device could be read, or failed for
+another reason. A new chord map is applied only after the complete snapshot
+has been read successfully; otherwise existing chord data is retained.
 
 When **Limit chord lessons to five unmastered chords (recommended)** is
 checked, the Book View teaches at most five incomplete chords at a time;
-uncheck it to show the full chord list read from the connected device. With no
-available device chord map, this setting has no effect.
+uncheck it to show the full loaded chord list. With no available device chord
+map, this setting has no effect.
 
 Console
 -------

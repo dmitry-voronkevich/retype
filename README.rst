@@ -80,15 +80,15 @@ You can add more library search paths and customise retype’s operation in the 
 CharaChorder chord library
 ^^^^^^^^^^^^^^^^^^^^^^^^^
 
-At startup, *retype* makes one read-only connection to a supported
-CharaChorder Two S3 running CCOS 3.x. It reads profile A's layout and complete
-chord map, then releases the serial port. Chord hints become available when
-that read completes; ordinary typing stays available while it runs.
+By default, *retype* loads a read-only chord snapshot at startup from a
+supported CharaChorder Two S3 running CCOS 3.x. You can disable startup loading
+or use **Load chords now** in Customisation > **Chords & CharaChorder**;
+ordinary typing remains available while a load runs.
 
-If the device is disconnected, busy, unsupported, or cannot be read completely,
-chord features remain unavailable for that session. The window status message
-and application log explain the failure and how to recover (connect the
-supported device and restart *retype*). No partial device data is used.
+A load reports its progress and outcome in the settings dialog and status bar.
+Only a complete snapshot replaces the current chord map, so unavailable,
+cancelled, or failed loads preserve existing chord data. See the device
+loading reference in the documentation_ for protocol and recovery details.
 
 By default, retype teaches at most five unmastered chords at a time, prioritising chords already in progress. Words in the active lesson are highlighted with a dotted underline. Completed chords remain available as hints but are not new teaching targets. To restore the full loaded chord list, uncheck **Limit chord lessons to five unmastered chords (recommended)** in Customisation. The detailed lesson and progress-storage behavior is documented in the Book View reference.
 

@@ -116,8 +116,9 @@ device detector or attribution claim. A fast ordinary typist or macro can
 receive the same feedback, notably for a valid short known word such as ``at``;
 slower, interrupted, or mixed output can miss it. The detector uses no USB,
 serial, HID, Web Serial, raw-device, or device-companion live-key access. A
-separate one-time startup read may provide its chord dictionary; it never
-attributes typed keys to the device.
+A device snapshot read may provide its chord dictionary, either at startup or
+on demand from the :doc:`customisation-dialog`; it never attributes typed keys
+to the device.
 
 Session-only chord mastery statistics
 -------------------------------------
@@ -141,8 +142,9 @@ but does not use one of the five teaching places. The cumulative validated-use
 counts are stored as ``chord-mastery.json`` beside ``save.json`` in the user
 directory, so they survive application sessions.
 
-To opt out, open Customisation, choose Paths, and uncheck **Limit chord lessons
-to five unmastered chords**. This restores the full loaded chord list, and
+To opt out, open Customisation, choose **Chords & CharaChorder**, and uncheck
+**Limit chord lessons to five unmastered chords**. This restores the full loaded
+chord list, and
 changing the setting or loaded dictionary refreshes the current chapter's
 underlines and hints immediately. With no loaded dictionary, ordinary typing
 is unchanged and no chord lesson is active.
