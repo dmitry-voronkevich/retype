@@ -2797,7 +2797,16 @@ class ChordMasterySection(QWidget):
         chords = self._loadedChords()
         if not chords:
             self._setWrappedText(self.summary, 'No loaded chords yet.')
-            self._setWrappedText(self.warning, '')
+            if self.progress is not None and getattr(
+                    self.progress.storage, 'malformed_entries', 0):
+                count = self.progress.storage.malformed_entries
+                self._setWrappedText(
+                    self.warning,
+                    'Malformed saved progress was ignored for {} entr{} and '
+                    'left on disk.'.format(
+                        count, 'y' if count == 1 else 'ies'))
+            else:
+                self._setWrappedText(self.warning, '')
             self.confirmation.hide()
             self.table.setRowCount(0)
             return

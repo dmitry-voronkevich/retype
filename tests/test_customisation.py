@@ -137,3 +137,17 @@ class TestCustomisation:
 
         assert 'Malformed saved progress' in section.warning.label.text()
         assert section.summary.label.text().startswith('1 teaching target')
+
+    def test_malformed_progress_is_shown_without_loaded_chords(self, tmp_path):
+        path = tmp_path / 'chord-mastery.json'
+        path.write_text(json.dumps({
+            'version': 2,
+            'progress': {'broken': 'not-an-int'},
+        }))
+        progress = ChordMasteryProgress(ChordMasteryStorage(str(tmp_path)))
+        dialog = _setup(progress=progress)
+        section = dialog.chord_mastery
+
+        assert section.summary.label.text() == 'No loaded chords yet.'
+        assert 'Malformed saved progress' in section.warning.label.text()
+        assert '1 entry' in section.warning.label.text()
