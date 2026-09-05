@@ -1,8 +1,8 @@
 """Persistent chord-practice progress and chapter lesson selection.
 
 This is deliberately a domain service: it consumes only ``ValidatedChord``
-results and exposes a lesson map to callers.  Qt presentation, banners, and
-session typing statistics remain outside this module.
+results and exposes a lesson map to callers. Qt presentation, status-bar
+feedback, and session typing statistics remain outside this module.
 """
 from dataclasses import dataclass
 import json

@@ -93,32 +93,34 @@ already receives. Timing-only observations are internal diagnostics; they are
 not displayed as chord successes and never affect the ``Chords`` count or green
 chart segments.
 
-A three-second ``Known chord complete`` encouragement is shown after a word
-delimiter (including punctuation or Return), or when automatic line completion
-survives the edit, if the surviving editor token is a rapid known chord word
-exactly at the current book cursor. The word
-must match the loaded dictionary and book word, and each surviving character
-must be no more than 35 milliseconds apart with a total span no greater than
-120 milliseconds. CharaChorder-style incorrect prefixes followed by Backspace
-cleanup are accepted only when the final surviving word meets those conditions.
-Pastes, selection replacement, IME-like or programmatic edits, ambiguous timing
-resets, and uncorrected prefixes fail closed. One typed validated-chord result
-is emitted only after all of those checks; the banner, ``Chords`` counter,
-and green chart segments consume that same result. Its word identity, cursor,
-and timing fields are available to the session mastery tracker and adaptive
-lesson consumers without coupling their storage to this UI. Only expiry of the
-single-shot timer hides the encouragement; console clears, automatic
-completion, navigation, and statistics resets do not control its visibility or
-timer.
+After a word delimiter (including punctuation or Return), or when automatic
+line completion survives the edit, a validated rapid, correct known chord word
+at the current book cursor is announced in the application status bar as
+``Chord detected: WORD``. The word must match the loaded dictionary and book
+word, and each surviving character must be no more than 35 milliseconds apart
+with a total span no greater than 120 milliseconds. CharaChorder-style
+incorrect prefixes followed by Backspace cleanup are accepted only when the
+final surviving word meets those conditions. Pastes, selection replacement,
+IME-like or programmatic edits, ambiguous timing resets, and uncorrected
+prefixes fail closed.
+
+Detection messages remain visible for 1.2 seconds and are coalesced within a
+150-millisecond burst, so rapid events do not make the status bar unreadable.
+When a validated event changes lesson progress, the status bar instead reports
+``Chord learned: WORD`` and/or ``New chord to learn: WORD``. Progression
+messages have priority over ordinary detection messages and remain visible for
+4 seconds. Expiry restores the permanent application or device status message.
+Console clears, automatic completion, navigation, and statistics resets do not
+control this feedback.
 
 This is a bounded timing heuristic for the observed study conditions, not a
 device detector or attribution claim. A fast ordinary typist or macro can
 receive the same feedback, notably for a valid short known word such as ``at``;
 slower, interrupted, or mixed output can miss it. The detector uses no USB,
 serial, HID, Web Serial, raw-device, or device-companion live-key access. A
-A device snapshot read may provide its chord dictionary, either at startup or
-on demand from the :doc:`customisation-dialog`; it never attributes typed keys
-to the device.
+device snapshot read may provide its chord dictionary, either at startup or on
+demand from the :doc:`customisation-dialog`; it never attributes typed keys to
+the device.
 
 Session-only chord mastery statistics
 -------------------------------------

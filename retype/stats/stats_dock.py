@@ -20,8 +20,8 @@ from retype.services.theme import theme, C, Theme
 class StatsDock(QWidget):
     # Likely is a diagnostic timing observation only; it is never success.
     likelyChordDetected = pyqtSignal(int)
-    # The authoritative domain event. Every success subscriber (banner,
-    # counter, and green chart marking) consumes this typed result.
+    # The authoritative domain event. Every success subscriber (status-bar
+    # feedback, counter, and green chart marking) consumes this typed result.
     validatedChordDetected = pyqtSignal(object)
 
     def __init__(self, book_view, parent=None):
@@ -206,7 +206,7 @@ class StatsDock(QWidget):
     def _finalizeCandidate(self, editor_text=None, editor_cursor=None,
                            projected=False):
         # type: (StatsDock, str | None, int | None, bool) -> None
-        """Emit one bounded rapid-output encouragement for a surviving token."""
+        """Emit one validated result for a surviving rapid-output token."""
         if not self._candidate_text or self._candidate_timing_invalid or \
            (self._expected_editor_text is not None and not projected):
             return

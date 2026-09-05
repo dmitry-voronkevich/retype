@@ -204,7 +204,7 @@ class BookView(QWidget):
         self.loaded_chords = chords or {}
         self.chords = {}  # active lesson chords, refreshed for each chapter
         self.adaptive_chord_lessons = adaptive_chord_lessons
-        # These domain services have no banner or statistics dependencies.
+        # These domain services have no status-bar or statistics dependencies.
         # The first is session diagnostics; the second is persisted curriculum
         # progress and supplies the lesson selector.
         self.chord_mastery = ChordMasteryTracker()
