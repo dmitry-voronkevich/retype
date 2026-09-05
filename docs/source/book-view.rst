@@ -147,9 +147,9 @@ overrides are stored there too and win over the measured progress until they
 are restored.
 
 To opt out, open Customisation, choose **Chords & CharaChorder**, and uncheck
-**Limit chord lessons to five unmastered chords**. This restores the full loaded
-chord list, and the **Chords introduced per lesson** setting controls the limit
-again when it is re-enabled. Changing either setting or the loaded dictionary
+**Limit number of chords per lesson**. This restores the full loaded chord list;
+when the limit is enabled, **Chords introduced per lesson** controls how many
+incomplete chords are taught. Changing either setting or the loaded dictionary
 refreshes the current chapter's underlines and hints immediately. With no
 loaded dictionary, ordinary typing is unchanged and no chord lesson is active.
 
