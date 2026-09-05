@@ -82,7 +82,8 @@ def test_customisation_dialog_refreshes_mastery_on_reopen(
     for _ in range(MIN_SUCCESSFUL_USES_FOR_MASTERY):
         book_view.stats_dock.validatedChordDetected.emit(
             _validated_chord('mastered'))
-    book_view.stats_dock.validatedChordDetected.emit(_validated_chord('started'))
+    book_view.stats_dock.validatedChordDetected.emit(
+        _validated_chord('started'))
 
     controller.customisationDialogRequested.emit()
     dialog = controller.customisation_dialog

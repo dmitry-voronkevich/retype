@@ -55,7 +55,9 @@ sort indicator. Column headers can be focused and activated from the keyboard,
 and stable ties retain the chord order. The Select column is not sortable. Rows
 are selected with checkboxes, and bulk actions appear once one or more rows are
 selected. Manual changes show an Undo strip and a link to restore the measured
-state.
+state. The table is refreshed from current loaded chords and mastery progress
+each time the dialog is shown, including when an existing dialog is reopened;
+pending manual changes remain pending while the measured progress is refreshed.
 
 Console
 -------
