@@ -2664,13 +2664,21 @@ class CategorisedWidget(QWidget):
 class MasteryHeaderView(QHeaderView):
     sortRequested = pyqtSignal(int)
 
-    def __init__(self, orientation, parent=None):
-        # type: (MasteryHeaderView, Qt.Orientation, QWidget | None) -> None
+    def __init__(self, orientation, parent=None, non_sortable_sections=()):
+        # type: (MasteryHeaderView, Qt.Orientation, QWidget | None, object) -> None
         QHeaderView.__init__(self, orientation, parent)
+        self._non_sortable_sections = set(non_sortable_sections)
         self.setSectionsClickable(True)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setHighlightSections(True)
         self.setSortIndicatorShown(True)
+
+    def mousePressEvent(self, event):
+        # type: (MasteryHeaderView, object) -> None
+        if self.logicalIndexAt(event.pos().x()) in self._non_sortable_sections:
+            event.accept()
+            return
+        QHeaderView.mousePressEvent(self, event)
 
     def keyPressEvent(self, event):
         # type: (MasteryHeaderView, object) -> None
@@ -2679,6 +2687,9 @@ class MasteryHeaderView(QHeaderView):
             section = self.currentIndex().column()
             if section < 0:
                 section = self.sortIndicatorSection()
+            if section in self._non_sortable_sections:
+                event.accept()
+                return
             if section >= 0:
                 self.sortRequested.emit(section)
                 event.accept()
@@ -2765,7 +2776,8 @@ class ChordMasterySection(QWidget):
         self.table.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.table.setAlternatingRowColors(True)
         self.table.verticalHeader().setVisible(False)
-        header = MasteryHeaderView(Qt.Orientation.Horizontal, self.table)
+        header = MasteryHeaderView(
+            Qt.Orientation.Horizontal, self.table, non_sortable_sections=(0,))
         self.table.setHorizontalHeader(header)
         header.sectionClicked.connect(self._toggleSortSection)
         header.sortRequested.connect(self._toggleSortSection)
@@ -2969,6 +2981,8 @@ class ChordMasterySection(QWidget):
 
     def _toggleSortSection(self, column):
         # type: (ChordMasterySection, int) -> None
+        if column == 0:
+            return
         if column == self._sort_column:
             self._sort_order = (
                 Qt.SortOrder.DescendingOrder

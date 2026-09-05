@@ -138,6 +138,14 @@ class TestCustomisation:
         assert header.sortIndicatorSection() == 2
         assert _row_keys(section) == ['alpha', 'beta', 'gamma', 'zeta']
 
+        header.setCurrentIndex(header.model().index(0, 0))
+        header.setFocus()
+        qtbot.keyClick(header, Qt.Key.Key_Space)
+
+        assert header.sortIndicatorSection() == 2
+        assert header.sortIndicatorOrder() == Qt.SortOrder.AscendingOrder
+        assert _row_keys(section) == ['alpha', 'beta', 'gamma', 'zeta']
+
     def test_selection_controls_bulk_actions_and_keyboard_navigation(self, qtbot, tmp_path):
         progress = ChordMasteryProgress(ChordMasteryStorage(str(tmp_path)))
         dialog = _setup({'mastered': 'm', 'started': 's', 'other': 'o'}, progress=progress)
