@@ -1,18 +1,21 @@
-CharaChorder device startup
-============================
+CharaChorder device loading
+===========================
 
 retype reads chord hints only from a connected CharaChorder Two S3 running
-CCOS 3.x. At application startup it discovers a likely USB serial port,
-validates ``ID CHARACHORDER TWO S3`` and ``VERSION 3.x``, reads profile A's
-primary keymap with ``VAR B3 A1 <index>``, then reads the complete chord map
-with ``CML C0`` and ``CML C1 <index>``. The operation is read-only and releases
-the port once the attempt finishes.
+CCOS 3.x. Startup loading is enabled by default and can be disabled in the
+:doc:`customisation-dialog`; the same read can also be started there with
+**Load chords now**. Each read discovers a likely USB serial port, validates
+``ID CHARACHORDER TWO S3`` and ``VERSION 3.x``, reads profile A's primary
+keymap with ``VAR B3 A1 <index>``, then reads the complete chord map with
+``CML C0`` and ``CML C1 <index>``. The operation is read-only and releases the
+port once the attempt finishes.
 
 The snapshot runs in a Qt worker thread, so the window remains usable while
-large chord maps are enumerated. A short non-blocking status-bar message was
-chosen instead of a progress bar because the existing window has no startup
-progress surface and the message reports both availability and actionable
-failure without adding a second stateful UI control.
+large chord maps are enumerated. The settings dialog shows loading progress,
+disables the on-demand action during a read, and reports success,
+unavailability, cancellation, or failure. A snapshot replaces the current
+chord map only after the complete read succeeds; a disabled startup read or
+an unsuccessful read retains local or previously loaded chord data.
 
 Hardware diagnostics
 --------------------
@@ -32,11 +35,10 @@ Failure behavior
 ----------------
 
 No device, unsupported identity/version, malformed reply, unsupported command,
-timeout, cancellation, or an incomplete keymap/chord enumeration leaves chord
-features unavailable. The Book View receives a new map only after one immutable
-snapshot has been fully validated and converted. retype never reuses old or
-partial device data. Connect the supported device and restart to retry; the
-window status message and application log include the reason.
+timeout, cancellation, or an incomplete keymap/chord enumeration replaces the
+current chord map. retype never installs old or partial device data from an
+unsuccessful read. Connect the supported device and use **Load chords now** to
+retry; the window status message and application log include the reason.
 
 Developer protocol boundary
 ---------------------------

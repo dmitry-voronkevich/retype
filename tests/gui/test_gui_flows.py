@@ -1,9 +1,13 @@
 """High-value GUI wiring checks; service and pure tests remain separate."""
 
+from copy import deepcopy
+from threading import Event
+
 import pytest
 from qt import Qt, QWidget
 
 from retype.controllers.main_controller import View
+from retype.constants import default_config
 from retype.services.chord_detection import BACKSPACE_KEY, ValidatedChord
 
 
@@ -454,7 +458,7 @@ def test_chord_feedback_hides_when_timer_expires(make_controller, qtbot):
     assert book_view.chord_feedback.isVisible()
     assert book_view._chord_feedback_timer.isActive()
 
-    qtbot.wait(3100)
+    qtbot.waitUntil(lambda: not book_view.chord_feedback.isVisible(), timeout=5000)
 
     assert not book_view.chord_feedback.isVisible()
     assert not book_view._chord_feedback_timer.isActive()
@@ -521,18 +525,37 @@ def test_nonmoving_chapter_navigation_preserves_chord_feedback(
 
 
 class _SnapshotReader:
-    def __init__(self, snapshot=None, error=None):
+    def __init__(self, snapshot=None, error=None, release=None):
         self.snapshot = snapshot
         self.error = error
+        self.release = release
         self.cancelled = False
+        self.read_calls = 0
 
     def read(self, _progress):
+        self.read_calls += 1
+        if self.release is not None:
+            while not self.release.wait(0.01):
+                if self.cancelled:
+                    from retype.services.device_snapshot import DeviceCancelled
+                    raise DeviceCancelled('cancelled')
+            if self.cancelled:
+                from retype.services.device_snapshot import DeviceCancelled
+                raise DeviceCancelled('cancelled')
         if self.error:
             raise self.error
         return self.snapshot
 
     def cancel(self):
         self.cancelled = True
+        if self.release is not None:
+            self.release.set()
+
+
+def _device_config(**overrides):
+    config = deepcopy(default_config)
+    config.update(overrides)
+    return config
 
 
 def test_startup_installs_only_complete_device_snapshot(make_controller, qtbot):
@@ -543,7 +566,7 @@ def test_startup_installs_only_complete_device_snapshot(make_controller, qtbot):
         tuple([606, 116, 608, 104, 607, 101] + [0] * 84),
         (((116, 104, 101), (116, 104, 101)),),
     ))
-    controller = make_controller(reader)
+    controller = make_controller(lambda: reader)
     controller.loadBookRequested.emit(0)
     qtbot.waitUntil(lambda: 'the' in controller.view().loaded_chords)
 
@@ -553,11 +576,135 @@ def test_startup_installs_only_complete_device_snapshot(make_controller, qtbot):
     assert 'Loaded 1 chord hints' in controller._window.statusBar().currentMessage()
 
 
-def test_startup_failure_leaves_chords_unavailable(make_controller, qtbot):
-    from retype.services.device_snapshot import DeviceReadError
-    reader = _SnapshotReader(error=DeviceReadError('serial permission denied'))
-    controller = make_controller(reader)
-    qtbot.waitUntil(lambda: 'unavailable' in
-                    controller._window.statusBar().currentMessage())
+def test_startup_loading_can_be_disabled(make_controller, qtbot):
+    from retype.services.device_snapshot import DeviceSnapshot
+
+    reader = _SnapshotReader(DeviceSnapshot(
+        'CHARACHORDER TWO S3', '3.0.0', 'A',
+        tuple([606, 116, 608, 104, 607, 101] + [0] * 84),
+        (((116, 104, 101), (116, 104, 101)),),
+    ))
+    controller = make_controller(
+        lambda: reader,
+        config=_device_config(load_chords_on_startup=False),
+    )
+
+    qtbot.waitUntil(lambda: 'disabled' in controller._window.statusBar().currentMessage())
     assert controller.views[View.book_view].loaded_chords == {}
-    assert 'serial permission denied' in controller._window.statusBar().currentMessage()
+    assert 'startup loading is disabled' in controller._window.statusBar().currentMessage()
+
+
+def test_load_chords_now_works_when_startup_loading_is_disabled(make_controller, qtbot):
+    from retype.services.device_snapshot import DeviceSnapshot
+
+    reader = _SnapshotReader(DeviceSnapshot(
+        'CHARACHORDER TWO S3', '3.0.0', 'A',
+        tuple([606, 116, 608, 104, 607, 101] + [0] * 84),
+        (((116, 104, 101), (116, 104, 101)),),
+    ))
+    controller = make_controller(
+        lambda: reader,
+        config=_device_config(load_chords_on_startup=False),
+    )
+    controller.customisationDialogRequested.emit()
+    dialog = controller.customisation_dialog
+    qtbot.waitUntil(lambda: dialog.isVisible())
+
+    qtbot.mouseClick(dialog.load_chords_button, Qt.MouseButton.LeftButton)
+    book_view = controller.views[View.book_view]
+    qtbot.waitUntil(lambda: 'the' in book_view.loaded_chords)
+
+    assert book_view.chords == {'the': 't+h+e'}
+    assert dialog.load_chords_button.isEnabled()
+    assert 'Loaded 1 chord hints' in controller._window.statusBar().currentMessage()
+
+
+def test_load_chords_button_blocks_duplicate_loads(make_controller, qtbot):
+    from retype.services.device_snapshot import DeviceSnapshot
+
+    release = Event()
+    reader = _SnapshotReader(DeviceSnapshot(
+        'CHARACHORDER TWO S3', '3.0.0', 'A',
+        tuple([606, 116, 608, 104, 607, 101] + [0] * 84),
+        (((116, 104, 101), (116, 104, 101)),),
+    ), release=release)
+    controller = make_controller(
+        lambda: reader,
+        config=_device_config(load_chords_on_startup=False),
+    )
+    controller.customisationDialogRequested.emit()
+    dialog = controller.customisation_dialog
+    qtbot.waitUntil(lambda: dialog.isVisible())
+
+    qtbot.mouseClick(dialog.load_chords_button, Qt.MouseButton.LeftButton)
+    qtbot.waitUntil(lambda: reader.read_calls == 1)
+    qtbot.waitUntil(lambda: not dialog.load_chords_button.isEnabled())
+    controller.loadChordsNow()
+    assert reader.read_calls == 1
+
+    reader.cancel()
+    qtbot.waitUntil(lambda: 'cancelled' in controller._window.statusBar().currentMessage())
+    assert dialog.load_chords_button.isEnabled()
+
+
+def test_cancelled_chord_load_preserves_existing_chords(make_controller, qtbot):
+    from retype.services.device_snapshot import DeviceSnapshot
+
+    release = Event()
+    reader = _SnapshotReader(DeviceSnapshot(
+        'CHARACHORDER TWO S3', '3.0.0', 'A',
+        tuple([606, 116, 608, 104, 607, 101] + [0] * 84),
+        (((116, 104, 101), (116, 104, 101)),),
+    ), release=release)
+    controller = make_controller(
+        lambda: reader,
+        config=_device_config(load_chords_on_startup=False),
+    )
+    controller.views[View.book_view].setChords({'existing': 'e+x'})
+    controller.customisationDialogRequested.emit()
+    dialog = controller.customisation_dialog
+    qtbot.waitUntil(lambda: dialog.isVisible())
+
+    qtbot.mouseClick(dialog.load_chords_button, Qt.MouseButton.LeftButton)
+    qtbot.waitUntil(lambda: not dialog.load_chords_button.isEnabled())
+    reader.cancel()
+
+    qtbot.waitUntil(lambda: 'cancelled' in controller._window.statusBar().currentMessage())
+    assert controller.views[View.book_view].loaded_chords == {'existing': 'e+x'}
+
+
+def test_failed_chord_load_preserves_existing_chords(make_controller, qtbot):
+    from retype.services.device_snapshot import DeviceReadError
+
+    reader = _SnapshotReader(error=DeviceReadError('serial permission denied'))
+    controller = make_controller(
+        lambda: reader,
+        config=_device_config(load_chords_on_startup=False),
+    )
+    controller.views[View.book_view].setChords({'existing': 'e+x'})
+    controller.customisationDialogRequested.emit()
+    dialog = controller.customisation_dialog
+    qtbot.waitUntil(lambda: dialog.isVisible())
+
+    qtbot.mouseClick(dialog.load_chords_button, Qt.MouseButton.LeftButton)
+    qtbot.waitUntil(lambda: 'failed' in controller._window.statusBar().currentMessage())
+    assert controller.views[View.book_view].loaded_chords == {'existing': 'e+x'}
+
+
+def test_unavailable_chord_load_preserves_existing_chords(make_controller, qtbot):
+    from retype.services.device_snapshot import DeviceReadError
+
+    reader = _SnapshotReader(error=DeviceReadError(
+        'no CharaChorder serial device found; connect a Two S3 running CCOS 3.x and restart retype'))
+    controller = make_controller(
+        lambda: reader,
+        config=_device_config(load_chords_on_startup=False),
+    )
+    controller.views[View.book_view].setChords({'existing': 'e+x'})
+    controller.customisationDialogRequested.emit()
+    dialog = controller.customisation_dialog
+    qtbot.waitUntil(lambda: dialog.isVisible())
+
+    qtbot.mouseClick(dialog.load_chords_button, Qt.MouseButton.LeftButton)
+    qtbot.waitUntil(lambda: 'unavailable' in controller._window.statusBar().currentMessage())
+    assert controller.views[View.book_view].loaded_chords == {'existing': 'e+x'}

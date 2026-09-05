@@ -377,6 +377,8 @@ class DeviceStartupLoader(QObject):
     """Run the blocking one-shot reader on a Qt worker thread."""
     status = pyqtSignal(str)
     snapshotReady = pyqtSignal(object)
+    unavailable = pyqtSignal(str)
+    cancelled = pyqtSignal()
     failed = pyqtSignal(str)
     finished = pyqtSignal()
 
@@ -399,9 +401,17 @@ class DeviceStartupLoader(QObject):
             snapshot = self.reader.read(self.status.emit)
         except DeviceCancelled:
             logger.info("CharaChorder startup read cancelled")
+            self.cancelled.emit()
+        except UnsupportedDevice as exc:
+            logger.warning("CharaChorder startup read unavailable: %s", exc)
+            self.unavailable.emit(str(exc))
         except DeviceReadError as exc:
-            logger.warning("CharaChorder startup read failed: %s", exc)
-            self.failed.emit(str(exc))
+            if str(exc).startswith("no CharaChorder serial device found"):
+                logger.warning("CharaChorder startup read unavailable: %s", exc)
+                self.unavailable.emit(str(exc))
+            else:
+                logger.warning("CharaChorder startup read failed: %s", exc)
+                self.failed.emit(str(exc))
         except Exception:
             logger.exception("Unexpected CharaChorder startup read failure")
             self.failed.emit(

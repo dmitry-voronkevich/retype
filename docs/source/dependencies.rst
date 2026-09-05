@@ -7,7 +7,7 @@ Dependencies
 - ``PyQt5`` (the Qt5 binding target)
 - ``ebooklib``
 - ``tinycss2``
-- ``pyserial`` -- used for the one-time supported CharaChorder startup read
+- ``pyserial`` -- used for supported CharaChorder startup and on-demand reads
 
 **Optional:**
 
