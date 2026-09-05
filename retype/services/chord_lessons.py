@@ -19,7 +19,7 @@ from retype.services.chords import WORD_RE
 logger = logging.getLogger(__name__)
 
 MASTERY_PROGRESS_FILENAME = 'chord-mastery.json'
-MASTERY_PROGRESS_FORMAT = 1
+MASTERY_PROGRESS_FORMAT = 2
 DEFAULT_LESSON_CHORD_LIMIT = 5
 
 
@@ -39,10 +39,16 @@ class ChordMasteryStorage:
             if user_dir else None
         self._raw_data = {}  # type: dict[str, object]
         self._raw_progress = {}  # type: dict[object, object]
+        self._raw_overrides = {}  # type: dict[str, bool]
+        self.malformed_entries = 0
         self.writable = True
 
     def load(self):
         # type: () -> dict[str, int]
+        self.malformed_entries = 0
+        self._raw_data = {}
+        self._raw_progress = {}
+        self._raw_overrides = {}
         if not self.path or not os.path.exists(self.path):
             return {}
         try:
@@ -55,7 +61,7 @@ class ChordMasteryStorage:
             return {}
 
         if not isinstance(data, dict) or \
-           data.get('version') != MASTERY_PROGRESS_FORMAT or \
+           data.get('version') not in (1, MASTERY_PROGRESS_FORMAT) or \
            not isinstance(data.get('progress'), dict):
             self.writable = False
             logger.warning('Chord mastery progress has an unsupported format; '
@@ -64,6 +70,9 @@ class ChordMasteryStorage:
 
         self._raw_data = dict(data)
         self._raw_progress = dict(data['progress'])
+        raw_overrides = data.get('manual_overrides', {})
+        self._raw_overrides = raw_overrides if isinstance(raw_overrides, dict) \
+            else {}
         progress = {}
         for key, uses in self._raw_progress.items():
             if isinstance(key, str) and key and \
@@ -71,19 +80,30 @@ class ChordMasteryStorage:
                uses >= 0:
                 progress[key] = uses
             else:
+                self.malformed_entries += 1
                 logger.warning('Ignoring malformed chord mastery progress '
                                'entry %r while preserving it on disk', key)
         return progress
 
-    def save(self, progress):
-        # type: (Mapping[str, int]) -> bool
+    def save(self, progress, overrides=None):
+        # type: (Mapping[str, int], Mapping[str, bool] | None) -> bool
         if not self.path or not self.writable:
             return False
         merged = dict(self._raw_progress)
         merged.update(progress)
+        merged_overrides = dict(self._raw_overrides)
+        if overrides is not None:
+            merged_overrides = {}
+            for key, mastered in overrides.items():
+                if isinstance(key, str) and key and isinstance(mastered, bool):
+                    merged_overrides[key] = mastered
         data = dict(self._raw_data)
         data['version'] = MASTERY_PROGRESS_FORMAT
         data['progress'] = merged
+        if merged_overrides:
+            data['manual_overrides'] = merged_overrides
+        else:
+            data.pop('manual_overrides', None)
         try:
             with open(self.path, 'w', encoding='utf-8') as file:
                 json.dump(data, file, indent=2, sort_keys=True)
@@ -91,6 +111,7 @@ class ChordMasteryStorage:
             logger.warning('Unable to save chord mastery progress: %s', error)
             return False
         self._raw_progress = merged
+        self._raw_overrides = merged_overrides
         return True
 
 
@@ -105,11 +126,23 @@ class ChordProgress:
 
     dictionary_key: str
     successful_uses: int
+    manual_override: bool | None = None
+
+    @property
+    def measured_is_mastered(self):
+        # type: (ChordProgress) -> bool
+        return self.successful_uses >= MIN_SUCCESSFUL_USES_FOR_MASTERY
 
     @property
     def is_mastered(self):
         # type: (ChordProgress) -> bool
-        return self.successful_uses >= MIN_SUCCESSFUL_USES_FOR_MASTERY
+        return self.manual_override if self.manual_override is not None else \
+            self.measured_is_mastered
+
+    @property
+    def has_manual_override(self):
+        # type: (ChordProgress) -> bool
+        return self.manual_override is not None
 
 
 class ChordMasteryProgress:
@@ -119,6 +152,10 @@ class ChordMasteryProgress:
         # type: (ChordMasteryStorage | None) -> None
         self.storage = storage or ChordMasteryStorage()
         self._uses = self.storage.load()
+        self._manual_overrides = {
+            key: mastered for key, mastered in self.storage._raw_overrides.items()
+            if isinstance(key, str) and key and isinstance(mastered, bool)
+        }
 
     def record(self, result):
         # type: (object) -> ChordProgress | None
@@ -130,17 +167,44 @@ class ChordMasteryProgress:
         assert isinstance(result, ValidatedChord)
         key = result.dictionary_key
         self._uses[key] = self._uses.get(key, 0) + 1
-        self.storage.save(self._uses)
+        self.storage.save(self._uses, self._manual_overrides)
         return self.progress_for(key)
 
     def progress_for(self, dictionary_key):
         # type: (str) -> ChordProgress
-        return ChordProgress(dictionary_key, self._uses.get(dictionary_key, 0))
+        return ChordProgress(
+            dictionary_key, self._uses.get(dictionary_key, 0),
+            self._manual_overrides.get(dictionary_key))
+
+    def manual_override_for(self, dictionary_key):
+        # type: (str) -> bool | None
+        return self._manual_overrides.get(dictionary_key)
+
+    def manual_overrides(self):
+        # type: () -> dict[str, bool]
+        return dict(self._manual_overrides)
+
+    def set_manual_override(self, dictionary_key, mastered):
+        # type: (str, bool | None) -> ChordProgress
+        if mastered is None:
+            self._manual_overrides.pop(dictionary_key, None)
+        else:
+            self._manual_overrides[dictionary_key] = bool(mastered)
+        self.storage.save(self._uses, self._manual_overrides)
+        return self.progress_for(dictionary_key)
+
+    def set_manual_overrides(self, overrides):
+        # type: (Mapping[str, bool]) -> None
+        self._manual_overrides = {
+            key: mastered for key, mastered in overrides.items()
+            if isinstance(key, str) and key and isinstance(mastered, bool)
+        }
+        self.storage.save(self._uses, self._manual_overrides)
 
     def all_progress(self):
         # type: () -> dict[str, ChordProgress]
-        return {key: ChordProgress(key, uses)
-                for key, uses in self._uses.items()}
+        keys = set(self._uses) | set(self._manual_overrides)
+        return {key: self.progress_for(key) for key in keys}
 
 
 @dataclass(frozen=True)
@@ -194,8 +258,9 @@ class AdaptiveChordExposure:
         started = []
         new = []
         for key in keys:
-            uses = self.progress.progress_for(key).successful_uses
-            if uses >= MIN_SUCCESSFUL_USES_FOR_MASTERY:
+            progress = self.progress.progress_for(key)
+            uses = progress.successful_uses
+            if progress.is_mastered:
                 mastered.append(key)
             elif uses:
                 started.append(key)

@@ -13,6 +13,7 @@ from retype.services.chord_detection import ValidatedChord
 from retype.services.chords import WORD_RE, chordable_spans
 from retype.services import (AdaptiveChordExposure, Autosave,
                              ChordMasteryProgress, ChordMasteryTracker,
+                             DEFAULT_LESSON_CHORD_LIMIT,
                              MIN_SUCCESSFUL_USES_FOR_MASTERY)
 from retype.stats import StatsDock
 from retype.services.theme import theme, C, Theme
@@ -190,7 +191,8 @@ class BookView(QWidget):
             chords=None,  # type: dict[str, object] | None
             parent=None,  # type: QWidget | None
             chord_progress=None,  # type: ChordMasteryProgress | None
-            adaptive_chord_lessons=True  # type: bool
+            adaptive_chord_lessons=True,  # type: bool
+            adaptive_chord_lesson_limit=DEFAULT_LESSON_CHORD_LIMIT  # type: int
     ):
         # type: (...) -> None
         super().__init__(parent)
@@ -204,12 +206,15 @@ class BookView(QWidget):
         self.loaded_chords = chords or {}
         self.chords = {}  # active lesson chords, refreshed for each chapter
         self.adaptive_chord_lessons = adaptive_chord_lessons
+        self.adaptive_chord_lesson_limit = max(0,
+                                               int(adaptive_chord_lesson_limit))
         # These domain services have no status-bar or statistics dependencies.
         # The first is session diagnostics; the second is persisted curriculum
         # progress and supplies the lesson selector.
         self.chord_mastery = ChordMasteryTracker()
         self.chord_progress = chord_progress or ChordMasteryProgress()
-        self.chord_exposure = AdaptiveChordExposure(self.chord_progress)
+        self.chord_exposure = AdaptiveChordExposure(
+            self.chord_progress, self.adaptive_chord_lesson_limit)
 
         self.c_highlight, self.c_mistake, self.c_chordable = self._loadTheme()
 
@@ -587,7 +592,8 @@ class BookView(QWidget):
         # type: (BookView, ChordMasteryProgress) -> None
         """Replace the storage-backed domain progress after a user-dir change."""
         self.chord_progress = progress
-        self.chord_exposure = AdaptiveChordExposure(progress)
+        self.chord_exposure = AdaptiveChordExposure(
+            progress, self.adaptive_chord_lesson_limit)
         self._refreshChordExposure(self._currentChapterText())
         self.applyChordHighlighting()
 
@@ -595,6 +601,15 @@ class BookView(QWidget):
         # type: (BookView, bool) -> None
         """Set the explicit full-dictionary opt-out mode."""
         self.adaptive_chord_lessons = bool(enabled)
+        self._refreshChordExposure(self._currentChapterText())
+        self.applyChordHighlighting()
+
+    def setAdaptiveChordLessonLimit(self, limit):
+        # type: (BookView, int) -> None
+        """Change how many unmastered chords can enter the lesson."""
+        self.adaptive_chord_lesson_limit = max(0, int(limit))
+        self.chord_exposure = AdaptiveChordExposure(
+            self.chord_progress, self.adaptive_chord_lesson_limit)
         self._refreshChordExposure(self._currentChapterText())
         self.applyChordHighlighting()
 

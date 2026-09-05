@@ -150,6 +150,9 @@ class MainController(QObject):
                 "CharaChorder data could not be used; chord features are unavailable")
             return
         self.views[View.book_view].setChords(chords)
+        dialog = getattr(self, 'customisation_dialog', None)
+        if dialog is not None and hasattr(dialog, 'chord_mastery'):
+            dialog.chord_mastery.refresh()
         self._setDeviceStatus(
             "Loaded {} chord hints from CharaChorder Two S3 ({})".format(
                 len(chords), snapshot.version))
@@ -196,15 +199,21 @@ class MainController(QObject):
         self.views[View.book_view] = BookView(
             self._window, self, sdict, rdict, bookview_settings, {},
             chord_progress=self.chord_progress,
-            adaptive_chord_lessons=self.config['adaptive_chord_lessons'])
+            adaptive_chord_lessons=self.config['adaptive_chord_lessons'],
+            adaptive_chord_lesson_limit=self.config[
+                'adaptive_chord_lesson_limit'])
 
         self.customisation_dialog = CustomisationDialog(
             self.config.raw, self._window,
             self.saveConfigRequested, self.prevViewRequested,
             lambda: self.views[View.book_view].font_size,
-            self._window)
+            self._window,
+            getLoadedChords=lambda: self.views[View.book_view].loaded_chords,
+            chordProgress=self.chord_progress)
         self.customisation_dialog.loadChordsNowRequested.connect(
             self.loadChordsNow)
+        self.customisation_dialog.saveChordMasteryRequested.connect(
+            self.saveChordMastery)
         self.customisation_dialog.setChordLoadState(
             "Ready to load chords from CharaChorder.")
 
@@ -359,11 +368,18 @@ class MainController(QObject):
         # replaced by configuration saves.
         book_view = self.views[View.book_view]
         book_view.setAdaptiveChordLessons(config['adaptive_chord_lessons'])
+        book_view.setAdaptiveChordLessonLimit(
+            config['adaptive_chord_lesson_limit'])
         if self.chord_progress.storage.path != os.path.join(
                 config['user_dir'], 'chord-mastery.json'):
             self.chord_progress = ChordMasteryProgress(
                 ChordMasteryStorage(config['user_dir']))
             book_view.setChordProgress(self.chord_progress)
+            dialog = getattr(self, 'customisation_dialog', None)
+            if dialog is not None:
+                dialog.chordProgress = self.chord_progress
+                if hasattr(dialog, 'chord_mastery'):
+                    dialog.chord_mastery.setProgress(self.chord_progress)
 
         # Update steno kdict
         if View.steno_view in self.views:
@@ -385,6 +401,12 @@ class MainController(QObject):
 
         # Update console font
         self.console.font_family = config['console_font']
+
+    def saveChordMastery(self, overrides):
+        # type: (MainController, dict[str, bool]) -> None
+        self.chord_progress.set_manual_overrides(overrides)
+        book_view = self.views[View.book_view]
+        book_view.setChordProgress(self.chord_progress)
 
     def getGeometry(self, config):
         # type: (MainController, SConfig) -> Geometry
