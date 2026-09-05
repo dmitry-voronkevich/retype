@@ -47,10 +47,15 @@ limit is turned back on. With no available device chord map, these settings
 have no effect.
 
 Chord mastery is shown below the load controls as a table-first overview of the
-currently loaded chords. Each row shows successful-use progress, whether the
-chord is a teaching target or mastered hint, and row actions to mark it
-mastered or unmastered. Manual changes show an Undo strip and a link to restore
-the measured state.
+currently loaded chords. The summary counts teaching targets in progress,
+mastered hint-eligible chords, and other loaded chords. The Chord, Progress,
+and Status columns can be sorted; ascending status sorting places mastered
+chords first, in-progress chords second, and other chords last, with a visible
+sort indicator. Column headers can be focused and activated from the keyboard,
+and stable ties retain the chord order. The Select column is not sortable. Rows
+are selected with checkboxes, and bulk actions appear once one or more rows are
+selected. Manual changes show an Undo strip and a link to restore the measured
+state.
 
 Console
 -------
