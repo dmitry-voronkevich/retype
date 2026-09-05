@@ -404,9 +404,16 @@ class MainController(QObject):
 
     def saveChordMastery(self, overrides):
         # type: (MainController, dict[str, bool]) -> None
-        self.chord_progress.set_manual_overrides(overrides)
-        book_view = self.views[View.book_view]
-        book_view.setChordProgress(self.chord_progress)
+        saved = self.chord_progress.set_manual_overrides(overrides)
+        dialog = getattr(self, 'customisation_dialog', None)
+        if dialog is not None and hasattr(dialog, 'chord_mastery'):
+            if saved:
+                dialog.chord_mastery.setSaveSucceeded()
+            else:
+                dialog.chord_mastery.setSaveFailed()
+        if saved:
+            book_view = self.views[View.book_view]
+            book_view.setChordProgress(self.chord_progress)
 
     def getGeometry(self, config):
         # type: (MainController, SConfig) -> Geometry

@@ -555,6 +555,9 @@ class CustomisationDialog(QDialog):
         self.saveConfig.emit(self.config_edited)
         if self.chord_mastery.isDirty():
             self.saveChordMasteryRequested.emit(self.chord_mastery.overrides())
+            if self.chord_mastery.saveFailed():
+                self._updateDirtyState()
+                return
         # Update base config
         self.config = deepcopy(self.config_edited)
 
@@ -2670,6 +2673,7 @@ class ChordMasterySection(QWidget):
         self._draft_overrides = dict(self._saved_overrides)
         self._undo_stack = []  # type: list[tuple[str, bool | None]]
         self._last_changed_key = None  # type: str | None
+        self._save_failed = False
 
         self._buildUI()
         self.refresh()
@@ -2902,6 +2906,7 @@ class ChordMasterySection(QWidget):
         else:
             self._draft_overrides[key] = mastered
         self._last_changed_key = key
+        self._save_failed = False
         action_text = 'mastered' if mastered else 'unmastered'
         self._setConfirmation(f'Marked {key!r} as {action_text}.')
         self._syncStatus()
@@ -2952,7 +2957,23 @@ class ChordMasterySection(QWidget):
         self._saved_overrides = {}
         if progress is not None:
             self._saved_overrides = progress.manual_overrides()
+        self._save_failed = False
         self._syncStatus()
+
+    def setSaveFailed(self):
+        # type: (ChordMasterySection) -> None
+        self._save_failed = True
+        self._setConfirmation(
+            'Unable to save mastery changes. They remain pending; try again.')
+        self.changed.emit()
+
+    def setSaveSucceeded(self):
+        # type: (ChordMasterySection) -> None
+        self._save_failed = False
+
+    def saveFailed(self):
+        # type: (ChordMasterySection) -> bool
+        return self._save_failed
 
     def commit(self):
         # type: (ChordMasterySection) -> None

@@ -186,20 +186,25 @@ class ChordMasteryProgress:
 
     def set_manual_override(self, dictionary_key, mastered):
         # type: (str, bool | None) -> ChordProgress
+        updated = dict(self._manual_overrides)
         if mastered is None:
-            self._manual_overrides.pop(dictionary_key, None)
+            updated.pop(dictionary_key, None)
         else:
-            self._manual_overrides[dictionary_key] = bool(mastered)
-        self.storage.save(self._uses, self._manual_overrides)
+            updated[dictionary_key] = bool(mastered)
+        if self.storage.save(self._uses, updated):
+            self._manual_overrides = updated
         return self.progress_for(dictionary_key)
 
     def set_manual_overrides(self, overrides):
-        # type: (Mapping[str, bool]) -> None
-        self._manual_overrides = {
+        # type: (Mapping[str, bool]) -> bool
+        updated = {
             key: mastered for key, mastered in overrides.items()
             if isinstance(key, str) and key and isinstance(mastered, bool)
         }
-        self.storage.save(self._uses, self._manual_overrides)
+        if not self.storage.save(self._uses, updated):
+            return False
+        self._manual_overrides = updated
+        return True
 
     def all_progress(self):
         # type: () -> dict[str, ChordProgress]
