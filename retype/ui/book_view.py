@@ -2,17 +2,17 @@ import logging
 from qt import (QWidget, QVBoxLayout, QTextBrowser, QTextDocument, QUrl,
                 QTextCursor, QTextCharFormat, QTextFormat, QPainter, QPixmap,
                 QToolBar, QFont, QKeySequence, Qt, QApplication, pyqtSignal,
-                QSplitter, QSize, QGuiApplication, QLabel, QTimer)
+                QSplitter, QSize, QGuiApplication)
 
 from typing import TYPE_CHECKING
 
 from retype.extras import splittext, isspaceorempty, ManifoldStr
 from retype.ui.modeline import Modeline
 from retype.ui.chord_hint_bar import ChordHintBar
-from retype.services.chord_detection import ValidatedChord
 from retype.services.chords import WORD_RE, chordable_spans
 from retype.services import (AdaptiveChordExposure, Autosave,
-                             ChordMasteryProgress, ChordMasteryTracker)
+                             ChordMasteryProgress, ChordMasteryTracker,
+                             MIN_SUCCESSFUL_USES_FOR_MASTERY)
 from retype.stats import StatsDock
 from retype.services.theme import theme, C, Theme
 from retype.services.keymap import keymap, K, Keymap, genActions, keymapUpdate
@@ -263,11 +263,6 @@ class BookView(QWidget):
             QTextCharFormat.UnderlineStyle.DotLine)
         self.chord_format.setUnderlineColor(self.c_chordable.fg())
         self.chord_format.setProperty(CHORD_HIGHLIGHT_PROPERTY, True)
-        feedback = getattr(self, 'chord_feedback', None)
-        if feedback is not None:
-            feedback.setStyleSheet(
-                'QLabel { color: %s; font-weight: bold; }' %
-                self.c_chordable.fg().name())
         # Re-apply to the currently displayed chapter so a live theme change
         #  (or chord reload) is reflected immediately.
         self.applyChordHighlighting()
@@ -298,21 +293,9 @@ class BookView(QWidget):
 
         self.chord_hint_bar = ChordHintBar(self.chords, self)
         self.chord_hint_bar.setObjectName('chord-hint-bar')
-        self.chord_feedback = QLabel('', self)
-        self.chord_feedback.setObjectName('chord-feedback')
-        # Keep this timer owned by the view and single-shot so it cannot keep
-        # the application or tests alive after the view is destroyed.
-        self._chord_feedback_timer = QTimer(self)
-        self._chord_feedback_timer.setSingleShot(True)
-        self._chord_feedback_timer.timeout.connect(
-            self._hideLikelyChordFeedback)
-        self.chord_feedback.setAccessibleName('Known chord encouragement')
-        self.chord_feedback.setAccessibleDescription(
-            'Encouragement shown for a rapid, correct known chord word at the '
-            'book cursor. This bounded timing heuristic does not detect a device.')
-        self.chord_feedback.setVisible(False)
+        self._active_teaching_keys = frozenset()
         self.stats_dock.validatedChordDetected.connect(
-            self._showValidatedChordFeedback)
+            self._announceValidatedChordFeedback)
         self.stats_dock.validatedChordDetected.connect(
             self.chord_mastery.record)
         self.stats_dock.validatedChordDetected.connect(
@@ -322,7 +305,6 @@ class BookView(QWidget):
         self.layout_.addWidget(self.splitter)
         self.layout_.addWidget(self.modeline)
         self.layout_.addWidget(self.chord_hint_bar)
-        self.layout_.addWidget(self.chord_feedback)
         self.setLayout(self.layout_)
 
     def _initToolbar(self):
@@ -523,33 +505,22 @@ class BookView(QWidget):
         offset = max(0, self.cursor_pos - self.persistent_pos)
         bar.update_(str(line), offset)
 
-    def _hideLikelyChordFeedback(self):
-        # type: (BookView) -> None
-        timer = getattr(self, '_chord_feedback_timer', None)
-        if timer is not None:
-            timer.stop()
-        feedback = getattr(self, 'chord_feedback', None)
-        if feedback is not None:
-            feedback.clear()
-            feedback.setVisible(False)
+    def _announceChordStatus(self, message, progression=False):
+        # type: (BookView, str, bool) -> None
+        win = getattr(self, '_main_win', None)
+        if win is None:
+            return
+        if progression:
+            win.showChordProgressStatus(message)
+        else:
+            win.showChordDetectionStatus(message)
 
-    def _showValidatedChordFeedback(self, result):
-        # type: (BookView, ValidatedChord) -> None
-        """Render the validated result without coupling domain state to UI."""
-        if not isinstance(result, ValidatedChord):
+    def _announceValidatedChordFeedback(self, result):
+        # type: (BookView, object) -> None
+        word = getattr(result, 'word', None)
+        if not isinstance(word, str):
             return
-        feedback = getattr(self, 'chord_feedback', None)
-        timer = getattr(self, '_chord_feedback_timer', None)
-        if feedback is None:
-            return
-        feedback.setText('Known chord complete: {} - nice!'.format(
-            result.word))
-        feedback.setVisible(True)
-        feedback.setAccessibleDescription(
-            'Rapid, correct known chord word at the book cursor. This is a '
-            'bounded timing heuristic, not device detection.')
-        if timer is not None:
-            timer.start(3000)
+        self._announceChordStatus('Chord detected: {}'.format(word))
 
     def isSuccessfulChordOutput(self, output, cursor_pos):
         # type: (BookView, str, int | None) -> bool
@@ -570,17 +541,23 @@ class BookView(QWidget):
                 break
         return False
 
-    def _refreshChordExposure(self, chapter_text=''):
-        # type: (BookView, str) -> None
+    def _refreshChordExposure(self, chapter_text='', announce_new=False):
+        # type: (BookView, str, bool) -> tuple[str, ...]
         """Apply the domain lesson selection without involving presentation."""
+        previous_teaching = getattr(self, '_active_teaching_keys', frozenset())
         lesson = self.chord_exposure.select(
             self.loaded_chords, chapter_text,
             full_chord_list=not self.adaptive_chord_lessons)
         self.chords = {key: self.loaded_chords[key] for key in lesson.hint_keys}
+        self._active_teaching_keys = frozenset(lesson.teaching_keys)
+        uncovered = ()
+        if announce_new:
+            uncovered = tuple(sorted(set(lesson.teaching_keys) - set(previous_teaching)))
         bar = getattr(self, 'chord_hint_bar', None)
         if bar is not None:
             bar.setChords(self.chords)
             self.updateChordHints()
+        return uncovered
 
     def _currentChapterText(self):
         # type: (BookView) -> str
@@ -590,8 +567,20 @@ class BookView(QWidget):
     def _recordChordProgress(self, result):
         # type: (BookView, object) -> None
         """Persist only validated successes, then expose the next target."""
-        if self.chord_progress.record(result) is not None:
-            self._refreshChordExposure(self._currentChapterText())
+        snapshot = self.chord_progress.record(result)
+        if snapshot is not None:
+            message_parts = []
+            if snapshot.successful_uses == MIN_SUCCESSFUL_USES_FOR_MASTERY:
+                message_parts.append('Chord learned: {}'.format(
+                    snapshot.dictionary_key))
+            uncovered = self._refreshChordExposure(
+                self._currentChapterText(), announce_new=True)
+            if uncovered:
+                message_parts.append('New chord to learn: {}'.format(
+                    uncovered[0]))
+            if message_parts:
+                self._announceChordStatus(
+                    '. '.join(message_parts), progression=True)
             self.applyChordHighlighting()
 
     def setChordProgress(self, progress):

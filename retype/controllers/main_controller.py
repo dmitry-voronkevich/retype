@@ -94,7 +94,7 @@ class MainController(QObject):
     def _setDeviceStatus(self, message, loading=False):
         # type: (MainController, str, bool) -> None
         logger.info("CharaChorder: %s", message)
-        self._window.statusBar().showMessage(message)
+        self._window.setBaseStatus(message)
         dialog = getattr(self, 'customisation_dialog', None)
         if dialog is not None:
             dialog.setChordLoadState(message, loading)
