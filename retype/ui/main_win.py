@@ -36,6 +36,10 @@ class _StatusBarFeedback:
         if self._overlay_priority < 0:
             self._show_base()
 
+    def get_base_message(self):
+        # type: (_StatusBarFeedback) -> str
+        return self.base_message
+
     def _show_base(self):
         # type: (_StatusBarFeedback) -> None
         if self.base_visible:
@@ -148,6 +152,10 @@ class MainWin(QMainWindow):
     def setBaseStatus(self, message):
         # type: (MainWin, str) -> None
         self._status_feedback.set_base_message(message)
+
+    def baseStatus(self):
+        # type: (MainWin) -> str
+        return self._status_feedback.get_base_message()
 
     def showChordDetectionStatus(self, message):
         # type: (MainWin, str) -> None

@@ -175,7 +175,7 @@ class MainController(QObject):
         self._device_loader = None
         dialog = getattr(self, 'customisation_dialog', None)
         if dialog is not None:
-            dialog.setChordLoadState(self._window.statusBar().currentMessage())
+            dialog.setChordLoadState(self._window.baseStatus())
 
     def _stopDeviceChordLoad(self):
         # type: (MainController) -> None
