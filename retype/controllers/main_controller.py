@@ -101,8 +101,7 @@ class MainController(QObject):
 
     def _deviceLoaderActive(self):
         # type: (MainController) -> bool
-        loader = self._device_loader
-        return loader is not None and loader.thread.isRunning()
+        return self._device_loader is not None
 
     def _createDeviceLoader(self):
         # type: (MainController) -> DeviceStartupLoader
@@ -121,7 +120,8 @@ class MainController(QObject):
         loader.unavailable.connect(self._deviceChordLoadUnavailable)
         loader.cancelled.connect(self._deviceChordLoadCancelled)
         loader.failed.connect(self._deviceChordLoadFailed)
-        loader.finished.connect(self._deviceChordLoadFinished)
+        loader.thread.finished.connect(
+            lambda loader=loader: self._deviceChordLoadFinished(loader))
         loader.thread.finished.connect(lambda: logger.debug(
             "CharaChorder reader stopped"))
         loader.start()
@@ -168,8 +168,10 @@ class MainController(QObject):
         self._setDeviceStatus(
             "CharaChorder chord load failed: {}".format(message))
 
-    def _deviceChordLoadFinished(self):
-        # type: (MainController) -> None
+    def _deviceChordLoadFinished(self, loader):
+        # type: (MainController, DeviceStartupLoader) -> None
+        if self._device_loader is not loader:
+            return
         self._device_loader = None
         dialog = getattr(self, 'customisation_dialog', None)
         if dialog is not None:
