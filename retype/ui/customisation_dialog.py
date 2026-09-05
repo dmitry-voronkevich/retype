@@ -2661,6 +2661,31 @@ class CategorisedWidget(QWidget):
 
 
 
+class MasteryHeaderView(QHeaderView):
+    sortRequested = pyqtSignal(int)
+
+    def __init__(self, orientation, parent=None):
+        # type: (MasteryHeaderView, Qt.Orientation, QWidget | None) -> None
+        QHeaderView.__init__(self, orientation, parent)
+        self.setSectionsClickable(True)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setHighlightSections(True)
+        self.setSortIndicatorShown(True)
+
+    def keyPressEvent(self, event):
+        # type: (MasteryHeaderView, object) -> None
+        if getattr(event, 'key', None) and event.key() in (
+                Qt.Key.Key_Space, Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            section = self.currentIndex().column()
+            if section < 0:
+                section = self.sortIndicatorSection()
+            if section >= 0:
+                self.sortRequested.emit(section)
+                event.accept()
+                return
+        QHeaderView.keyPressEvent(self, event)
+
+
 class ChordMasterySection(QWidget):
     changed = pyqtSignal()
 
@@ -2674,9 +2699,13 @@ class ChordMasterySection(QWidget):
         if progress is not None:
             self._saved_overrides = progress.manual_overrides()
         self._draft_overrides = dict(self._saved_overrides)
-        self._undo_stack = []  # type: list[tuple[str, bool | None]]
+        self._undo_stack = []  # type: list[tuple[str, bool | None] | tuple[str, tuple[tuple[str, bool | None], ...]]]
         self._last_changed_key = None  # type: str | None
         self._save_failed = False
+        self._selected_keys = set()  # type: set[str]
+        self._syncing_table = False
+        self._sort_column = 3
+        self._sort_order = Qt.SortOrder.AscendingOrder
 
         self._buildUI()
         self.refresh()
@@ -2701,29 +2730,77 @@ class ChordMasterySection(QWidget):
         self.warning.setObjectName('chord-mastery-warning')
         lyt.addWidget(self.warning)
 
+        controls = QHBoxLayout()
+        controls.setContentsMargins(0, 0, 0, 0)
+        controls.setSpacing(6)
+        self.select_all_btn = QPushButton('Select all')
+        self.select_all_btn.setObjectName('chord-mastery-select-all')
+        self.select_all_btn.setToolTip('Select every loaded chord')
+        self.select_all_btn.clicked.connect(self.selectAll)
+        controls.addWidget(self.select_all_btn)
+        self.select_none_btn = QPushButton('Select none')
+        self.select_none_btn.setObjectName('chord-mastery-select-none')
+        self.select_none_btn.setToolTip('Clear the chord selection')
+        self.select_none_btn.clicked.connect(self.selectNone)
+        controls.addWidget(self.select_none_btn)
+        controls.addStretch(1)
+        lyt.addLayout(controls)
+
         self.table = QTableWidget(0, 4)
         self.table.setObjectName('chord-mastery-table')
         self.table.setAccessibleName('Chord mastery table')
         self.table.setAccessibleDescription(
-            "Loaded chords, their successful-use progress, and their state. "
-            "Use the arrow keys to move, then Tab to reach row actions.")
+            'Loaded chords, their successful-use progress, and their state. '
+            'Use the checkboxes to select chords and the column headers to '
+            'sort the table.')
         self.table.setHorizontalHeaderLabels(
-            ['Chord', 'Progress', 'State', 'Actions'])
+            ['Select', 'Chord', 'Progress', 'Status'])
         self.table.setSelectionBehavior(
             QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(
             QAbstractItemView.SelectionMode.SingleSelection)
         self.table.setEditTriggers(
             QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.table.setSortingEnabled(False)
+        self.table.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.table.setAlternatingRowColors(True)
         self.table.verticalHeader().setVisible(False)
-        header = self.table.horizontalHeader()
+        header = MasteryHeaderView(Qt.Orientation.Horizontal, self.table)
+        self.table.setHorizontalHeader(header)
+        header.sectionClicked.connect(self._toggleSortSection)
+        header.sortRequested.connect(self._toggleSortSection)
         header.setStretchLastSection(False)
-        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSortIndicator(self._sort_column, self._sort_order)
+        self.table.itemChanged.connect(self._selectionChanged)
         lyt.addWidget(self.table)
+
+        self.bulk_actions = QFrame()
+        self.bulk_actions.setObjectName('chord-mastery-bulk-actions')
+        bulk_lyt = QHBoxLayout(self.bulk_actions)
+        bulk_lyt.setContentsMargins(8, 4, 8, 4)
+        bulk_lyt.setSpacing(8)
+        self.bulk_label = WrappedLabel("")
+        self.bulk_label.setObjectName('chord-mastery-bulk-label')
+        bulk_lyt.addWidget(self.bulk_label, 1)
+        self.bulk_mastered_btn = QPushButton('Mastered')
+        self.bulk_mastered_btn.setObjectName('chord-mastery-bulk-mastered')
+        self.bulk_mastered_btn.setToolTip('Mark every selected chord as mastered')
+        self.bulk_mastered_btn.clicked.connect(
+            lambda _=False: self.applySelectedMastered())
+        bulk_lyt.addWidget(self.bulk_mastered_btn)
+        self.bulk_unmastered_btn = QPushButton('Unmastered')
+        self.bulk_unmastered_btn.setObjectName('chord-mastery-bulk-unmastered')
+        self.bulk_unmastered_btn.setToolTip(
+            'Mark every selected chord as unmastered')
+        self.bulk_unmastered_btn.clicked.connect(
+            lambda _=False: self.applySelectedUnmastered())
+        bulk_lyt.addWidget(self.bulk_unmastered_btn)
+        self.bulk_actions.hide()
+        lyt.addWidget(self.bulk_actions)
 
         self.confirmation = QFrame()
         self.confirmation.setObjectName('chord-mastery-confirmation')
@@ -2734,7 +2811,7 @@ class ChordMasterySection(QWidget):
         self.confirmation_label = WrappedLabel("")
         self.confirmation_label.setObjectName('chord-mastery-confirmation-label')
         confirm_lyt.addWidget(self.confirmation_label, 1)
-        self.undo_btn = QPushButton("Undo")
+        self.undo_btn = QPushButton('Undo')
         self.undo_btn.setObjectName('chord-mastery-undo')
         self.undo_btn.clicked.connect(self.undo)
         confirm_lyt.addWidget(self.undo_btn)
@@ -2750,9 +2827,9 @@ class ChordMasterySection(QWidget):
         lyt.addWidget(self.confirmation)
 
         rationale = WrappedLabel(
-            "Why these chords? Unmastered chords are teaching targets. "
-            "Mastered chords remain hint-eligible, and the lesson limit keeps "
-            "only the first N unmastered chords active when enabled.")
+            'Why these chords? Mastered chords remain hint-eligible. Teaching '
+            'targets stay in progress, and other loaded chords remain visible '
+            'until they are selected for practice.')
         rationale.setObjectName('chord-mastery-rationale')
         lyt.addWidget(rationale)
 
@@ -2771,22 +2848,34 @@ class ChordMasterySection(QWidget):
                 uses = base.successful_uses
         return ChordProgress(key, uses, override)
 
+    def _statusInfo(self, progress):
+        # type: (ChordProgress) -> tuple[int, str, str, str]
+        if progress.is_mastered:
+            text = (
+                'Mastered (manual)' if progress.has_manual_override else
+                'Mastered (hint-eligible)')
+            tooltip = (
+                'Manual override keeps this chord mastered.' if
+                progress.has_manual_override else
+                'Hint-eligible mastered chord.')
+            return 0, 'mastered', text, tooltip
+        if progress.has_manual_override or progress.successful_uses > 0:
+            text = (
+                'In progress (manual)' if progress.has_manual_override else
+                'In progress')
+            tooltip = (
+                'Manual override keeps this chord in progress.' if
+                progress.has_manual_override else
+                'Teaching target that is still being learned.')
+            return 1, 'in_progress', text, tooltip
+        return 2, 'other', 'Other', 'Loaded chord that is not yet in progress.'
+
     def _rowText(self, progress):
-        # type: (ChordProgress) -> tuple[str, str, str]
-        if progress.has_manual_override:
-            state = 'Mastered (manual)' if progress.is_mastered else \
-                'Teaching target (manual)'
-            measured = 'mastered' if progress.measured_is_mastered else \
-                'unmastered'
-            tooltip = f'Measured state: {measured}.'
-        else:
-            state = 'Mastered (hint-eligible)' if progress.is_mastered else \
-                'Teaching target'
-            tooltip = ('Hint-eligible mastered chord.' if progress.is_mastered
-                       else 'Lesson target that is still being learned.')
+        # type: (ChordProgress) -> tuple[str, str, str, int, str]
+        status_rank, status_key, state, tooltip = self._statusInfo(progress)
         uses_text = '{} / {} successful uses'.format(
             progress.successful_uses, MIN_SUCCESSFUL_USES_FOR_MASTERY)
-        return uses_text, state, tooltip
+        return uses_text, state, tooltip, status_rank, status_key
 
     def _setWrappedText(self, widget, text):
         # type: (ChordMasterySection, WrappedLabel, str) -> None
@@ -2798,6 +2887,174 @@ class ChordMasterySection(QWidget):
         # type: (ChordMasterySection, str) -> None
         self._setWrappedText(self.confirmation_label, message)
         self.confirmation.show()
+
+    def _visibleKeys(self):
+        # type: (ChordMasterySection) -> list[str]
+        keys = []
+        for row in range(self.table.rowCount()):
+            key_item = self.table.item(row, 1)
+            if key_item is None:
+                continue
+            key = key_item.data(Qt.ItemDataRole.UserRole)
+            if isinstance(key, str):
+                keys.append(key)
+        return keys
+
+    def _sortedRows(self, rows):
+        # type: (ChordMasterySection, list[dict[str, object]]) -> list[dict[str, object]]
+        column = self._sort_column
+        reverse = self._sort_order == Qt.SortOrder.DescendingOrder
+
+        def sort_key(row):
+            if column == 0:
+                return (0 if row['selected'] else 1, row['index'])
+            if column == 1:
+                return (str(row['key']).lower(), row['index'])
+            if column == 2:
+                return (int(row['progress'].successful_uses), row['index'])
+            if column == 3:
+                return (int(row['status_rank']), row['index'])
+            return (row['index'],)
+
+        return sorted(rows, key=sort_key, reverse=reverse)
+
+    def _syncBulkActions(self):
+        # type: (ChordMasterySection) -> None
+        selected = len(self._selected_keys)
+        self.bulk_actions.setVisible(selected > 0)
+        if selected:
+            text = '{} selected chord{}'.format(
+                selected, '' if selected == 1 else 's')
+            self.bulk_label.label.setText(text)
+            self.bulk_label.doc.setPlainText(text)
+            self.bulk_label.updateGeometry()
+
+    def _selectionChanged(self, item):
+        # type: (ChordMasterySection, QTableWidgetItem | None) -> None
+        if self._syncing_table or item is None or item.column() != 0:
+            return
+        key_item = self.table.item(item.row(), 1)
+        if key_item is None:
+            return
+        key = key_item.data(Qt.ItemDataRole.UserRole)
+        if not isinstance(key, str):
+            return
+        if item.checkState() == Qt.CheckState.Checked:
+            self._selected_keys.add(key)
+        else:
+            self._selected_keys.discard(key)
+        self._syncBulkActions()
+
+    def _setSelectedKeys(self, keys):
+        # type: (ChordMasterySection, list[str]) -> None
+        self._selected_keys = set(keys)
+        self._syncing_table = True
+        self.table.blockSignals(True)
+        try:
+            for row in range(self.table.rowCount()):
+                select_item = self.table.item(row, 0)
+                key_item = self.table.item(row, 1)
+                if select_item is None or key_item is None:
+                    continue
+                key = key_item.data(Qt.ItemDataRole.UserRole)
+                if not isinstance(key, str):
+                    continue
+                select_item.setCheckState(
+                    Qt.CheckState.Checked if key in self._selected_keys else
+                    Qt.CheckState.Unchecked)
+        finally:
+            self.table.blockSignals(False)
+            self._syncing_table = False
+        self._syncBulkActions()
+
+    def _toggleSortSection(self, column):
+        # type: (ChordMasterySection, int) -> None
+        if column == self._sort_column:
+            self._sort_order = (
+                Qt.SortOrder.DescendingOrder
+                if self._sort_order == Qt.SortOrder.AscendingOrder
+                else Qt.SortOrder.AscendingOrder)
+        else:
+            self._sort_column = column
+            self._sort_order = Qt.SortOrder.AscendingOrder
+        header = self.table.horizontalHeader()
+        header.setSortIndicator(self._sort_column, self._sort_order)
+        self._syncStatus()
+
+    def _applySelectedOverride(self, mastered):
+        # type: (ChordMasterySection, bool) -> None
+        if not self._selected_keys:
+            return
+        rows = []
+        for row in self._sortedRows(self._rowData()):
+            if row['key'] in self._selected_keys:
+                rows.append(row)
+        if not rows:
+            return
+        changes = []
+        unchanged = 0
+        for row in rows:
+            key = row['key']
+            previous = self._draft_overrides.get(key)
+            current = self._effectiveProgress(key).is_mastered
+            if mastered:
+                if current and previous is None:
+                    unchanged += 1
+                    continue
+                if previous is True:
+                    unchanged += 1
+                    continue
+            else:
+                if previous is False:
+                    unchanged += 1
+                    continue
+            changes.append((key, previous))
+            self._draft_overrides[key] = mastered
+        if not changes:
+            action_text = 'mastered' if mastered else 'unmastered'
+            self._setConfirmation(
+                'Selected chords were already {}.'.format(action_text))
+            self._syncStatus()
+            return
+        self._undo_stack.append(('bulk', tuple(changes)))
+        self._last_changed_key = changes[-1][0]
+        self._save_failed = False
+        action_text = 'mastered' if mastered else 'unmastered'
+        changed = len(changes)
+        total = len(rows)
+        if unchanged:
+            self._setConfirmation(
+                'Marked {} of {} selected chord{} as {}; {} already matched.'
+                .format(changed, total, '' if total == 1 else 's', action_text,
+                        unchanged))
+        else:
+            self._setConfirmation(
+                'Marked {} selected chord{} as {}.'
+                .format(changed, '' if changed == 1 else 's', action_text))
+        self._syncStatus()
+        self.changed.emit()
+
+    def _rowData(self):
+        # type: (ChordMasterySection) -> list[dict[str, object]]
+        chords = self._loadedChords()
+        rows = []
+        for index, key in enumerate(sorted(chords)):
+            if not isinstance(key, str) or not key:
+                continue
+            progress = self._effectiveProgress(key)
+            status_rank, status_key, status_text, tooltip = self._statusInfo(progress)
+            rows.append({
+                'index': index,
+                'key': key,
+                'chord': chords[key],
+                'progress': progress,
+                'status_rank': status_rank,
+                'status_key': status_key,
+                'status_text': status_text,
+                'status_tooltip': tooltip,
+                'selected': key in self._selected_keys,
+            })
+        return rows
 
     def _syncStatus(self):
         # type: (ChordMasterySection) -> None
@@ -2815,30 +3072,26 @@ class ChordMasterySection(QWidget):
             else:
                 self._setWrappedText(self.warning, '')
             self.confirmation.hide()
-            self.table.setRowCount(0)
+            self.table.blockSignals(True)
+            try:
+                self.table.setRowCount(0)
+            finally:
+                self.table.blockSignals(False)
+            self._selected_keys = set()
+            self._syncBulkActions()
             return
 
-        rows = []
-        for key in sorted(chords):
-            if not isinstance(key, str) or not key:
-                continue
-            progress = self._effectiveProgress(key)
-            rows.append((key, chords[key], progress))
-        rows.sort(key=lambda row: (row[2].is_mastered, row[0]))
-        targets = sum(1 for _, _, progress in rows if not progress.is_mastered)
-        mastered = len(rows) - targets
-        if rows and all(row[2].successful_uses == 0 for row in rows) and \
-           not self._draft_overrides:
-            self._setWrappedText(
-                self.summary,
-                'First use: no mastery has been recorded for these loaded '
-                'chords yet.')
-        else:
-            self._setWrappedText(
-                self.summary,
-                '{} teaching target{} and {} mastered, hint-eligible chord{}.'
-                .format(targets, '' if targets == 1 else 's', mastered,
-                        '' if mastered == 1 else 's'))
+        rows = self._sortedRows(self._rowData())
+        in_progress = sum(1 for row in rows if row['status_key'] == 'in_progress')
+        mastered = sum(1 for row in rows if row['status_key'] == 'mastered')
+        other = len(rows) - in_progress - mastered
+        self._setWrappedText(
+            self.summary,
+            '{} teaching target{} in progress, {} mastered hint-eligible '
+            'chord{}, and {} other chord{}.'
+            .format(in_progress, '' if in_progress == 1 else 's', mastered,
+                    '' if mastered == 1 else 's', other,
+                    '' if other == 1 else 's'))
 
         if self.progress is not None and getattr(self.progress.storage,
                                                 'malformed_entries', 0):
@@ -2851,43 +3104,70 @@ class ChordMasterySection(QWidget):
         else:
             self._setWrappedText(self.warning, '')
 
-        self.table.setRowCount(len(rows))
-        for row_index, (key, chord, progress) in enumerate(rows):
-            chord_item = QTableWidgetItem(key)
-            chord_item.setToolTip(
-                'Device order: {}'.format(getattr(chord, 'device_order', key)))
-            chord_item.setData(Qt.ItemDataRole.UserRole, key)
-            self.table.setItem(row_index, 0, chord_item)
+        valid_keys = {row['key'] for row in rows}
+        self._selected_keys.intersection_update(valid_keys)
+        self._syncing_table = True
+        self.table.blockSignals(True)
+        try:
+            self.table.setRowCount(len(rows))
+            for row_index, row in enumerate(rows):
+                key = row['key']
+                progress = row['progress']
+                chord = row['chord']
+                select_item = QTableWidgetItem('')
+                select_item.setFlags(Qt.ItemFlags(
+                    Qt.ItemFlag.ItemIsEnabled |
+                    Qt.ItemFlag.ItemIsSelectable |
+                    Qt.ItemFlag.ItemIsUserCheckable))
+                select_item.setCheckState(
+                    Qt.CheckState.Checked if key in self._selected_keys else
+                    Qt.CheckState.Unchecked)
+                self.table.setItem(row_index, 0, select_item)
 
-            uses_text, state_text, tooltip = self._rowText(progress)
-            progress_item = QTableWidgetItem(uses_text)
-            progress_item.setToolTip(tooltip)
-            self.table.setItem(row_index, 1, progress_item)
-            state_item = QTableWidgetItem(state_text)
-            state_item.setToolTip(tooltip)
-            self.table.setItem(row_index, 2, state_item)
+                chord_item = QTableWidgetItem(key)
+                chord_item.setToolTip(
+                    'Device order: {}'.format(getattr(chord, 'device_order', key)))
+                chord_item.setData(Qt.ItemDataRole.UserRole, key)
+                chord_item.setFlags(Qt.ItemFlags(
+                    Qt.ItemFlag.ItemIsEnabled |
+                    Qt.ItemFlag.ItemIsSelectable))
+                self.table.setItem(row_index, 1, chord_item)
 
-            actions = QWidget()
-            actions_lyt = QHBoxLayout(actions)
-            actions_lyt.setContentsMargins(0, 0, 0, 0)
-            actions_lyt.setSpacing(4)
-            mastered_btn = QPushButton('Mastered')
-            mastered_btn.setToolTip('Mark this chord mastered')
-            mastered_btn.setAccessibleName(f'Mark {key} mastered')
-            mastered_btn.clicked.connect(
-                lambda _=False, chord_key=key: self.markMastered(chord_key))
-            actions_lyt.addWidget(mastered_btn)
-            unmastered_btn = QPushButton('Unmastered')
-            unmastered_btn.setToolTip('Mark this chord unmastered')
-            unmastered_btn.setAccessibleName(f'Mark {key} unmastered')
-            unmastered_btn.clicked.connect(
-                lambda _=False, chord_key=key: self.markUnmastered(chord_key))
-            actions_lyt.addWidget(unmastered_btn)
-            actions_lyt.addStretch(1)
-            self.table.setCellWidget(row_index, 3, actions)
-
+                uses_text, state_text, tooltip, _, _ = self._rowText(progress)
+                progress_item = QTableWidgetItem(uses_text)
+                progress_item.setToolTip(tooltip)
+                progress_item.setFlags(Qt.ItemFlags(
+                    Qt.ItemFlag.ItemIsEnabled |
+                    Qt.ItemFlag.ItemIsSelectable))
+                self.table.setItem(row_index, 2, progress_item)
+                state_item = QTableWidgetItem(state_text)
+                state_item.setToolTip(tooltip)
+                state_item.setFlags(Qt.ItemFlags(
+                    Qt.ItemFlag.ItemIsEnabled |
+                    Qt.ItemFlag.ItemIsSelectable))
+                self.table.setItem(row_index, 3, state_item)
+        finally:
+            self.table.blockSignals(False)
+            self._syncing_table = False
         self.table.resizeRowsToContents()
+        self._syncBulkActions()
         self.confirmation.setVisible(bool(self._undo_stack))
+
+    def selectAll(self, _checked=False):
+        # type: (ChordMasterySection, bool) -> None
+        self._setSelectedKeys(self._visibleKeys())
+
+    def selectNone(self, _checked=False):
+        # type: (ChordMasterySection, bool) -> None
+        self._setSelectedKeys([])
+
+    def applySelectedMastered(self):
+        # type: (ChordMasterySection) -> None
+        self._applySelectedOverride(True)
+
+    def applySelectedUnmastered(self):
+        # type: (ChordMasterySection) -> None
+        self._applySelectedOverride(False)
 
     def markMastered(self, key):
         # type: (ChordMasterySection, str) -> None
@@ -2919,12 +3199,21 @@ class ChordMasterySection(QWidget):
         # type: (ChordMasterySection) -> None
         if not self._undo_stack:
             return
-        key, previous = self._undo_stack.pop()
-        if previous is None:
-            self._draft_overrides.pop(key, None)
+        entry = self._undo_stack.pop()
+        if entry and entry[0] == 'bulk':
+            for key, previous in entry[1]:
+                if previous is None:
+                    self._draft_overrides.pop(key, None)
+                else:
+                    self._draft_overrides[key] = previous
+            self._last_changed_key = entry[1][-1][0] if entry[1] else None
         else:
-            self._draft_overrides[key] = previous
-        self._last_changed_key = key
+            key, previous = entry
+            if previous is None:
+                self._draft_overrides.pop(key, None)
+            else:
+                self._draft_overrides[key] = previous
+            self._last_changed_key = key
         if self._undo_stack:
             self._setConfirmation('Undid the last mastery change.')
         else:
