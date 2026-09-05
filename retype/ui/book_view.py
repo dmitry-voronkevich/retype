@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 from retype.extras import splittext, isspaceorempty, ManifoldStr
 from retype.ui.modeline import Modeline
 from retype.ui.chord_hint_bar import ChordHintBar
+from retype.services.chord_detection import ValidatedChord
 from retype.services.chords import WORD_RE, chordable_spans
 from retype.services import (AdaptiveChordExposure, Autosave,
                              ChordMasteryProgress, ChordMasteryTracker,
@@ -517,10 +518,9 @@ class BookView(QWidget):
 
     def _announceValidatedChordFeedback(self, result):
         # type: (BookView, object) -> None
-        word = getattr(result, 'word', None)
-        if not isinstance(word, str):
+        if not isinstance(result, ValidatedChord):
             return
-        self._announceChordStatus('Chord detected: {}'.format(word))
+        self._announceChordStatus('Chord detected: {}'.format(result.word))
 
     def isSuccessfulChordOutput(self, output, cursor_pos):
         # type: (BookView, str, int | None) -> bool

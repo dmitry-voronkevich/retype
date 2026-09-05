@@ -2,6 +2,7 @@
 
 from copy import deepcopy
 from threading import Event
+from types import SimpleNamespace
 
 import pytest
 from qt import Qt, QWidget
@@ -275,6 +276,57 @@ def test_validated_chord_event_drives_status_bar_counter_and_chart(
     assert stats.chordCountText() == "Chords: 0"
     assert stats.wpms_validated_chords == [False] * 4
     assert 'Chord detected: the' in _status_bar(controller).currentMessage()
+
+
+def test_status_bar_rejects_unvalidated_detection_payload(
+        make_controller, qtbot):
+    controller = make_controller()
+    controller.loadBookRequested.emit(0)
+    qtbot.wait(20)
+    controller._window.setBaseStatus('Ready')
+    stats = controller.view().stats_dock
+
+    stats.validatedChordDetected.emit(SimpleNamespace(word='forged'))
+    qtbot.wait(200)
+
+    assert _status_bar(controller).currentMessage() == 'Ready'
+
+
+def test_rapid_validated_detections_coalesce_and_expire(
+        make_controller, qtbot):
+    controller = make_controller()
+    controller.loadBookRequested.emit(0)
+    qtbot.wait(20)
+    controller._window.setBaseStatus('Ready')
+    stats = controller.view().stats_dock
+
+    stats.validatedChordDetected.emit(_validated_result('the'))
+    stats.validatedChordDetected.emit(_validated_result('and'))
+
+    qtbot.waitUntil(
+        lambda: _status_bar(controller).currentMessage() == 'Chord detected: and',
+        timeout=1000)
+    qtbot.waitUntil(
+        lambda: _status_bar(controller).currentMessage() == 'Ready',
+        timeout=2500)
+
+
+def test_progression_feedback_has_priority_and_timeout(
+        make_controller, qtbot):
+    controller = make_controller()
+    controller.loadBookRequested.emit(0)
+    qtbot.wait(20)
+    controller._window.setBaseStatus('Ready')
+    window = controller._window
+
+    window.showChordProgressStatus('Chord learned: the')
+    window.showChordDetectionStatus('Chord detected: and')
+    qtbot.wait(200)
+
+    assert _status_bar(controller).currentMessage() == 'Chord learned: the'
+    qtbot.waitUntil(
+        lambda: _status_bar(controller).currentMessage() == 'Ready',
+        timeout=4500)
 
 
 def test_status_bar_promotes_learned_chords_and_new_targets(
