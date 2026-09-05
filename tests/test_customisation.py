@@ -122,8 +122,17 @@ class TestCustomisation:
         section = dialog.chord_mastery
 
         header = section.table.horizontalHeader()
-        header.setCurrentIndex(header.model().index(0, 2))
+        assert _row_keys(section) == ['zeta', 'gamma', 'alpha', 'beta']
+
+        header.setCurrentIndex(header.model().index(0, 3))
         header.setFocus()
+        qtbot.keyClick(header, Qt.Key.Key_Space)
+
+        assert header.sortIndicatorSection() == 3
+        assert header.sortIndicatorOrder() == Qt.SortOrder.DescendingOrder
+        assert _row_keys(section) == ['alpha', 'beta', 'gamma', 'zeta']
+
+        header.setCurrentIndex(header.model().index(0, 2))
         qtbot.keyClick(header, Qt.Key.Key_Space)
 
         assert header.sortIndicatorSection() == 2

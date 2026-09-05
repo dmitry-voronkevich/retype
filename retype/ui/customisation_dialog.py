@@ -2907,14 +2907,14 @@ class ChordMasterySection(QWidget):
 
         def sort_key(row):
             if column == 0:
-                return (0 if row['selected'] else 1, row['index'])
+                return 0 if row['selected'] else 1
             if column == 1:
-                return (str(row['key']).lower(), row['index'])
+                return str(row['key']).lower()
             if column == 2:
-                return (int(row['progress'].successful_uses), row['index'])
+                return int(row['progress'].successful_uses)
             if column == 3:
-                return (int(row['status_rank']), row['index'])
-            return (row['index'],)
+                return int(row['status_rank'])
+            return row['index']
 
         return sorted(rows, key=sort_key, reverse=reverse)
 
