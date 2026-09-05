@@ -2711,7 +2711,7 @@ class ChordMasterySection(QWidget):
             self._saved_overrides = progress.manual_overrides()
         self._draft_overrides = dict(self._saved_overrides)
         self._undo_stack = []  # type: list[tuple[str, bool | None] | tuple[str, tuple[tuple[str, bool | None], ...]]]
-        self._last_changed_key = None  # type: str | None
+        self._last_changed_keys = ()  # type: tuple[str, ...]
         self._save_failed = False
         self._selected_keys = set()  # type: set[str]
         self._syncing_table = False
@@ -3031,7 +3031,7 @@ class ChordMasterySection(QWidget):
             self._syncStatus()
             return
         self._undo_stack.append(('bulk', tuple(changes)))
-        self._last_changed_key = changes[-1][0]
+        self._last_changed_keys = tuple(change[0] for change in changes)
         self._save_failed = False
         action_text = 'mastered' if mastered else 'unmastered'
         changed = len(changes)
@@ -3202,7 +3202,7 @@ class ChordMasterySection(QWidget):
             self._draft_overrides.pop(key, None)
         else:
             self._draft_overrides[key] = mastered
-        self._last_changed_key = key
+        self._last_changed_keys = (key,)
         self._save_failed = False
         action_text = 'mastered' if mastered else 'unmastered'
         self._setConfirmation(f'Marked {key!r} as {action_text}.')
@@ -3220,14 +3220,14 @@ class ChordMasterySection(QWidget):
                     self._draft_overrides.pop(key, None)
                 else:
                     self._draft_overrides[key] = previous
-            self._last_changed_key = entry[1][-1][0] if entry[1] else None
+            self._last_changed_keys = tuple(key for key, _ in entry[1])
         else:
             key, previous = entry
             if previous is None:
                 self._draft_overrides.pop(key, None)
             else:
                 self._draft_overrides[key] = previous
-            self._last_changed_key = key
+            self._last_changed_keys = (key,)
         if self._undo_stack:
             self._setConfirmation('Undid the last mastery change.')
         else:
@@ -3237,17 +3237,23 @@ class ChordMasterySection(QWidget):
 
     def restoreMeasuredState(self):
         # type: (ChordMasterySection) -> None
-        if self._last_changed_key is None:
+        changes = []
+        for key in self._last_changed_keys:
+            if key in self._draft_overrides:
+                changes.append((key, self._draft_overrides[key]))
+        if not changes:
             return
-        if self._last_changed_key in self._draft_overrides:
-            self._undo_stack.append((
-                self._last_changed_key,
-                self._draft_overrides.get(self._last_changed_key)))
-            self._draft_overrides.pop(self._last_changed_key, None)
-            self._setConfirmation(
-                f'Restored measured state for {self._last_changed_key!r}.')
-            self._syncStatus()
-            self.changed.emit()
+        for key, _ in changes:
+            self._draft_overrides.pop(key, None)
+        self._undo_stack.append(('bulk', tuple(changes)))
+        if len(changes) == 1:
+            message = 'Restored measured state for {!r}.'.format(changes[0][0])
+        else:
+            message = 'Restored measured state for {} chords.'.format(
+                len(changes))
+        self._setConfirmation(message)
+        self._syncStatus()
+        self.changed.emit()
 
     def isDirty(self):
         # type: (ChordMasterySection) -> bool
@@ -3292,7 +3298,7 @@ class ChordMasterySection(QWidget):
         # type: (ChordMasterySection) -> None
         self._draft_overrides = dict(self._saved_overrides)
         self._undo_stack = []
-        self._last_changed_key = None
+        self._last_changed_keys = ()
         self.confirmation.hide()
         self._syncStatus()
         self.changed.emit()

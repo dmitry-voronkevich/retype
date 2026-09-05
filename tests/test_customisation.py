@@ -188,6 +188,11 @@ class TestCustomisation:
         assert 'Marked 3 selected chords as mastered.' in \
             section.confirmation_label.label.text()
 
+        qtbot.mouseClick(section.restore_btn, Qt.MouseButton.LeftButton)
+        assert section.overrides() == {}
+        qtbot.mouseClick(section.undo_btn, Qt.MouseButton.LeftButton)
+        assert section.overrides() == {
+            'mastered': True, 'started': True, 'other': True}
         qtbot.mouseClick(section.undo_btn, Qt.MouseButton.LeftButton)
         assert section.overrides() == {}
         assert not section.confirmation.isVisible()
