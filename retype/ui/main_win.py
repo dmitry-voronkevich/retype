@@ -9,14 +9,16 @@ from retype.resource_handler import getStylePath, getIcon
 
 
 class _StatusBarFeedback:
-    DETECTION_PRIORITY = 10
+    BASE_PRIORITY = 0
     PROGRESSION_PRIORITY = 20
+    DETECTION_PRIORITY = 10
 
     def __init__(self, status_bar):
         # type: (_StatusBarFeedback, object) -> None
         self.status_bar = status_bar
         self.base_message = ''
-        self.base_visible = False
+        self._sticky_message = ''
+        self._sticky_priority = -1
         self._overlay_priority = -1
         self._overlay_timeout_ms = 0
         self._overlay_message = ''
@@ -24,7 +26,7 @@ class _StatusBarFeedback:
         self._overlay_token = 0
         self._overlay_clear_timer = QTimer(status_bar)
         self._overlay_clear_timer.setSingleShot(True)
-        self._overlay_clear_timer.timeout.connect(self._restore_base)
+        self._overlay_clear_timer.timeout.connect(self._restore_sticky)
         self._debounce_timer = QTimer(status_bar)
         self._debounce_timer.setSingleShot(True)
         self._debounce_timer.timeout.connect(self._flush_pending_overlay)
@@ -32,20 +34,48 @@ class _StatusBarFeedback:
     def set_base_message(self, message):
         # type: (_StatusBarFeedback, str) -> None
         self.base_message = message
-        self.base_visible = bool(message)
-        if self._overlay_priority < 0:
-            self._show_base()
+        if self._sticky_priority <= self.BASE_PRIORITY:
+            self._sticky_priority = self.BASE_PRIORITY
+            self._sticky_message = message
+            if self._overlay_priority < 0:
+                self._show_sticky()
+        elif self._overlay_priority < 0:
+            self._show_sticky()
 
     def get_base_message(self):
         # type: (_StatusBarFeedback) -> str
         return self.base_message
 
-    def _show_base(self):
+    def _visible_message(self):
+        # type: (_StatusBarFeedback) -> str
+        if self._overlay_priority >= 0:
+            return self._overlay_message
+        if self._sticky_priority >= 0:
+            return self._sticky_message
+        return self.base_message
+
+    def _show_sticky(self):
         # type: (_StatusBarFeedback) -> None
-        if self.base_visible:
-            self.status_bar.showMessage(self.base_message)
+        message = self._visible_message()
+        if message:
+            self.status_bar.showMessage(message)
         else:
             self.status_bar.clearMessage()
+
+    def _set_sticky_message(self, message, priority, replace_overlay=False):
+        # type: (_StatusBarFeedback, str, int, bool) -> None
+        if priority < self._sticky_priority:
+            return
+        self._sticky_priority = priority
+        self._sticky_message = message
+        if replace_overlay:
+            self._pending_overlay = None
+            self._debounce_timer.stop()
+            self._overlay_clear_timer.stop()
+            self._overlay_priority = -1
+            self._overlay_timeout_ms = 0
+            self._overlay_message = ''
+            self._show_sticky()
 
     def show_detection(self, message):
         # type: (_StatusBarFeedback, str) -> None
@@ -53,7 +83,8 @@ class _StatusBarFeedback:
 
     def show_progression(self, message):
         # type: (_StatusBarFeedback, str) -> None
-        self._request_overlay(message, self.PROGRESSION_PRIORITY, 4000)
+        self._set_sticky_message(
+            message, self.PROGRESSION_PRIORITY, replace_overlay=True)
 
     def _request_overlay(self, message, priority, timeout_ms, debounce_ms=0):
         # type: (_StatusBarFeedback, str, int, int, int) -> None
@@ -85,16 +116,13 @@ class _StatusBarFeedback:
         if timeout_ms > 0:
             self._overlay_clear_timer.start(timeout_ms)
 
-    def _restore_base(self):
+    def _restore_sticky(self):
         # type: (_StatusBarFeedback) -> None
         self._overlay_clear_timer.stop()
         self._overlay_priority = -1
         self._overlay_timeout_ms = 0
         self._overlay_message = ''
-        if self.base_visible:
-            self.status_bar.showMessage(self.base_message)
-        else:
-            self.status_bar.clearMessage()
+        self._show_sticky()
 
 
 class MainWin(QMainWindow):
