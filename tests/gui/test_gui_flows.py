@@ -411,22 +411,58 @@ def test_rapid_validated_detections_coalesce_and_expire(
         timeout=2500)
 
 
-def test_progression_feedback_has_priority_and_timeout(
+def test_transient_detection_restores_loading_sticky_message(
         make_controller, qtbot):
     controller = make_controller()
     controller.loadBookRequested.emit(0)
     qtbot.wait(20)
-    controller._window.setBaseStatus('Ready')
-    window = controller._window
+    controller._window.setBaseStatus('Looking for a CharaChorder Two S3…')
 
-    window.showChordProgressStatus('Chord learned: the')
-    window.showChordDetectionStatus('Chord detected: and')
-    qtbot.wait(200)
+    controller._window.showChordDetectionStatus('Chord detected: and')
 
-    assert _status_bar(controller).currentMessage() == 'Chord learned: the'
     qtbot.waitUntil(
-        lambda: _status_bar(controller).currentMessage() == 'Ready',
-        timeout=4500)
+        lambda: _status_bar(controller).currentMessage() == 'Chord detected: and',
+        timeout=1000)
+    qtbot.waitUntil(
+        lambda: _status_bar(controller).currentMessage() ==
+        'Looking for a CharaChorder Two S3…',
+        timeout=2500)
+
+
+def test_progression_feedback_is_sticky_and_survives_loading_updates(
+        make_controller, qtbot):
+    controller = make_controller()
+    controller.loadBookRequested.emit(0)
+    qtbot.wait(20)
+    controller._window.setBaseStatus('Looking for a CharaChorder Two S3…')
+
+    controller._window.showChordProgressStatus('Chord learned: the')
+    loaded_message = 'Loaded 1 chord hints from CharaChorder Two S3 (3.0.0)'
+    controller._window.setBaseStatus(loaded_message)
+    controller._window.showChordDetectionStatus('Chord detected: and')
+
+    qtbot.waitUntil(
+        lambda: _status_bar(controller).currentMessage() ==
+        'Chord detected: and',
+        timeout=1000)
+    qtbot.waitUntil(
+        lambda: _status_bar(controller).currentMessage() == 'Chord learned: the',
+        timeout=2500)
+    qtbot.wait(4500)
+    assert _status_bar(controller).currentMessage() == 'Chord learned: the'
+
+
+def test_later_sticky_progression_replaces_earlier_sticky_feedback(
+        make_controller, qtbot):
+    controller = make_controller()
+    controller.loadBookRequested.emit(0)
+    qtbot.wait(20)
+    controller._window.setBaseStatus('Looking for a CharaChorder Two S3…')
+
+    controller._window.showChordProgressStatus('Chord learned: the')
+    controller._window.showChordProgressStatus('Chord learned: and')
+
+    assert _status_bar(controller).currentMessage() == 'Chord learned: and'
 
 
 def test_status_bar_promotes_learned_chords_and_new_targets(
@@ -449,6 +485,9 @@ def test_status_bar_promotes_learned_chords_and_new_targets(
     message = _status_bar(controller).currentMessage()
     assert 'Chord learned: the' in message
     assert 'New chord to learn: and' in message
+    qtbot.wait(4500)
+    assert 'Chord learned: the' in _status_bar(controller).currentMessage()
+    assert 'New chord to learn: and' in _status_bar(controller).currentMessage()
     assert stats.chordCountText() == 'Chords: 1'
     assert book_view.chord_progress.progress_for('the').successful_uses == \
         MIN_SUCCESSFUL_USES_FOR_MASTERY

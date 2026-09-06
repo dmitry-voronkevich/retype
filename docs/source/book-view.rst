@@ -106,12 +106,14 @@ prefixes fail closed.
 
 Detection messages remain visible for 1.2 seconds and are coalesced within a
 150-millisecond burst, so rapid events do not make the status bar unreadable.
-When a validated event changes lesson progress, the status bar instead reports
-``Chord learned: WORD`` and/or ``New chord to learn: WORD``. Progression
-messages have priority over ordinary detection messages and remain visible for
-4 seconds. Expiry restores the permanent application or device status message.
-Console clears, automatic completion, navigation, and statistics resets do not
-control this feedback.
+These are transient overlays: when they expire, the current sticky message is
+restored. The current application or device status is the initial sticky
+message. When a validated event changes lesson progress, the status bar instead
+reports ``Chord learned: WORD`` and/or ``New chord to learn: WORD``. Progression
+messages replace the previous sticky message and remain visible until a later
+progression milestone replaces them; subsequent application or device status
+updates do not displace them. Console clears, automatic completion, navigation,
+and statistics resets do not control this feedback.
 
 This is a bounded timing heuristic for the observed study conditions, not a
 device detector or attribution claim. A fast ordinary typist or macro can

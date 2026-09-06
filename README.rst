@@ -99,13 +99,10 @@ More information on the user interface and available features can be found in th
 Keyboard-only chord feedback
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-retype reports validated rapid, correct known chord words as transient messages
-in the application status bar. Ordinary detection messages are briefly
-coalesced during bursts, while chord-learning and newly uncovered-chord
-messages take priority and remain visible longer. Separate keyboard-only
-timing observations remain in the Stats Dock; neither feature uses device
-access. Conditions and device-attribution limitations are documented in the
-Book View reference in the documentation_.
+retype reports validated rapid, correct known chord words in the application
+status bar. Detection and chord-learning message lifetimes, along with the
+separate keyboard-only timing observations and device-attribution limitations,
+are documented in the Book View reference in the documentation_.
 
 -----------------------------
 Influences & acknowledgements
