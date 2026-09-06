@@ -13,6 +13,7 @@ from retype.services import (
     AdaptiveChordExposure, MIN_SUCCESSFUL_USES_FOR_MASTERY,
 )
 from retype.services.chord_detection import BACKSPACE_KEY, ValidatedChord
+from retype.ui import CustomisationDialog
 
 
 class _TimedKeyEvent:
@@ -71,6 +72,90 @@ def test_opens_customisation_dialog_without_blocking(controller, qtbot):
     dialog.reject()
     qtbot.wait(20)
     assert not dialog.isVisible()
+
+
+def test_customisation_dialog_refreshes_mastery_on_reopen(
+        controller, qtbot):
+    book_view = controller.views[View.book_view]
+    book_view.setChords({'mastered': 'm', 'started': 's', 'other': 'o'})
+
+    for _ in range(MIN_SUCCESSFUL_USES_FOR_MASTERY):
+        book_view.stats_dock.validatedChordDetected.emit(
+            _validated_chord('mastered'))
+    book_view.stats_dock.validatedChordDetected.emit(
+        _validated_chord('started'))
+
+    controller.customisationDialogRequested.emit()
+    dialog = controller.customisation_dialog
+    qtbot.waitUntil(lambda: dialog.isVisible())
+
+    section = dialog.chord_mastery
+    mastery_text = '{} / {} successful uses'.format(
+        MIN_SUCCESSFUL_USES_FOR_MASTERY,
+        MIN_SUCCESSFUL_USES_FOR_MASTERY)
+    assert section.summary.label.text() == (
+        '1 teaching target in progress, 1 mastered hint-eligible chord, '
+        'and 1 other chord.')
+    assert _row_state(section) == [
+        ('mastered', mastery_text, 'Mastered (hint-eligible)'),
+        ('started', '1 / {} successful uses'.format(
+            MIN_SUCCESSFUL_USES_FOR_MASTERY), 'In progress'),
+        ('other', '0 / {} successful uses'.format(
+            MIN_SUCCESSFUL_USES_FOR_MASTERY), 'Other'),
+    ]
+
+    dialog.close()
+    qtbot.waitUntil(lambda: not dialog.isVisible())
+
+    for _ in range(MIN_SUCCESSFUL_USES_FOR_MASTERY - 1):
+        book_view.stats_dock.validatedChordDetected.emit(
+            _validated_chord('started'))
+
+    controller.customisationDialogRequested.emit()
+    qtbot.waitUntil(lambda: dialog.isVisible())
+
+    assert section.summary.label.text() == (
+        '0 teaching targets in progress, 2 mastered hint-eligible chords, '
+        'and 1 other chord.')
+    assert _row_state(section) == [
+        ('mastered', mastery_text, 'Mastered (hint-eligible)'),
+        ('started', mastery_text, 'Mastered (hint-eligible)'),
+        ('other', '0 / {} successful uses'.format(
+            MIN_SUCCESSFUL_USES_FOR_MASTERY), 'Other'),
+    ]
+
+    dialog.close()
+    qtbot.waitUntil(lambda: not dialog.isVisible())
+
+    book_view.stats_dock.validatedChordDetected.emit(_validated_chord('other'))
+
+    controller.customisationDialogRequested.emit()
+    qtbot.waitUntil(lambda: dialog.isVisible())
+
+    assert section.summary.label.text() == (
+        '1 teaching target in progress, 2 mastered hint-eligible chords, '
+        'and 0 other chords.')
+    assert _row_state(section) == [
+        ('mastered', mastery_text, 'Mastered (hint-eligible)'),
+        ('started', mastery_text, 'Mastered (hint-eligible)'),
+        ('other', '1 / {} successful uses'.format(
+            MIN_SUCCESSFUL_USES_FOR_MASTERY), 'In progress'),
+    ]
+
+    control = CustomisationDialog(
+        controller.config.raw, controller._window,
+        SimpleNamespace(emit=lambda *_, **__: None), None,
+        lambda: book_view.font_size, controller._window,
+        getLoadedChords=lambda: book_view.loaded_chords,
+        chordProgress=book_view.chord_progress)
+    qtbot.addWidget(control)
+    control.show()
+    qtbot.waitUntil(lambda: control.isVisible())
+    assert control.chord_mastery.summary.label.text() == (
+        '1 teaching target in progress, 2 mastered hint-eligible chords, '
+        'and 0 other chords.')
+    assert _row_state(control.chord_mastery) == _row_state(section)
+    control.reject()
 
 
 def test_timing_observations_do_not_affect_user_facing_chord_count(
@@ -204,6 +289,21 @@ def _type_rapidly(qtbot, monkeypatch, console, stats, text, timestamps):
 
 def _status_bar(controller):
     return controller._window.statusBar()
+
+
+def _validated_chord(word):
+    return ValidatedChord(word, word, word, 0, 0, 20.0, 10.0, False)
+
+
+def _row_state(section):
+    rows = []
+    for row in range(section.table.rowCount()):
+        rows.append((
+            section.table.item(row, 1).text(),
+            section.table.item(row, 2).text(),
+            section.table.item(row, 3).text(),
+        ))
+    return rows
 
 
 def _wait_for_status(qtbot, controller, text, timeout=2500):

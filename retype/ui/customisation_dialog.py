@@ -135,6 +135,12 @@ class CustomisationDialog(QDialog):
         # tree instead of clipping it at the default dialog width.
         return QSize(800, 500)
 
+    def showEvent(self, event):
+        # type: (CustomisationDialog, object) -> None
+        QDialog.showEvent(self, event)
+        if hasattr(self, 'chord_mastery'):
+            self.chord_mastery.refresh()
+
     def getUserDir(self):
         # type: (CustomisationDialog) -> str
         return self.config['user_dir']
