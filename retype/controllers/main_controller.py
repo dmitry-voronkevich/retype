@@ -1,7 +1,8 @@
 import os
 import logging
 from enum import Enum
-from qt import QObject, pyqtSignal, QUrl, QDesktopServices, QMessageBox
+from qt import (QApplication, QObject, pyqtSignal, QUrl, QDesktopServices,
+                QMessageBox)
 
 from typing import TYPE_CHECKING
 
@@ -293,6 +294,8 @@ class MainController(QObject):
     def quit(self):
         # type: (MainController) -> None
         self._window.close()
+        if platform_policy.is_macos:
+            QApplication.quit()
 
     def _initLibrary(self):
         # type: (MainController) -> None

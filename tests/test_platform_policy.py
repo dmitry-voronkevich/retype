@@ -20,9 +20,9 @@ def test_platform_policy_switches_mac_defaults():
 def test_platform_policy_uses_native_shortcut_modifier():
     mac_policy = PlatformPolicy('darwin')
     linux_policy = PlatformPolicy('linux')
-    mac_modifiers = Qt.KeyboardModifiers(Qt.KeyboardModifier.MetaModifier)
+    mac_modifiers = Qt.KeyboardModifiers(Qt.KeyboardModifier.ControlModifier)
 
-    assert mac_policy.modified_shortcut('PgUp') == 'Meta+PgUp'
+    assert mac_policy.modified_shortcut('PgUp') == 'Ctrl+PgUp'
     assert mac_policy.has_shortcut_modifier(mac_modifiers)
     assert linux_policy.modified_shortcut('PgUp') == 'Ctrl+PgUp'
 
@@ -54,7 +54,7 @@ def test_make_action_applies_menu_role_and_shortcuts():
     action = makeAction(
         name='Preferences…',
         menu_role=QAction.MenuRole.PreferencesRole,
-        shortcuts=[QKeySequence.StandardKey.Preferences],
+        shortcuts=['Ctrl+,'],
     )
 
     assert action.menuRole() == QAction.MenuRole.PreferencesRole

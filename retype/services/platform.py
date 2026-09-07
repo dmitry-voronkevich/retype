@@ -30,13 +30,14 @@ class PlatformPolicy:
     @property
     def shortcut_modifier_key(self):
         # type: (PlatformPolicy) -> str
-        return 'Meta' if self.is_macos else 'Ctrl'
+        # Qt maps Ctrl shortcuts to Command on macOS. Meta would produce
+        # Control shortcuts instead.
+        return 'Ctrl'
 
     @property
     def shortcut_modifier(self):
         # type: (PlatformPolicy) -> Qt.KeyboardModifier
-        return Qt.KeyboardModifier.MetaModifier if self.is_macos else \
-            Qt.KeyboardModifier.ControlModifier
+        return Qt.KeyboardModifier.ControlModifier
 
     def modified_shortcut(self, key):
         # type: (PlatformPolicy, str) -> str
