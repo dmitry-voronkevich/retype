@@ -77,7 +77,7 @@ class PlatformPolicy:
         app.setOrganizationName('retype')
         app.setOrganizationDomain('retype.readthedocs.io')
         if self.is_macos:
-            app.setQuitOnLastWindowClosed(False)
+            app.setQuitOnLastWindowClosed(True)
             app.setStyle('Fusion')
 
     def menu_role(self, role):

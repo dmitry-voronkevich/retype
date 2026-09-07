@@ -5,16 +5,23 @@ from retype.services.keymap import K, Keymap
 from retype.services.platform import PlatformPolicy, shortcut_to_text
 
 
-def test_platform_policy_switches_mac_defaults():
+def test_platform_policy_switches_mac_defaults(qapp):
     policy = PlatformPolicy('darwin')
+    previous = qapp.quitOnLastWindowClosed()
 
-    assert policy.is_macos
-    assert not policy.is_windows
-    assert policy.native_menu_bar
-    assert policy.shortcut_modifier_label == 'Command'
-    assert policy.quit_shortcuts() == [QKeySequence.StandardKey.Quit]
-    assert policy.preferences_shortcuts() == [QKeySequence.StandardKey.Preferences]
-    assert policy.menu_role(QAction.MenuRole.AboutRole) == QAction.MenuRole.AboutRole
+    try:
+        policy.apply_application_defaults(qapp)
+
+        assert policy.is_macos
+        assert not policy.is_windows
+        assert policy.native_menu_bar
+        assert policy.shortcut_modifier_label == 'Command'
+        assert policy.quit_shortcuts() == [QKeySequence.StandardKey.Quit]
+        assert policy.preferences_shortcuts() == [QKeySequence.StandardKey.Preferences]
+        assert policy.menu_role(QAction.MenuRole.AboutRole) == QAction.MenuRole.AboutRole
+        assert qapp.quitOnLastWindowClosed()
+    finally:
+        qapp.setQuitOnLastWindowClosed(previous)
 
 
 def test_platform_policy_uses_native_shortcut_modifier():
