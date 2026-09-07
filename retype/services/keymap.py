@@ -8,6 +8,7 @@ from qt import QObject, pyqtSignal
 from typing import TYPE_CHECKING
 
 from retype.extras.actions import makeAction
+from retype.services.platform import shortcut_to_text
 
 logger = logging.getLogger(__name__)
 
@@ -16,8 +17,8 @@ class K(QObject):
     changed = pyqtSignal()
 
     def __init__(self,  # type: K
-                 shortcuts_no_argstr=None,  # type: list[str] | None
-                 shortcuts_per_argstr=None  # type: dict[str, list[str]] | None
+                 shortcuts_no_argstr=None,  # type: list[object] | None
+                 shortcuts_per_argstr=None  # type: dict[str, list[object]] | None
                  ):
         # type: (...) -> None
         QObject.__init__(self)
@@ -31,14 +32,14 @@ class K(QObject):
         return self.entries_map.items()
 
     def s(self, argstr=''):
-        # type: (K) -> list[str]
+        # type: (K) -> list[object]
         """Get shortcuts list for an entry"""
         res = self.entries_map.get(argstr, [])
         assert type(res) is list
         return res
 
     def set_(self, entries_map):
-        # type: (dict[str, list[str]]) -> bool
+        # type: (dict[str, list[object]]) -> bool
         if entries_map != self.entries_map:
             self.entries_map = entries_map
             self.changed.emit()
@@ -66,7 +67,10 @@ class Keymap:
         # type: () -> ValuesDict
         values = {}  # type: ValuesDict
         for name, k in Keymap.selectors.items():
-            values[name] = {**k.entries_map}
+            values[name] = {
+                argstr: [shortcut_to_text(shortcut) for shortcut in shortcuts]
+                for argstr, shortcuts in k.entries_map.items()
+            }
         return values
 
     @staticmethod

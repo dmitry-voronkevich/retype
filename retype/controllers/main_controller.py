@@ -1,7 +1,8 @@
 import os
 import logging
 from enum import Enum
-from qt import QObject, pyqtSignal, QUrl, QDesktopServices, QMessageBox
+from qt import (QApplication, QObject, pyqtSignal, QUrl, QDesktopServices,
+                QMessageBox)
 
 from typing import TYPE_CHECKING
 
@@ -11,8 +12,8 @@ from retype.games.typespeed import TypespeedView
 from retype.games.steno import StenoView
 from retype.controllers import SafeConfig, MenuController, LibraryController
 from retype.console import Console
-from retype.constants import iswindows
 from retype.services.icon_set import Icons
+from retype.services.platform import platform_policy
 from retype.services import (ChordMasteryProgress, ChordMasteryStorage,
                              DeviceSnapshotReader, DeviceStartupLoader,
                              snapshot_to_chords)
@@ -65,7 +66,7 @@ class MainController(QObject):
             self.config['prompt'], self.config['console_font'])
         self._window = MainWin(self.console, self.getGeometry(self.config))
         self._window.setObjectName('main-window')
-        if iswindows:
+        if platform_policy.is_windows:
             self.sysconsole_visible = True
             self._window.opened.connect(self.maybeHideConsoleWindow)
 
@@ -287,11 +288,14 @@ class MainController(QObject):
     def _initMenuBar(self):
         # type: (MainController) -> None
         menu = self._window.menuBar()
+        menu.setNativeMenuBar(platform_policy.native_menu_bar)
         self._menu_controller = MenuController(self, menu)
 
     def quit(self):
         # type: (MainController) -> None
         self._window.close()
+        if platform_policy.is_macos:
+            QApplication.quit()
 
     def _initLibrary(self):
         # type: (MainController) -> None
@@ -456,7 +460,7 @@ class MainController(QObject):
                 self.config['steno']['kdict'])
         self.setView(self._viewFromEnumOrInt(i))
 
-    if iswindows:
+    if platform_policy.is_windows:
         def hideConsoleWindow(self, show=False):
             # type: (MainController, bool) -> None
             try:

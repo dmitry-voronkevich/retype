@@ -24,11 +24,11 @@ Toolbar actions
 - Back to shelves
    Return to :doc:`shelf-view`.
 - Cursor position
-   Go to the cursor position. Hold :kbd:`Ctrl` to instead move cursor to your current position.
+   Go to the cursor position. Hold :kbd:`Command` on macOS or :kbd:`Ctrl` on Windows/Linux to instead move cursor to your current position.
 - Previous chapter
-   Go to the previous chapter. Hold :kbd:`Ctrl` to move cursor with you as well.
+   Go to the previous chapter. Hold :kbd:`Command` on macOS or :kbd:`Ctrl` on Windows/Linux to move cursor with you as well.
 - Next chapter
-   Go to the next chapter. Hold :kbd:`Ctrl` to move cursor with you as well.
+   Go to the next chapter. Hold :kbd:`Command` on macOS or :kbd:`Ctrl` on Windows/Linux to move cursor with you as well.
 - Skip line
    Move cursor to the next line.
 - Increase font size
@@ -41,7 +41,7 @@ Toolbar actions
 
 Most of these actions have corresponding :ref:`console-commands`.
 
-The font size can also be increased or decreased using the mousewheel while holding :kbd:`Ctrl`.
+The font size can also be increased or decreased using the mousewheel while holding :kbd:`Command` on macOS or :kbd:`Ctrl` on Windows/Linux.
 
 .. _modeline:
 

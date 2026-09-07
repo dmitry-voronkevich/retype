@@ -61,7 +61,10 @@ def make_controller(qapp, qtbot, tmp_path):
             timer = getattr(signal, 'timer', None)
             if timer is not None:
                 timer.stop()
-        controller.quit()
+        # MainController.quit() intentionally exits the application on
+        # macOS.  Fixture cleanup must only close this controller so later
+        # tests can continue using the shared QApplication.
+        controller._window.close()
         qtbot.wait(20)
 
     for timer in qapp.findChildren(QTimer):

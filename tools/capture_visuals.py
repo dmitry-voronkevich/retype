@@ -9,6 +9,7 @@ never compares or approves a golden image.
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import platform
 import sys

@@ -89,7 +89,7 @@ Font size
 
 The font size can be saved on quit or set to a constant default.
 
-The font size can be changed at any time in :doc:`book-view` using the :ref:`toolbar-actions` or using the mousewheel while holding :kbd:`Ctrl`.
+The font size can be changed at any time in :doc:`book-view` using the :ref:`toolbar-actions` or using the mousewheel with the platform-specific modifier described there.
 
 .. _replacements:
 

@@ -5,17 +5,15 @@ from qt import QApplication
 
 from retype.controllers import MainController
 from retype.constants import RETYPE_VERSION_STR as version
-from retype.constants import RETYPE_BUILDDATE_DESC, ismacos
+from retype.constants import RETYPE_BUILDDATE_DESC
 from retype.extras.log import level_names, default_level, configLog
+from retype.services.platform import platform_policy
 
 
 def run():
     # type: () -> None
     app = QApplication(sys.argv)
-
-    # MacOS Qt5 bug workaround https://forum.qt.io/post/613499
-    if ismacos:
-        app.setStyle('Fusion')
+    platform_policy.apply_application_defaults(app)
 
     ver_str = f'retype {version}' + RETYPE_BUILDDATE_DESC
 

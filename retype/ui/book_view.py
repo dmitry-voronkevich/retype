@@ -19,6 +19,7 @@ from retype.stats import StatsDock
 from retype.services.theme import theme, C, Theme
 from retype.services.keymap import keymap, K, Keymap, genActions, keymapUpdate
 from retype.constants import default_font_family, default_font_size
+from retype.services.platform import platform_policy
 
 logger = logging.getLogger(__name__)
 
@@ -159,8 +160,7 @@ class BookDisplay(QTextBrowser):
 
     def wheelEvent(self, e):
         # type: (BookDisplay, QWheelEvent) -> None
-        if e.modifiers() == Qt.KeyboardModifiers(
-                Qt.KeyboardModifier.ControlModifier):
+        if platform_policy.has_shortcut_modifier(e.modifiers()):
             if e.angleDelta().y() > 0:
                 self.zoomIn()
             else:
@@ -168,10 +168,13 @@ class BookDisplay(QTextBrowser):
         QTextBrowser.wheelEvent(self, e)
 
 
-@keymap('BookView.gotoCursorPosition', K(['Ctrl+.']))
+@keymap('BookView.gotoCursorPosition', K([
+    platform_policy.modified_shortcut('.')]))
 @keymap('BookView.switchToShelves', K())
-@keymap('BookView.previousChapter', K(['PgUp'], {'m': ['Ctrl+PgUp']}))
-@keymap('BookView.nextChapter', K(['PgDown'], {'m': ['Ctrl+PgDown']}))
+@keymap('BookView.previousChapter', K([
+    'PgUp'], {'m': [platform_policy.modified_shortcut('PgUp')]}))
+@keymap('BookView.nextChapter', K([
+    'PgDown'], {'m': [platform_policy.modified_shortcut('PgDown')]}))
 @keymap('BookView.setChapter', K())
 @keymap('BookView.skipLine', K(['Ctrl+Return']))
 @keymap('BookView.fillChars', K())
@@ -331,7 +334,7 @@ class BookView(QWidget):
                 'name': 'Cursor position',
                 'func': lambda: self.gotoCursorPosition(),
                 'func_ui': lambda: self.gotoCursorPositionAction(),
-                'tooltip': 'Go to the cursor position. Hold Ctrl to move\
+                'tooltip': f'Go to the cursor position. Hold {platform_policy.shortcut_modifier_label} to move\
  cursor to your current position',
                 'icon': 'cursor',
                 'widget': self.toolbar,
@@ -344,7 +347,7 @@ class BookView(QWidget):
                 'name': 'Previous chapter',
                 'func': lambda: self.previousChapter(),
                 'func_ui': lambda: self.previousChapterAction(),
-                'tooltip': 'Go to the previous chapter. Hold Ctrl to move\
+                'tooltip': f'Go to the previous chapter. Hold {platform_policy.shortcut_modifier_label} to move\
  cursor with you as well',
                 'icon': 'arrow-left',
                 'args_regex': '(m|move)',
@@ -357,7 +360,7 @@ class BookView(QWidget):
                 'name': 'Next chapter',
                 'func': lambda: self.nextChapter(),
                 'func_ui': lambda: self.nextChapterAction(),
-                'tooltip': 'Go to the next chapter. Hold Ctrl to move cursor\
+                'tooltip': f'Go to the next chapter. Hold {platform_policy.shortcut_modifier_label} to move cursor\
  with you as well',
                 'icon': 'arrow-right',
                 'args_regex': '(m|move)',
@@ -858,16 +861,16 @@ class BookView(QWidget):
 
     def nextChapterAction(self):
         # type: (BookView) -> None
-        if self._keyboardModifiers() == Qt.KeyboardModifiers(
-                Qt.KeyboardModifier.ControlModifier):
+        if platform_policy.has_shortcut_modifier(
+                self._keyboardModifiers()):
             self.nextChapter(True)
         else:
             self.nextChapter(False)
 
     def previousChapterAction(self):
         # type: (BookView) -> None
-        if self._keyboardModifiers() == Qt.KeyboardModifiers(
-                Qt.KeyboardModifier.ControlModifier):
+        if platform_policy.has_shortcut_modifier(
+                self._keyboardModifiers()):
             self.previousChapter(True)
         else:
             self.previousChapter(False)
@@ -983,8 +986,8 @@ class BookView(QWidget):
 
     def gotoCursorPositionAction(self):
         # type: (BookView) -> None
-        if self._keyboardModifiers() == Qt.KeyboardModifiers(
-                Qt.KeyboardModifier.ControlModifier):
+        if platform_policy.has_shortcut_modifier(
+                self._keyboardModifiers()):
             self.gotoCursorPosition(True)
         else:
             self.gotoCursorPosition(False)
