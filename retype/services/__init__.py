@@ -14,6 +14,8 @@ from .chord_mastery import (ChordMasteryTracker, ChordSessionStats,
 from .chord_lessons import (AdaptiveChordExposure, ChordLesson,
                             ChordMasteryProgress, ChordMasteryStorage,
                             ChordProgress, DEFAULT_LESSON_CHORD_LIMIT)
+from .platform import (PlatformPolicy, platform_policy, shortcut_to_text,
+                       shortcut_texts)
 
 __all__ = ('AdaptiveChordExposure', 'Autosave', 'Chord', 'ChordLayout',
            'DeviceSnapshot', 'DeviceSnapshotReader', 'DeviceStartupLoader',
@@ -23,5 +25,6 @@ __all__ = ('AdaptiveChordExposure', 'Autosave', 'Chord', 'ChordLayout',
            'LikelyChordBurst', 'MasteryAssessment', 'MAX_BURST_MILLISECONDS',
            'MAX_INTERCHAR_MILLISECONDS', 'MIN_BURST_CHARS',
            'MIN_SUCCESSFUL_USES_FOR_MASTERY', 'is_validated_chord_result',
-           'build_chords', 'by_device_notation', 'by_word_notation',
-           'parse_layout', 'snapshot_to_chords')
+           'PlatformPolicy', 'build_chords', 'by_device_notation',
+           'by_word_notation', 'parse_layout', 'platform_policy',
+           'shortcut_texts', 'shortcut_to_text', 'snapshot_to_chords')

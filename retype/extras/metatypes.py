@@ -25,8 +25,8 @@ ActionInfo = TypedDict(
     'ActionInfo',
     {'widget': QWidget, 'widget_ui': QWidget, 'name': str,
      'func': Callable[[], None], 'func_ui': Callable[[], None],
-     'tooltip': str, 'shortcuts': list[str], 'icon': str,
-     'action': QAction, 'action_ui': QAction,
+     'tooltip': str, 'shortcuts': list[object], 'icon': str,
+     'action': QAction, 'action_ui': QAction, 'menu_role': object,
      'condition': bool, 'before': Callable[[], None],
      'args_regex': str, 'args_func': Callable[[str], None]},
     total=False)

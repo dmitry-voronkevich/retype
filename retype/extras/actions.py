@@ -8,9 +8,10 @@ from retype.resource_handler import getIcon
 def makeAction(name=None,  # type: str | None
                func=None,  # type: Callable[[], None] | None
                tooltip=None,  # type: str | None
-               shortcuts=None,  # type: list[str] | None
+               shortcuts=None,  # type: list[object] | None
                icon=None,  # type: str | None
                widget=None,  # type: QWidget | None
+               menu_role=None,  # type: QAction.MenuRole | None
                **_
                ):
     # type: (...) -> QAction
@@ -23,6 +24,8 @@ def makeAction(name=None,  # type: str | None
         action.setShortcuts(shortcuts)
     if icon:
         action.setIcon(getIcon(icon))
+    if menu_role is not None:
+        action.setMenuRole(menu_role)
     if widget:
         widget.addAction(action)
     return action

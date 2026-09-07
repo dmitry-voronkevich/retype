@@ -19,6 +19,7 @@ from retype.stats import StatsDock
 from retype.services.theme import theme, C, Theme
 from retype.services.keymap import keymap, K, Keymap, genActions, keymapUpdate
 from retype.constants import default_font_family, default_font_size
+from retype.services.platform import platform_policy
 
 logger = logging.getLogger(__name__)
 
@@ -331,7 +332,7 @@ class BookView(QWidget):
                 'name': 'Cursor position',
                 'func': lambda: self.gotoCursorPosition(),
                 'func_ui': lambda: self.gotoCursorPositionAction(),
-                'tooltip': 'Go to the cursor position. Hold Ctrl to move\
+                'tooltip': f'Go to the cursor position. Hold {platform_policy.shortcut_modifier_label} to move\
  cursor to your current position',
                 'icon': 'cursor',
                 'widget': self.toolbar,
@@ -344,7 +345,7 @@ class BookView(QWidget):
                 'name': 'Previous chapter',
                 'func': lambda: self.previousChapter(),
                 'func_ui': lambda: self.previousChapterAction(),
-                'tooltip': 'Go to the previous chapter. Hold Ctrl to move\
+                'tooltip': f'Go to the previous chapter. Hold {platform_policy.shortcut_modifier_label} to move\
  cursor with you as well',
                 'icon': 'arrow-left',
                 'args_regex': '(m|move)',
@@ -357,7 +358,7 @@ class BookView(QWidget):
                 'name': 'Next chapter',
                 'func': lambda: self.nextChapter(),
                 'func_ui': lambda: self.nextChapterAction(),
-                'tooltip': 'Go to the next chapter. Hold Ctrl to move cursor\
+                'tooltip': f'Go to the next chapter. Hold {platform_policy.shortcut_modifier_label} to move cursor\
  with you as well',
                 'icon': 'arrow-right',
                 'args_regex': '(m|move)',

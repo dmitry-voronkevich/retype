@@ -75,7 +75,7 @@ Type to progress through the book. You can see your current speed in words per m
 
 Other than typing, you can navigate the book with toolbar buttons and console commands.
 
-You can add more library search paths and customise retype’s operation in the Customisation Dialog, which can be accessed from the menu or by :kbd:`Ctrl+O`.
+You can add more library search paths and customise retype’s operation in the Customisation Dialog, which is available from the menu (Preferences on macOS) or by :kbd:`Ctrl+O` on Windows and Linux.
 
 CharaChorder chord library
 ^^^^^^^^^^^^^^^^^^^^^^^^^

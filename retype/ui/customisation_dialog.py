@@ -10,7 +10,7 @@ from qt import (QWidget, QFormLayout, QVBoxLayout, QLabel, QLineEdit,
                 QAbstractListModel, Qt, QStyledItemDelegate, QStyle,
                 QApplication, QRectF, QTextDocument, QFileDialog, pyqtSignal,
                 QModelIndex, QItemSelectionModel, QMessageBox, QDialog, QSize,
-                QFont, QFontComboBox, QComboBox, QPainter,
+                QFont, QFontComboBox, QComboBox, QPainter, QKeySequence,
                 QColorDialog, QColor, QTreeView, QStandardItemModel,
                 QAbstractItemView, QItemDelegate, QStandardItem, QSizePolicy,
                 QHeaderView, QTableWidget, QTableWidgetItem)
@@ -18,7 +18,8 @@ from qt import (QWidget, QFormLayout, QVBoxLayout, QLabel, QLineEdit,
 from typing import TYPE_CHECKING
 
 from retype.extras.dict import merge_dicts, update
-from retype.constants import default_config, iswindows, default_steno_kdict
+from retype.constants import default_config, default_steno_kdict
+from retype.services.platform import platform_policy
 from retype.services.theme import (Theme, populateThemes, valuesFromQss, theme,
                                    C)
 from retype.services.chord_mastery import MIN_SUCCESSFUL_USES_FOR_MASTERY
@@ -396,7 +397,7 @@ class CustomisationDialog(QDialog):
         lyt.addRow("Console font:", self.selectors['console_font'])
 
         # Windows-only: system console
-        if iswindows:
+        if platform_policy.is_windows:
             lyt.addRow(hline())
             hide_sysconsole_checkbox = CheckBox(
                 "Hide System Console window on UI load\n(Windows-only)",
@@ -2233,7 +2234,7 @@ class KeymapSelectorWidget(QWidget):
             if argstr == '':
                 editor = EscapableKeySequenceEdit()
                 if len(shortcuts):
-                    editor.setKeySequence(shortcuts[0])
+                    editor.setKeySequence(QKeySequence(shortcuts[0]))
                     shortcuts = shortcuts[1:]
                 editor.keySequenceChanged.connect(self.handleChange)
                 eargstr = QLineEdit()
@@ -2252,7 +2253,7 @@ class KeymapSelectorWidget(QWidget):
         # type: (KeymapSelectorWidget, str, str) -> None
         editor = EscapableKeySequenceEdit()
         if s:
-            editor.setKeySequence(s)
+            editor.setKeySequence(QKeySequence(s))
         editor.keySequenceChanged.connect(self.handleChange)
         w = QWidget()
         wlyt = QHBoxLayout(w)
@@ -2278,7 +2279,7 @@ class KeymapSelectorWidget(QWidget):
             # 2nd row, after the selector name label
             firsteditor = self.lyt.itemAt(
                 1, QFormLayout.ItemRole.FieldRole).widget()
-            yield '', firsteditor.keySequence().toString(), None, firsteditor
+            yield '', firsteditor.keySequence().toString(QKeySequence.NativeText), None, firsteditor
         except AttributeError:
             logger.error("Getting KeymapSelectorWidget first editor failed."
                          f"{traceback.format_exc()}")
@@ -2290,7 +2291,7 @@ class KeymapSelectorWidget(QWidget):
                 w = self.lyt.itemAt(
                     i, QFormLayout.ItemRole.FieldRole).widget()
                 editor = w.layout().itemAt(0).widget()
-                s = editor.keySequence().toString()
+                s = editor.keySequence().toString(QKeySequence.NativeText)
                 yield eargstr.text(), s, eargstr, editor
             except AttributeError:
                 logger.error("Getting KeymapSelectorWidget editors failed.\n"
@@ -2316,7 +2317,7 @@ class KeymapSelectorWidget(QWidget):
             if i == 0:
                 s = values.get('')
                 if len(s):
-                    editor.setKeySequence(s[0])
+                    editor.setKeySequence(QKeySequence(s[0]))
                 else:
                     editor.clear()
             else:

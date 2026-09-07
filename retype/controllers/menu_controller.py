@@ -1,15 +1,16 @@
-from qt import QObject
+from qt import QObject, QAction
 
 from typing import TYPE_CHECKING
 
 from retype.constants import (
-    RETYPE_ISSUE_TRACKER_URL, RETYPE_DOCUMENTATION_URL, iswindows)
+    RETYPE_ISSUE_TRACKER_URL, RETYPE_DOCUMENTATION_URL)
 from retype.services.keymap import keymap, K, Keymap, genActions, keymapUpdate
+from retype.services.platform import platform_policy
 
 
-@keymap('Menu.quit', K(['Alt+F4']))
+@keymap('Menu.quit', K(platform_policy.quit_shortcuts()))
 @keymap('Menu.setViewByEnum', K([], {'1': ['Ctrl+1'], '2': ['Ctrl+2']}))
-@keymap('Menu.showCustomisationDialog', K(['Ctrl+O']))
+@keymap('Menu.showCustomisationDialog', K(platform_policy.preferences_shortcuts()))
 @keymap('Menu.toggleConsoleWindow', K())
 @keymap('Menu.showTypespeed', K())
 @keymap('Menu.showSteno', K())
@@ -37,9 +38,12 @@ class MenuController(QObject):
 
         self.actions = {
             'Menu.quit': {
-                'widget': fileMenu, 'name': '&Quit',
+                'widget': fileMenu,
+                'name': 'Quit retype' if platform_policy.is_macos else '&Quit',
                 'func': lambda: self.controller.quit(),
                 'icon': 'door',
+                'menu_role': platform_policy.menu_role(
+                    QAction.MenuRole.QuitRole),
             },
             'Menu.setViewByEnum:1': {
                 'widget': viewMenu, 'name': '&Shelf View',
@@ -56,7 +60,7 @@ class MenuController(QObject):
             'Menu.toggleConsoleWindow': {
                 'widget': viewMenu, 'name': 'Toggle System &Console',
                 'func': lambda: self.controller.toggleConsoleWindow(),
-                'icon': 'console', 'condition': iswindows,
+                'icon': 'console', 'condition': platform_policy.is_windows,
                 'before': viewMenu.addSeparator,
             },
             'Menu.showTypespeed': {
@@ -70,14 +74,21 @@ class MenuController(QObject):
                 'icon': 'steno',
             },
             'Menu.showCustomisationDialog': {
-                'widget': optionsMenu, 'name': '&Customise retype',
+                'widget': optionsMenu,
+                'name': 'Preferences…' if platform_policy.is_macos
+                else '&Customise retype',
                 'func': lambda: self.controller.showCustomisationDialog(),
                 'icon': 'customise',
+                'menu_role': platform_policy.menu_role(
+                    QAction.MenuRole.PreferencesRole),
             },
             'Menu.about': {
-                'widget': helpMenu, 'name': "&About",
+                'widget': helpMenu,
+                'name': 'About retype' if platform_policy.is_macos else '&About',
                 'func': lambda: self.controller.showAboutDialog(),
                 'icon': 'about',
+                'menu_role': platform_policy.menu_role(
+                    QAction.MenuRole.AboutRole),
             },
             'Menu.documentation': {
                 'widget': helpMenu,
