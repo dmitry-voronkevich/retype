@@ -109,5 +109,3 @@ def shortcut_to_text(shortcut):
 def shortcut_texts(shortcuts):
     # type: (list[object]) -> list[str]
     return [_shortcut_to_text(shortcut) for shortcut in shortcuts]
-
-
