@@ -160,8 +160,7 @@ class BookDisplay(QTextBrowser):
 
     def wheelEvent(self, e):
         # type: (BookDisplay, QWheelEvent) -> None
-        if e.modifiers() == Qt.KeyboardModifiers(
-                Qt.KeyboardModifier.ControlModifier):
+        if platform_policy.has_shortcut_modifier(e.modifiers()):
             if e.angleDelta().y() > 0:
                 self.zoomIn()
             else:
@@ -169,10 +168,13 @@ class BookDisplay(QTextBrowser):
         QTextBrowser.wheelEvent(self, e)
 
 
-@keymap('BookView.gotoCursorPosition', K(['Ctrl+.']))
+@keymap('BookView.gotoCursorPosition', K([
+    platform_policy.modified_shortcut('.')]))
 @keymap('BookView.switchToShelves', K())
-@keymap('BookView.previousChapter', K(['PgUp'], {'m': ['Ctrl+PgUp']}))
-@keymap('BookView.nextChapter', K(['PgDown'], {'m': ['Ctrl+PgDown']}))
+@keymap('BookView.previousChapter', K([
+    'PgUp'], {'m': [platform_policy.modified_shortcut('PgUp')]}))
+@keymap('BookView.nextChapter', K([
+    'PgDown'], {'m': [platform_policy.modified_shortcut('PgDown')]}))
 @keymap('BookView.setChapter', K())
 @keymap('BookView.skipLine', K(['Ctrl+Return']))
 @keymap('BookView.fillChars', K())
@@ -859,16 +861,16 @@ class BookView(QWidget):
 
     def nextChapterAction(self):
         # type: (BookView) -> None
-        if self._keyboardModifiers() == Qt.KeyboardModifiers(
-                Qt.KeyboardModifier.ControlModifier):
+        if platform_policy.has_shortcut_modifier(
+                self._keyboardModifiers()):
             self.nextChapter(True)
         else:
             self.nextChapter(False)
 
     def previousChapterAction(self):
         # type: (BookView) -> None
-        if self._keyboardModifiers() == Qt.KeyboardModifiers(
-                Qt.KeyboardModifier.ControlModifier):
+        if platform_policy.has_shortcut_modifier(
+                self._keyboardModifiers()):
             self.previousChapter(True)
         else:
             self.previousChapter(False)
@@ -984,8 +986,8 @@ class BookView(QWidget):
 
     def gotoCursorPositionAction(self):
         # type: (BookView) -> None
-        if self._keyboardModifiers() == Qt.KeyboardModifiers(
-                Qt.KeyboardModifier.ControlModifier):
+        if platform_policy.has_shortcut_modifier(
+                self._keyboardModifiers()):
             self.gotoCursorPosition(True)
         else:
             self.gotoCursorPosition(False)

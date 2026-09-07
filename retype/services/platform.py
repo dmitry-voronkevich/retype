@@ -1,5 +1,5 @@
 import sys
-from qt import QApplication, QAction, QKeySequence
+from qt import QApplication, QAction, QKeySequence, Qt
 
 
 class PlatformPolicy:
@@ -26,6 +26,25 @@ class PlatformPolicy:
     def shortcut_modifier_label(self):
         # type: (PlatformPolicy) -> str
         return 'Command' if self.is_macos else 'Ctrl'
+
+    @property
+    def shortcut_modifier_key(self):
+        # type: (PlatformPolicy) -> str
+        return 'Meta' if self.is_macos else 'Ctrl'
+
+    @property
+    def shortcut_modifier(self):
+        # type: (PlatformPolicy) -> Qt.KeyboardModifier
+        return Qt.KeyboardModifier.MetaModifier if self.is_macos else \
+            Qt.KeyboardModifier.ControlModifier
+
+    def modified_shortcut(self, key):
+        # type: (PlatformPolicy, str) -> str
+        return f'{self.shortcut_modifier_key}+{key}'
+
+    def has_shortcut_modifier(self, modifiers):
+        # type: (PlatformPolicy, Qt.KeyboardModifiers) -> bool
+        return modifiers == Qt.KeyboardModifiers(self.shortcut_modifier)
 
     def quit_shortcuts(self):
         # type: (PlatformPolicy) -> list[object]

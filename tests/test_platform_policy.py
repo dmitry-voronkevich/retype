@@ -1,4 +1,4 @@
-from qt import QAction, QKeySequence
+from qt import QAction, QKeySequence, Qt
 
 from retype.extras.actions import makeAction
 from retype.services.keymap import K, Keymap
@@ -15,6 +15,16 @@ def test_platform_policy_switches_mac_defaults():
     assert policy.quit_shortcuts() == [QKeySequence.StandardKey.Quit]
     assert policy.preferences_shortcuts() == [QKeySequence.StandardKey.Preferences]
     assert policy.menu_role(QAction.MenuRole.AboutRole) == QAction.MenuRole.AboutRole
+
+
+def test_platform_policy_uses_native_shortcut_modifier():
+    mac_policy = PlatformPolicy('darwin')
+    linux_policy = PlatformPolicy('linux')
+    mac_modifiers = Qt.KeyboardModifiers(Qt.KeyboardModifier.MetaModifier)
+
+    assert mac_policy.modified_shortcut('PgUp') == 'Meta+PgUp'
+    assert mac_policy.has_shortcut_modifier(mac_modifiers)
+    assert linux_policy.modified_shortcut('PgUp') == 'Ctrl+PgUp'
 
 
 def test_platform_policy_keeps_non_mac_defaults():
