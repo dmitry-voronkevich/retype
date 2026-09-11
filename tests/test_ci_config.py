@@ -11,6 +11,7 @@ def test_windows_ci_uses_supported_python_and_locked_test_group():
     assert "actions/setup-python@v5" in workflow
     assert "astral-sh/setup-uv@v5" in workflow
     assert "uv sync --locked --group test" in workflow
+    assert "QT_QPA_PLATFORM: offscreen" in workflow
     assert "uv run --locked --group test pytest" in workflow
     assert "3.7.9" not in workflow
 
