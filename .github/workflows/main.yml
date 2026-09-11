@@ -102,7 +102,7 @@ jobs:
         run: |
           output="name=failed"
           [ ${{ matrix.os }} = 'ubuntu-latest' ] && output="name=linux\nartifact=./dist/retype-hacky" 
-          [ ${{ matrix.os }} = 'macos-14' ] && output="name=macos-x86\nartifact=./retype.dmg"
+          [ ${{ matrix.os }} = 'macos-14' ] && output="name=macos-arm64\nartifact=./dist/retype.dmg"
           [ ${{ matrix.os }} = 'windows-latest' ] && output="name=windows\nartifact=./dist/retype-hacky"
           echo -e $output >> $GITHUB_OUTPUT
         shell: bash
@@ -151,11 +151,12 @@ jobs:
             .github/workflows/pyinstaller-hack.sh apply venv/lib/python3.7/site-packages
             venv/bin/python setup.py b -k hacky
 
-      - name: 1M. Setup Python ${{ env.PYTHON_VERSION }}
+      - name: 1M. Set up uv
         if: matrix.os == 'macos-14'
-        uses: plu5/macos-setup-python-action@main
+        uses: astral-sh/setup-uv@v5
         with:
-          version: ${{ env.PYTHON_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: uv.lock
 
       - name: 1W. Setup Python ${{ env.PYTHON_VERSION }}
         if: matrix.os == 'windows-latest'
@@ -164,24 +165,16 @@ jobs:
            python-version: ${{ env.PYTHON_VERSION }}
 
       - name: 2MW. Generate Python venv cache
-        if: matrix.os == 'macos-14' || matrix.os == 'windows-latest'
+        if: matrix.os == 'windows-latest'
         id: python_venv_cache
         uses: actions/cache@v3
         with:
           path: venv
           key: venv-${{ env.PYTHON_VERSION }}-${{ hashFiles('requirements.txt') }}-${{ matrix.os }}
 
-      - name: 3M. Install dependencies unless cached
-        if: matrix.os == 'macos-14' && steps.python_venv_cache.outputs.cache-hit != 'true'
-        run: |
-          if [ -d "venv" ]; then rm -rf venv; fi
-          python3.7 -m venv venv
-          PYINSTALLER_COMPILE_BOOTLOADER=1 venv/bin/python3 -m pip install pyinstaller setuptools
-          venv/bin/python3 -m pip install PyQt5==5.14.2 lxml==4.6.3 # Compatible down to macOS 10.13
-          # ^ Explanation:
-          # (1) lxml 4.6.3 supports down to 10.9, 4.6.4 is 10.14+.
-          # (2) PyQt5 5.14+ on macos-14, which supports down to 10.13.
-          venv/bin/python3 -m pip install -r requirements.txt
+      - name: 3M. Install locked build dependencies
+        if: matrix.os == 'macos-14'
+        run: uv sync --locked --group build
 
       - name: 3W. Install dependencies unless cached
         if: matrix.os == 'windows-latest' && steps.python_venv_cache.outputs.cache-hit != 'true'
@@ -199,15 +192,9 @@ jobs:
           script: 'pyinstaller-hack.sh'
           args: 'apply venv/lib/site-packages'
 
-      - name: 4M. Run retype setup script
+      - name: 4M. Build macOS application and disk image
         if: matrix.os == 'macos-14'
-        run: venv/bin/python3 setup.py b -k bundle
-
-      - name: 5M. Make dmg
-        if: matrix.os == 'macos-14'
-        run: |
-          npm install -g appdmg
-          appdmg setup/appdmg-config.json retype.dmg
+        run: ./scripts/build-macos-dmg.sh
 
       - name: 5W. Download UPX
         if: matrix.os == 'windows-latest'

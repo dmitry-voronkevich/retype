@@ -43,12 +43,15 @@ lock was resolved for that range. This checkout has validated Python 3.11,
 machine, so compatibility with those versions is not claimed as tested here.
 PyQt5 wheel/platform availability can also vary by Python and macOS runner.
 
-The source launcher remains `uv run --locked bin/retype`. The existing
-PyInstaller flow remains available with the isolated build group, for example:
+The source launcher remains `uv run --locked bin/retype`. Build the macOS
+release artifact from the same locked environment with:
 
 ```sh
-uv run --locked --group build python setup.py b -k bundle
+./scripts/build-macos-dmg.sh
 ```
+
+This produces `dist/retype.app` and `dist/retype.dmg`. It is not Developer
+ID-signed or notarized; those are release-owner responsibilities.
 
 ## Native macOS visual evidence
 

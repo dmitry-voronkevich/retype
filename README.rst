@@ -33,9 +33,14 @@ Build instructions
 #. Get a local copy of this repository: either clone it or download and extract `ZIP of latest <https://github.com/plu5/retype/archive/main.zip>`_   
 #. Install `uv <https://docs.astral.sh/uv/>`_ and a supported Python (3.10--3.14).
 #. From the repository root, run ``uv sync --locked --all-groups`` in the isolated project environment.
-#. Run ``uv run --locked --group build python setup.py b``; help text will print with the build options you can use. For example, ``uv run --locked --group build python setup.py b -k onedir`` will build retype with pyinstaller in onedir mode.
+#. On macOS, run ``./scripts/build-macos-dmg.sh``. The script invokes
+   PyInstaller through ``uv run --locked --group build``, builds
+   ``dist/retype.app``, and creates ``dist/retype.dmg`` containing the app and
+   an Applications shortcut. The image uses the architecture of the Mac that
+   builds it.
 
-The output will be in ``/dist``.
+The DMG is not Developer ID-signed or notarized. A public release still needs
+the release owner to apply its chosen code-signing and notarization policy.
 
 Running from sources
 ^^^^^^^^^^^^^^^^^^^^

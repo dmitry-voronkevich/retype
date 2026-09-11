@@ -10,39 +10,30 @@ on:
     paths: '**.py'
 
 env:
-  PYTHON_VERSION: 3.7.9
+  PYTHON_VERSION: '3.11'
 
 jobs:
   run-tests:
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        include:
-          - os: windows-latest
+    runs-on: windows-latest
+    env:
+      QT_QPA_PLATFORM: offscreen
     steps:
-      - name: 1. Checkout
-        uses: actions/checkout@v3
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - name: 2. Setup Python ${{ env.PYTHON_VERSION }}
-        uses: actions/setup-python@v4
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      - name: 3. Generate Python venv cache
-        id: python_venv_cache
-        uses: actions/cache@v3
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
         with:
-          path: venv
-          key: testvenv-${{ env.PYTHON_VERSION }}-${{ hashFiles('requirements.txt') }}-${{ matrix.os }}
+          enable-cache: true
+          cache-dependency-glob: uv.lock
 
-      - name: 4. Install dependencies unless cached
-        if: steps.python_venv_cache.outputs.cache-hit != 'true'
-        run: |
-          if [ -d "venv" ]; then rm -rf venv; fi
-          python -m venv venv
-          venv/Scripts/python -m pip install pytest
-          venv/Scripts/python -m pip install -r requirements.txt
-        shell: bash
+      - name: Install locked test dependencies
+        run: uv sync --locked --group test
 
-      - name: 5. Run pytest
-        run: venv/Scripts/python -m pytest
+      - name: Run pytest
+        run: uv run --locked --group test pytest

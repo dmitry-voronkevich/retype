@@ -48,14 +48,10 @@ libcomposeplatforminputcontextplugin.so'},
 libfcitxplatforminputcontextplugin.so'}
     ]
 elif ismacos:
-    to_exclude = {
-        'libcrypto', 'libncursesw', 'libssl', 'QtNetwork', 'QtQml', 'QtQuick',
-        'QtSvg', 'QtWebSockets', 'objectify', 'sax', '_bisect',
-        '_bz2', '_codecs', '_ctypes', '_datetime', '_heapq',
-        '_json', '_lzma', '_multibyte', '_opcode', '_pickle',
-        '_scproxy', '_socket', '_ssl', '_uuid', 'grp',
-        'pyexpat', 'readline', 'resource', 'termios', 'unicodedata',
-    }
+    # The legacy macOS exclusions removed standard-library extensions required
+    # by PyInstaller's runtime hooks (notably ``_socket``). Let PyInstaller
+    # collect its native dependency closure for a launchable app bundle.
+    to_exclude = set()
 
 
 def filterBinaries(toc):

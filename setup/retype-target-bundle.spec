@@ -34,7 +34,7 @@ exe = EXE(pyz,  # noqa: F821
           bootloader_ignore_signals=False,
           strip=False,
           upx=True,
-          console=True,
+          console=False,
           disable_windowed_traceback=False,
           target_arch=None,
           codesign_identity=None,
@@ -52,9 +52,7 @@ coll = COLLECT(exe,  # noqa: F821
 app = BUNDLE(coll,  # noqa: F821
              name=data.name + '.app',
              icon=data.icns,
-             bundle_identifier=data.name,
-             info_plist={"CFBundleExecutable": "MacOS/retype",
-                         "NSPrincipalClass": "NSApplication",
-                         "LSBackgroundOnly": "0",
-                         "LSMinimumSystemVersion": "10.9.0",
+             bundle_identifier="io.github.plu5.retype",
+             info_plist={"CFBundleDisplayName": data.name,
+                         "CFBundleExecutable": data.name,
                          "CFBundleShortVersionString": version_str})

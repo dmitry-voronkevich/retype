@@ -10,6 +10,10 @@ readme = "README.rst"
 requires-python = ">=3.10,<3.15"
 dependencies = [
     "PyQt5>=5.15,<6",
+    # PyQt5-Qt5 5.15.2 is the latest release with Windows wheels; newer
+    # releases support only Linux and macOS, which use the current 5.15.19.
+    "PyQt5-Qt5==5.15.2; sys_platform == 'win32'",
+    "PyQt5-Qt5==5.15.19; sys_platform != 'win32'",
     "ebooklib>=0.18,<1",
     "tinycss2>=1.2,<2",
     "pyserial>=3.5,<4",
