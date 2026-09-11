@@ -9,6 +9,7 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 - Chord mastery persistence now keeps cumulative counts and manual mastered/unmastered overrides in `chord-mastery.json`; the lesson-limit setting lives in config and `BookView.setAdaptiveChordLessonLimit` is the canonical refresh path.
 - The main-window status bar uses one feedback model with sticky base/mastery messages and transient detection overlays; `retype/ui/main_win.py` owns the lifetime/priority rules and `docs/source/book-view.rst` documents the user-facing behavior.
 - Build the macOS release artifact with `scripts/build-macos-dmg.sh`; it uses the locked `uv` build group, outputs `dist/retype.app` and `dist/retype.dmg`, and CI publishes the native runner architecture. Signing and notarization remain release-owner policy.
+- The Windows test workflow is `.github/workflows/run-tests.yml`; it uses Python 3.11 and the locked `uv` test group, matching the declared Python range.
 
 ## Maintaining this file
 
