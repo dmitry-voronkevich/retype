@@ -178,14 +178,6 @@ Comments: Plugins copied from Qt in order to support compose key and fcitx
 Contributors:
 1. The Qt Company Ltd.
 
-Files: setup/appdmg-background.png
-Comments: Adapted from a Wikimedia Commons image by CalleGM 2019
-          https://commons.wikimedia.org/wiki/File:Book_(Danmarks_Bogbindere_gennem_400_Aar)_bound_by_bookbinder_Sture_Werner.jpg
-Licence: CC-BY-SA-4.0
-Contributors:
-1. CalleGM
-2. plu5 <plu5@users.noreply.github.com>
-
 Files: setup/retype-target-bundle.spec
        setup/retype-target-hacky.spec
        setup/retype-target-onefile.spec
@@ -277,7 +269,6 @@ Files: .github/workflows/Dockerfile
        setup/config/util.py
        setup/config/version.py
        setup/__init__.py
-       setup/appdmg-config.json
        setup/build.py
        setup/subdir-hook.py
        style/icons/0_default/about.png

@@ -4,14 +4,21 @@ Build instructions
 #. Get a local copy of `the code repository <https://github.com/plu5/retype>`_: either clone it or download and extract `ZIP of latest <https://github.com/plu5/retype/archive/main.zip>`_   
 #. Install ``uv`` and a supported Python (3.10--3.14).
 #. From the repository root, run ``uv sync --locked --all-groups`` in the isolated project environment.
-#. Run ``uv run --locked --group build python setup.py b``; help text will print with the build options you can use. For example, ``uv run --locked --group build python setup.py b -k onedir`` will build retype with pyinstaller in onedir mode.
+#. On macOS, run ``./scripts/build-macos-dmg.sh``. It invokes PyInstaller from
+   the locked build dependency group, produces ``dist/retype.app``, and wraps
+   that app in ``dist/retype.dmg`` with an Applications shortcut.
 
-The output will be in ``/dist``.
+The application and image use the architecture of the Mac performing the build.
+The DMG is not Developer ID-signed or notarized; code signing and
+notarization must be applied by the release owner according to its release
+policy.
 
-Build command options
----------------------
+Legacy PyInstaller build options
+--------------------------------
 
-Build options for the ``b`` command:
+The following development-only options remain available through
+``uv run --locked --group build python setup.py b``. They do not produce a
+macOS DMG; use ``scripts/build-macos-dmg.sh`` for release packaging.
 
 - ``-k``, ``--kind``: the kind of build to make (out of onedir_, onefile_, hacky_)
 - ``-c``, ``--clean``: rm build and dist folders
@@ -19,8 +26,8 @@ Build options for the ``b`` command:
 
   .. note:: ``-h``, ``--help`` will instead show ``setuptools``’s help message.
 
-Build kinds
------------
+Legacy build kinds
+------------------
 
 onedir
 ^^^^^^
