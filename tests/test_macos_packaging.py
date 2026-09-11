@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 
@@ -21,7 +22,8 @@ def test_macos_dmg_script_uses_locked_dependencies_and_native_tools():
     script_path = ROOT / "scripts/build-macos-dmg.sh"
     script = script_path.read_text()
 
-    assert script_path.stat().st_mode & 0o111
+    if os.name != "nt":
+        assert script_path.stat().st_mode & 0o111
     assert "uv run --locked --group build python -m PyInstaller" in script
     assert "hdiutil create" in script
     assert "ln -s /Applications" in script
