@@ -491,7 +491,7 @@ def test_deferred_chord_callback_during_final_materialization_is_retained(tmp_pa
             callback.start()
             callback.join(1)
             assert not callback.is_alive()
-        original_materialize(result)
+        return original_materialize(result)
 
     receiver._materialize_legacy_state = materialize
     result = receiver.sync_now()
@@ -535,6 +535,68 @@ def test_post_scan_deferred_settings_are_included_in_result(tmp_path):
     result = sync.sync_now()
 
     assert result.settings['auto_newline'] is False
+
+
+def test_restart_preserves_local_baseline_after_materialization_crash(tmp_path):
+    root = tmp_path / 'folder'
+    sender, _ = _enable(
+        tmp_path, 'sender', root,
+        chords={'version': 2, 'progress': {'word': 5}}, config=_config())
+    sender.sync_now()
+    receiver, legacy = _enable(tmp_path, 'receiver', root, config=_config())
+    assert receiver.sync_now().chord_counts == {'word': 5}
+
+    sender.record_chords({'word': 7}, {})
+    sender.sync_now()
+    with patch.object(receiver, '_remember_materialized',
+                      side_effect=OSError('crash')):
+        receiver.sync_now()
+
+    restarted = LearningSync(tmp_path / 'receiver-local', legacy)
+    assert restarted.sync_now().chord_counts == {'word': 7}
+
+
+def test_supported_chord_file_without_progress_is_preserved(tmp_path):
+    root = tmp_path / 'folder'
+    sender, _ = _enable(
+        tmp_path, 'sender', root,
+        chords={'version': 2, 'progress': {'word': 2}}, config=_config())
+    sender.sync_now()
+    legacy = tmp_path / 'receiver-legacy'
+    _legacy(legacy, chords={'version': 2}, config=_config())
+    receiver = LearningSync(tmp_path / 'receiver-local', legacy)
+    assert receiver.configure(root).state == 'ready'
+    receiver.sync_now()
+
+    assert json.loads((legacy / 'chord-mastery.json').read_text()) == {
+        'version': 2}
+
+
+def test_failed_legacy_materialization_does_not_advance_baseline(tmp_path):
+    root = tmp_path / 'folder'
+    sender, _ = _enable(
+        tmp_path, 'sender', root,
+        chords={'version': 2, 'progress': {'word': 2}}, config=_config())
+    sender.sync_now()
+    receiver, legacy = _enable(tmp_path, 'receiver', root, config=_config())
+    receiver.sync_now()
+    before = json.loads((receiver.bootstrap_path).read_text())['last_materialized']
+
+    sender.record_chords({'word': 3}, {})
+    sender.sync_now()
+    original_write = atomic_write_json
+    chord_path = legacy / 'chord-mastery.json'
+
+    def fail_chord_write(path, data, *args, **kwargs):
+        if path == chord_path:
+            raise OSError('disk full')
+        return original_write(path, data, *args, **kwargs)
+
+    with patch('retype.services.sync.atomic_write_json', side_effect=fail_chord_write):
+        receiver.sync_now()
+
+    after = json.loads(receiver.bootstrap_path.read_text())['last_materialized']
+    assert after == before
 
 
 def test_restart_uses_published_count_as_materialized_baseline(tmp_path):

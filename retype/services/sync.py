@@ -617,6 +617,8 @@ class LearningSync:
             if isinstance(baseline, dict) else None
         self._materialized_counts = _valid_count_map(baseline_counts)
         self._materialized_overrides = _valid_override_map(baseline_overrides)
+        self._local_chord_counts = _valid_count_map(
+            self._bootstrap.get('local_chord_counts'))
         self._load_published()
         self._load_pending()
         self._initialize_materialized_count_baseline()
@@ -673,7 +675,9 @@ class LearningSync:
                     (('legacy_migrated' not in data) or
                      isinstance(data['legacy_migrated'], bool)) and
                     (('last_materialized' not in data) or
-                     isinstance(data['last_materialized'], dict))):
+                     isinstance(data['last_materialized'], dict)) and
+                    (('local_chord_counts' not in data) or
+                     isinstance(data['local_chord_counts'], dict))):
                 return data
         except ValidationError as error:
             self._bootstrap_recovered = True
@@ -1030,6 +1034,8 @@ class LearningSync:
         self._dirty = True
         if self.enabled:
             try:
+                self._bootstrap['local_chord_counts'] = dict(self._local_chord_counts)
+                self._save_bootstrap()
                 envelope = self._envelope()
                 if len(_json_bytes(envelope)) > MAX_REPLICA_BYTES:
                     raise OSError('local learning state exceeds the 5 MiB replica limit')
@@ -1212,7 +1218,9 @@ class LearningSync:
                     self._predecessor = None
                     self._materialized_counts = {}
                     self._materialized_overrides = {}
+                    self._local_chord_counts = {}
                     self._bootstrap.pop('last_materialized', None)
+                    self._bootstrap.pop('local_chord_counts', None)
                     self.pending_path.unlink(missing_ok=True)
                     self._bootstrap['legacy_migrated'] = False
                     self._legacy_capture_needed = False
@@ -1437,10 +1445,12 @@ class LearningSync:
         counts = chords.get('counts', {}) if isinstance(chords, dict) else {}
         if not isinstance(counts, dict):
             return
-        for key, count in counts.items():
+        last = self._last_materialized()
+        last_counts = _valid_count_map(last.get('chord_counts', {}))
+        for key, count in {**last_counts, **counts}.items():
             if isinstance(key, str) and key and _is_int(count) and count >= 0:
-                self._materialized_counts[key] = max(
-                    self._materialized_counts.get(key, 0), count)
+                self._local_chord_counts[key] = max(
+                    self._local_chord_counts.get(key, 0), count)
 
     def deferred_settings(self) -> dict[str, object]:
         pending: dict[str, object] = {}
@@ -1522,8 +1532,9 @@ class LearningSync:
                 if not isinstance(key, str) or not key or not _is_int(total) or total < 0:
                     continue
                 old_total = (_deferred_baseline.get(key, 0)
-                             if _deferred_baseline is not None else
-                             self._materialized_counts.get(key, 0))
+                             if _deferred_baseline is not None else max(
+                                 self._materialized_counts.get(key, 0),
+                                 self._local_chord_counts.get(key, 0)))
                 delta = total - old_total
                 if delta > 0:
                     contributions[key] = int(contributions.get(key, 0)) + delta
@@ -1533,6 +1544,8 @@ class LearningSync:
                 # rather than repeatedly adding all local uses since a scan.
                 self._materialized_counts[key] = max(
                     self._materialized_counts.get(key, 0), total)
+                self._local_chord_counts[key] = max(
+                    self._local_chord_counts.get(key, 0), total)
             current = {key: value for key, value in overrides.items()
                        if isinstance(key, str) and key and isinstance(value, bool)}
             for key in set(current) | set(self._materialized_overrides):
@@ -1642,7 +1655,11 @@ class LearningSync:
                     'Local changes are saved in the selected sync folder.',
                     time.time(), list(self.status.diagnostics))
                 self.status = result.status
-                self._materialize_legacy_state(result)
+                with self._deferred_lock:
+                    self._finalizing_counts_baseline = dict(self._materialized_counts)
+                legacy_materialized = self._materialize_legacy_state(result)
+                if legacy_materialized:
+                    self._remember_local_chord_baseline(result)
                 result.managed_books_ready = self._materialize_managed_books(
                     root, result)
                 result.managed_books_materialized = bool(result.managed_books_ready)
@@ -1655,7 +1672,9 @@ class LearningSync:
                         'Local changes are saved in the selected sync folder.',
                         time.time(), list(self.status.diagnostics))
                     self.status = result.status
-                    self._materialize_legacy_state(result)
+                    legacy_materialized = self._materialize_legacy_state(result)
+                    if legacy_materialized:
+                        self._remember_local_chord_baseline(result)
                     result.managed_books_ready = self._materialize_managed_books(
                         root, result)
                     result.managed_books_materialized = bool(result.managed_books_ready)
@@ -1673,7 +1692,8 @@ class LearningSync:
                                     self._finalizing_counts_baseline.get(key, 0), total)
                     self._materialized_counts = dict(result.chord_counts)
                 self._materialized_overrides = dict(result.chord_overrides)
-                self._remember_materialized(result)
+                if legacy_materialized:
+                    self._remember_materialized(result)
                 result.status.diagnostics = list(self.status.diagnostics)
                 if result.status.diagnostics:
                     result.status.message = (
@@ -1747,6 +1767,11 @@ class LearningSync:
                 self._recover_candidate(path, str(error))
         return replicas
 
+    def _remember_local_chord_baseline(self, result: SyncResult) -> None:
+        self._local_chord_counts = dict(result.chord_counts)
+        self._bootstrap['local_chord_counts'] = dict(self._local_chord_counts)
+        self._save_bootstrap()
+
     def _remember_materialized(self, result: SyncResult) -> None:
         self._bootstrap['last_materialized'] = {
             'chord_counts': dict(result.chord_counts),
@@ -1755,13 +1780,14 @@ class LearningSync:
         }
         self._save_bootstrap()
 
-    def _materialize_legacy_state(self, result: SyncResult) -> None:
+    def _materialize_legacy_state(self, result: SyncResult) -> bool:
         """Keep existing local consumers working from a merged cache.
 
         These files are a materialisation, not the protocol and never get
         uploaded directly.  Unknown legacy save entries remain local so an
         older/path-based entry is not silently discarded.
         """
+        success = True
         try:
             self.legacy_dir.mkdir(parents=True, exist_ok=True)
             save_path = self.legacy_dir / 'save.json'
@@ -1771,7 +1797,10 @@ class LearningSync:
             except ValidationError as error:
                 current = {}
                 save_valid = not save_path.exists()
+                success = success and save_valid
                 self._diagnose('Existing local progress was left untouched: {}'.format(error))
+            if save_path.exists() and not isinstance(current, dict):
+                success = False
             materialized = dict(current) if isinstance(current, dict) else {}
             for identity, data in result.save.items():
                 current_data = materialized.get(identity)
@@ -1789,17 +1818,25 @@ class LearningSync:
             except ValidationError as error:
                 chord_current = {}
                 chord_valid = not chord_path.exists()
+                success = success and chord_valid
                 self._diagnose('Existing local chord progress was left untouched: {}'.format(error))
             if not isinstance(chord_current, dict):
                 chord_data = {}
                 chord_valid = False
+                success = False
             else:
                 chord_data = dict(chord_current)
             if isinstance(chord_current, dict) and chord_path.exists() and \
                     chord_data.get('version') not in (1, 2):
                 chord_valid = False
+                success = False
                 self._diagnose('Existing local chord progress has an unsupported format and was left untouched.')
             raw_progress = chord_data.get('progress', {})
+            if chord_path.exists() and ('progress' not in chord_data or
+                                         not isinstance(raw_progress, dict)):
+                chord_valid = False
+                success = False
+                self._diagnose('Existing local chord progress has an unsupported format and was left untouched.')
             progress = dict(raw_progress) if isinstance(raw_progress, dict) else {}
             for key, count in result.chord_counts.items():
                 current_count = progress.get(key)
@@ -1815,7 +1852,9 @@ class LearningSync:
                 atomic_write_json(chord_path, chord_data,
                                   self.recovery_dir / 'materialized')
         except OSError as error:
+            success = False
             self._diagnose('Merged learning data could not be materialized locally: {}'.format(error))
+        return success
 
     def _materialize_managed_books(self, root: Path, result: SyncResult) -> set[str]:
         if not self.managed_library_consent:
