@@ -197,8 +197,9 @@ class LibraryController(object):
             book = BookWrapper(item, self.load(item))
             self.books[idn] = book
 
-    def addManagedBooks(self, managed_books, validated_checksums=None):
-        # type: (LibraryController, dict[str, dict[str, object]], set[str] | None) -> list[BookWrapper]
+    def addManagedBooks(self, managed_books, validated_checksums=None,
+                        loaded_books=None):
+        # type: (LibraryController, dict[str, dict[str, object]], set[str] | None, dict[str, object] | None) -> list[BookWrapper]
         if self.books is None or not self.managed_library_path:
             return []
         existing = {book.checksum for book in self.books.values()}
@@ -226,7 +227,8 @@ class LibraryController(object):
                 continue
             item = LibraryItem(next_id, path, checksum)
             self._library_items[next_id] = item
-            book = BookWrapper(item, self.load(item))
+            loaded_book = (loaded_books or {}).get(checksum)
+            book = BookWrapper(item, self.load(item), loaded_book)
             self.books[next_id] = book
             added.append(book)
             existing.add(checksum)
@@ -391,14 +393,16 @@ class LibraryItem:
 
 
 class BookWrapper(object):
-    def __init__(self, library_item, save_data=None):
-        # type: (BookWrapper, LibraryItem, SaveData | None) -> None
+    def __init__(self, library_item, save_data=None, loaded_book=None):
+        # type: (BookWrapper, LibraryItem, SaveData | None, object | None) -> None
         self.valid = False
         self._library_item = library_item
         self.path = library_item.path
         self.idn = library_item.idn
         self.checksum = library_item.checksum
-        self._book = self._readEpub()
+        self._book = loaded_book if loaded_book is not None else self._readEpub()
+        if loaded_book is not None:
+            self.valid = True
         self.title = self._book.title
         self._chapters = []  # type: list[Chapter]
         self._images = []  # type: list[epub.EpubImage]

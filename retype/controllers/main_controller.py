@@ -4,6 +4,7 @@ from copy import deepcopy
 from enum import Enum
 from qt import (QApplication, QObject, pyqtSignal, QUrl, QDesktopServices,
                 QMessageBox, QThread, QTimer)
+from ebooklib import epub
 
 from typing import TYPE_CHECKING
 
@@ -48,20 +49,25 @@ class _ManagedBookImportWorker(QThread):
     completed = pyqtSignal(object)
     failed = pyqtSignal(str)
 
-    def __init__(self, sync, path, library):
-        # type: (_ManagedBookImportWorker, LearningSync, str, LibraryController) -> None
+    def __init__(self, sync, path):
+        # type: (_ManagedBookImportWorker, LearningSync, str) -> None
         QThread.__init__(self)
         self.sync = sync
         self.path = path
-        self.library = library
 
     def run(self):
         # type: (_ManagedBookImportWorker) -> None
         try:
             metadata = self.sync.import_book(self.path)
-            added = self.library.addManagedBooks(
-                {metadata['digest']: metadata}, {metadata['digest']})
-            self.completed.emit((metadata, added))
+            book_path = self.sync.managed_library_dir / (
+                metadata['digest'] + '.epub')
+            try:
+                loaded_book = epub.read_epub(
+                    str(book_path), options={'ignore_ncx': True})
+            except Exception as error:
+                raise SyncError(
+                    'managed EPUB could not be loaded: {}'.format(error)) from error
+            self.completed.emit((metadata, loaded_book))
         except SyncError as error:
             self.failed.emit(str(error))
         except Exception as error:
@@ -531,7 +537,7 @@ class MainController(QObject):
         if self._sync_closing or (worker is not None and worker.isRunning()):
             return
         self.learning_sync.status.message = 'Importing the selected EPUB…'
-        worker = _ManagedBookImportWorker(self.learning_sync, path, self.library)
+        worker = _ManagedBookImportWorker(self.learning_sync, path)
         self._managed_book_worker = worker
         worker.completed.connect(self._managedBookImportCompleted)
         worker.failed.connect(self._managedBookImportFailed)
@@ -540,9 +546,12 @@ class MainController(QObject):
         self._updateSyncPresentation()
 
     def _managedBookImportCompleted(self, result):
-        # type: (MainController, tuple[dict[str, object], list[object]]) -> None
+        # type: (MainController, tuple[dict[str, object], object]) -> None
         self._managed_book_worker = None
-        _, added = result
+        metadata, loaded_book = result
+        added = self.library.addManagedBooks(
+            {metadata['digest']: metadata}, {metadata['digest']},
+            {metadata['digest']: loaded_book})
         self.views[View.shelf_view].addBooks(added)
         self.learning_sync.status.message = (
             'The EPUB was added to the managed library.')

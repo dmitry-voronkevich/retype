@@ -1807,6 +1807,8 @@ class LearningSync:
                 local_copy = self.managed_library_dir / (digest + '.epub')
                 if not local_copy.exists() or local_copy.stat().st_size != size or \
                         _file_sha256(local_copy) != digest:
+                    if not local_copy.exists():
+                        created_paths.append(local_copy)
                     _copy_atomic(path, local_copy, digest, size)
                 previous_editions = [item for key, item in managed.items()
                                      if key != digest and isinstance(item, dict) and
