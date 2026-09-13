@@ -1373,6 +1373,7 @@ class LearningSync:
             sync = self._bootstrap.get('sync')
             if not isinstance(sync, dict) or not self.enabled:
                 return self.status
+            previous_consent = bool(sync.get('managed_library_consent'))
             sync['managed_library_consent'] = bool(consent)
             if not consent:
                 self.status.message = (
@@ -1380,6 +1381,7 @@ class LearningSync:
             try:
                 self._save_bootstrap()
             except OSError as error:
+                sync['managed_library_consent'] = previous_consent
                 self._diagnose(
                     'Local sync settings could not be saved: {}'.format(error))
                 self.status = SyncStatus(

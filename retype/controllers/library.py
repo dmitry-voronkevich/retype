@@ -22,6 +22,13 @@ logger = logging.getLogger(__name__)
 _MANAGED_BOOK_FILENAME = re.compile(r'^[0-9a-f]{64}\.epub$')
 
 
+def _is_within(path, root):
+    try:
+        return os.path.commonpath((os.path.realpath(path), root)) == root
+    except ValueError:
+        return False
+
+
 def _file_sha256(path):
     digest = sha256()
     with open(path, 'rb') as file:
@@ -95,21 +102,16 @@ class LibraryController(object):
         book_checksum_list = []
         library_items = {}
         idn = 0
-        managed_root = os.path.abspath(self.managed_library_path) \
+        managed_root = os.path.realpath(self.managed_library_path) \
             if self.managed_library_path else None
         for library_path in library_paths:
             for root, dirs, files in os.walk(library_path):
-                root_path = os.path.abspath(root)
                 if managed_root is not None:
-                    try:
-                        if os.path.commonpath((root_path, managed_root)) == managed_root:
-                            continue
-                        dirs[:] = [directory for directory in dirs
-                                   if os.path.commonpath((
-                                       os.path.abspath(os.path.join(root, directory)),
-                                       managed_root)) != managed_root]
-                    except ValueError:
-                        pass
+                    if _is_within(root, managed_root):
+                        continue
+                    dirs[:] = [directory for directory in dirs
+                               if not _is_within(
+                                   os.path.join(root, directory), managed_root)]
                 for f in files:
                     if f.lower().endswith(".epub"):
                         path = os.path.join(root, f)
@@ -219,11 +221,11 @@ class LibraryController(object):
         if consent:
             self.indexManagedLibrary(self._library_items)
             return
-        managed_root = os.path.abspath(self.managed_library_path) \
+        managed_root = os.path.realpath(self.managed_library_path) \
             if self.managed_library_path else None
         managed_ids = [idn for idn, item in self._library_items.items()
                        if managed_root is not None and
-                       os.path.abspath(os.path.dirname(item.path)) == managed_root]
+                       _is_within(os.path.dirname(item.path), managed_root)]
         for idn in managed_ids:
             self._library_items.pop(idn, None)
             if self.books is not None:

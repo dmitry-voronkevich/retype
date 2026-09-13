@@ -393,6 +393,8 @@ class MainController(QObject):
 
     def _startManagedLibraryLoad(self):
         # type: (MainController) -> None
+        if not self.learning_sync.managed_library_consent:
+            return
         if self._managed_library_worker is not None and \
                 self._managed_library_worker.isRunning():
             return
@@ -409,6 +411,8 @@ class MainController(QObject):
     def _managedLibraryLoadCompleted(self, books, generation=None):
         # type: (MainController, dict[int, BookWrapper], int | None) -> None
         if generation is not None and generation != self._managed_library_generation:
+            if self.learning_sync.managed_library_consent:
+                QTimer.singleShot(0, self._startManagedLibraryLoad)
             return
         self._managed_library_worker = None
         installed = self.library.installManagedBooks(books)
@@ -568,16 +572,14 @@ class MainController(QObject):
     def setManagedLibraryConsent(self, consent):
         # type: (MainController, bool) -> object
         status = self.learning_sync.set_managed_library_consent(consent)
-        library_worker = self._managed_library_worker
+        effective_consent = self.learning_sync.managed_library_consent
         self._managed_library_generation += 1
-        if library_worker is not None and library_worker.isRunning():
-            library_worker.wait()
-        if not consent:
+        if not effective_consent:
             book_view = self.views.get(View.book_view)
             active_book = getattr(book_view, 'book', None)
             managed_root = str(self.learning_sync.managed_library_dir)
-            if active_book is not None and os.path.abspath(
-                    os.path.dirname(active_book.path)) == os.path.abspath(managed_root):
+            if active_book is not None and os.path.realpath(
+                    os.path.dirname(active_book.path)) == os.path.realpath(managed_root):
                 book_view.maybeSave()
                 book_view.book = None
                 self.setViewByEnum(View.shelf_view)
@@ -586,7 +588,8 @@ class MainController(QObject):
         else:
             self.library.setManagedLibraryConsent(True)
             self._startManagedLibraryLoad()
-            self.requestSync()
+            if consent:
+                self.requestSync()
         self._updateSyncPresentation()
         return status
 
