@@ -32,6 +32,7 @@ COLLECTION_SCHEMA = 'retype-learning-sync-collection'
 BOOTSTRAP_SCHEMA = 'retype-local-sync-bootstrap'
 SYNC_VERSION = 1
 MAX_REPLICA_BYTES = 5 * 1024 * 1024
+MAX_DEFERRED_BYTES = MAX_REPLICA_BYTES
 MAX_MANAGED_BOOK_BYTES = 100 * 1024 * 1024
 MAX_MANAGED_LIBRARY_BYTES = 1024 * 1024 * 1024
 MAX_BACKUPS = 5
@@ -399,6 +400,12 @@ def _validate_payload(payload: Mapping[str, object]) -> None:
                 _register_stamp(register) is None:
             raise ValidationError('learning setting is malformed')
 
+    applied_deferred = payload.get('_applied_deferred', [])
+    if not isinstance(applied_deferred, list) or any(
+            not isinstance(item, str) or not _valid_uuid(item)
+            for item in applied_deferred):
+        raise ValidationError('deferred application markers are malformed')
+
     books_meta = payload.get('managed_books', {})
     if not isinstance(books_meta, dict):
         raise ValidationError('managed books is malformed')
@@ -543,6 +550,7 @@ class LearningSync:
         self.pending_path = self.local_root / 'pending-sync-replica.json'
         self.published_path = self.local_root / 'last-published-sync-replica.json'
         self.deferred_path = self.local_root / 'deferred-sync-mutations.json'
+        self.deferred_parts_dir = self.local_root / 'deferred-sync-mutations.parts'
         self.recovery_dir = self.local_root / 'recovery' / 'sync'
         self.managed_library_dir = self.local_root / 'managed-books'
         self._lock = threading.RLock()
@@ -550,7 +558,7 @@ class LearningSync:
         # that arrives while the worker owns ``_lock`` is replayed before the
         # next scan/publish instead.
         self._deferred_lock = threading.Lock()
-        self._deferred: list[tuple[str, tuple[object, ...]]] = []
+        self._deferred: list[tuple[str, str, str, tuple[object, ...]]] = []
         self._bootstrap = self._load_bootstrap()
         self._payload: dict[str, object] = _empty_payload()
         self._sequence = 0
@@ -697,45 +705,111 @@ class LearningSync:
                 self.pending_path,
                 'pending local sync data could not be read: {}'.format(error))
 
+    def _deferred_record(self, event: tuple[str, str, str, tuple[object, ...]]) -> list[object]:
+        collection, event_id, kind, args = event
+        return [collection, event_id, kind, list(args)]
+
+    def _read_deferred_events(self, data: object, collection: str | None,
+                              legacy: bool = False) -> list[tuple[str, str, str, tuple[object, ...]]]:
+        events = data.get('events') if isinstance(data, dict) else None
+        if not isinstance(events, list):
+            raise ValidationError('deferred sync mutations are malformed')
+        loaded = []
+        for raw in events:
+            if legacy:
+                if not isinstance(raw, list) or len(raw) != 2:
+                    raise ValidationError('deferred sync mutations are malformed')
+                event_collection = collection or ''
+                event_id = str(uuid4())
+                kind, args = raw
+            else:
+                if not isinstance(raw, list) or len(raw) != 4:
+                    raise ValidationError('deferred sync mutations are malformed')
+                event_collection, event_id, kind, args = raw
+            if not isinstance(event_collection, str) or not isinstance(event_id, str) or \
+                    not _valid_uuid(event_id) or not isinstance(kind, str) or \
+                    kind not in ('book', 'chords', 'settings') or \
+                    not isinstance(args, list) or len(args) != 2:
+                raise ValidationError('deferred sync mutations are malformed')
+            if kind == 'book' and (not isinstance(args[0], str) or
+                                   not isinstance(args[1], dict)):
+                raise ValidationError('deferred book mutation is malformed')
+            if kind in ('chords', 'settings') and \
+                    (not isinstance(args[0], dict) or not isinstance(args[1], dict)):
+                raise ValidationError('deferred sync mutation is malformed')
+            loaded.append((event_collection, event_id, kind, tuple(args)))
+        return loaded
+
     def _load_deferred(self) -> None:
         if not self.deferred_path.exists():
             return
         try:
-            data = _read_json(self.deferred_path)
-            events = data.get('events') if isinstance(data, dict) else None
-            if not isinstance(events, list):
-                raise ValidationError('deferred sync mutations are malformed')
-            loaded = []
-            for event in events:
-                if not isinstance(event, list) or len(event) != 2 or \
-                        not isinstance(event[0], str) or event[0] not in (
-                            'book', 'chords', 'settings') or \
-                        not isinstance(event[1], list) or len(event[1]) != 2:
-                    raise ValidationError('deferred sync mutations are malformed')
-                if event[0] == 'book' and \
-                        (not isinstance(event[1][0], str) or
-                         not isinstance(event[1][1], dict)):
-                    raise ValidationError('deferred book mutation is malformed')
-                if event[0] in ('chords', 'settings') and \
-                        (not isinstance(event[1][0], dict) or
-                         not isinstance(event[1][1], dict)):
-                    raise ValidationError('deferred sync mutation is malformed')
-                loaded.append((event[0], tuple(event[1])))
+            data = _read_json(self.deferred_path, MAX_DEFERRED_BYTES)
+            legacy = isinstance(data, dict) and 'generation' not in data
+            loaded = self._read_deferred_events(data, self.collection_id, legacy)
+            generation = data.get('generation') if isinstance(data, dict) else None
+            if generation is not None and not isinstance(generation, str):
+                raise ValidationError('deferred sync generation is malformed')
+            if generation is not None:
+                for path in sorted(self.deferred_parts_dir.glob('*.json')):
+                    part = _read_json(path, MAX_DEFERRED_BYTES)
+                    if not isinstance(part, dict) or part.get('generation') != generation:
+                        continue
+                    loaded.extend(self._read_deferred_events(
+                        part, self.collection_id))
             with self._deferred_lock:
                 self._deferred = loaded
+            if legacy:
+                with self._deferred_lock:
+                    self._persist_deferred_locked()
         except ValidationError as error:
             self._recover_candidate(
                 self.deferred_path,
                 'deferred sync mutations could not be read: {}'.format(error))
 
     def _persist_deferred_locked(self) -> None:
-        if self._deferred:
-            atomic_write_json(
-                self.deferred_path,
-                {'events': [[kind, list(args)] for kind, args in self._deferred]},
-                self.recovery_dir / 'deferred')
-        else:
+        if not self._deferred:
             self.deferred_path.unlink(missing_ok=True)
+            if self.deferred_parts_dir.exists():
+                for path in self.deferred_parts_dir.glob('*.json'):
+                    path.unlink(missing_ok=True)
+                self.deferred_parts_dir.rmdir()
+            return
+
+        generation = str(uuid4())
+        chunks: list[list[list[object]]] = [[]]
+        for event in self._deferred:
+            record = self._deferred_record(event)
+            candidate = chunks[-1] + [record]
+            if len(_json_bytes({'generation': generation, 'events': candidate})) > \
+                    MAX_DEFERRED_BYTES:
+                if not chunks[-1]:
+                    raise SyncError('a deferred sync mutation exceeds the size limit')
+                chunks.append([record])
+            else:
+                chunks[-1] = candidate
+        if any(len(_json_bytes({'generation': generation, 'events': chunk})) >
+               MAX_DEFERRED_BYTES for chunk in chunks):
+            raise SyncError('a deferred sync mutation exceeds the size limit')
+
+        self.deferred_parts_dir.mkdir(parents=True, exist_ok=True)
+        for index, chunk in enumerate(chunks[1:], 1):
+            atomic_write_json(
+                self.deferred_parts_dir / '{:08d}.json'.format(index),
+                {'generation': generation, 'events': chunk},
+                self.recovery_dir / 'deferred')
+        atomic_write_json(
+            self.deferred_path,
+            {'generation': generation, 'events': chunks[0]},
+            self.recovery_dir / 'deferred')
+        for path in self.deferred_parts_dir.glob('*.json'):
+            try:
+                if int(path.stem) >= len(chunks):
+                    path.unlink()
+            except ValueError:
+                path.unlink(missing_ok=True)
+        if not chunks[1:]:
+            self.deferred_parts_dir.rmdir()
 
     def _now(self) -> HLC:
         now = int(time.time() * 1000)
@@ -783,12 +857,30 @@ class LearningSync:
         self.status.diagnostics = self.status.diagnostics[-20:]
 
     def _defer(self, kind: str, *args: object) -> None:
+        event = (self.collection_id or '', str(uuid4()), kind, args)
         with self._deferred_lock:
-            self._deferred.append((kind, args))
+            self._deferred.append(event)
             try:
                 self._persist_deferred_locked()
-            except OSError as error:
+            except (OSError, SyncError) as error:
                 logger.warning('Deferred sync mutation could not be persisted: %s', error)
+
+    def _deferred_marker_present(self, event_id: str) -> bool:
+        markers = self._payload.get('_applied_deferred', [])
+        return isinstance(markers, list) and event_id in markers
+
+    def _mark_deferred_applied(self, event_id: str) -> None:
+        markers = self._payload.setdefault('_applied_deferred', [])
+        if isinstance(markers, list) and event_id not in markers:
+            markers.append(event_id)
+
+    def _forget_deferred_marker(self, event_id: str) -> None:
+        markers = self._payload.get('_applied_deferred')
+        if isinstance(markers, list) and event_id in markers:
+            markers.remove(event_id)
+            if not markers:
+                self._payload.pop('_applied_deferred', None)
+            self._touch()
 
     def _apply_deferred(self) -> None:
         while True:
@@ -796,17 +888,19 @@ class LearningSync:
                 if not self._deferred:
                     return
                 event = self._deferred[0]
-            kind, args = event
-            if kind == 'book':
-                self.record_book(str(args[0]), args[1])  # type: ignore[arg-type]
-            elif kind == 'chords':
-                self.record_chords(args[0], args[1])  # type: ignore[arg-type]
-            elif kind == 'settings':
-                self.record_settings(args[0], args[1])  # type: ignore[arg-type]
+            collection, event_id, kind, args = event
+            if collection == (self.collection_id or ''):
+                if kind == 'book':
+                    self.record_book(str(args[0]), args[1], _deferred_id=event_id)  # type: ignore[arg-type]
+                elif kind == 'chords':
+                    self.record_chords(args[0], args[1], _deferred_id=event_id)  # type: ignore[arg-type]
+                elif kind == 'settings':
+                    self.record_settings(args[0], args[1], _deferred_id=event_id)  # type: ignore[arg-type]
             with self._deferred_lock:
                 if self._deferred and self._deferred[0] == event:
                     self._deferred.pop(0)
                     self._persist_deferred_locked()
+            self._forget_deferred_marker(event_id)
 
     @property
     def has_deferred_changes(self) -> bool:
@@ -850,6 +944,9 @@ class LearningSync:
                     }, self.recovery_dir / 'manifest')
                 previous_collection = self.collection_id
                 if previous_collection != collection_id:
+                    with self._deferred_lock:
+                        self._deferred.clear()
+                        self._persist_deferred_locked()
                     # A different folder is a different collection, not an
                     # opportunity to reuse old G-counter components.
                     self._payload = _empty_payload()
@@ -1029,7 +1126,8 @@ class LearningSync:
                 self._diagnose('Legacy learning settings were not imported: {}'.format(error))
         self._touch()
 
-    def record_book(self, identity: str, data: Mapping[str, object]) -> None:
+    def record_book(self, identity: str, data: Mapping[str, object],
+                    _deferred_id: str | None = None) -> None:
         if not _HEX.fullmatch(identity):
             return
         valid = _validate_save(dict(data))
@@ -1040,6 +1138,8 @@ class LearningSync:
             return
         try:
             if not self.enabled:
+                return
+            if _deferred_id is not None and self._deferred_marker_present(_deferred_id):
                 return
             books = self._payload.setdefault('books', {})
             assert isinstance(books, dict)
@@ -1058,17 +1158,22 @@ class LearningSync:
             if _validate_save(valid['last_resume']) is None:
                 valid.pop('last_resume', None)
             books[identity] = valid
+            if _deferred_id is not None:
+                self._mark_deferred_applied(_deferred_id)
             self._touch()
         finally:
             self._lock.release()
 
     def record_chords(self, progress: Mapping[str, int],
-                      overrides: Mapping[str, bool]) -> None:
+                      overrides: Mapping[str, bool],
+                      _deferred_id: str | None = None) -> None:
         if not self._lock.acquire(blocking=False):
             self._defer('chords', dict(progress), dict(overrides))
             return
         try:
             if not self.enabled:
+                return
+            if _deferred_id is not None and self._deferred_marker_present(_deferred_id):
                 return
             chords = self._payload.setdefault('chords', {'counts': {}, 'overrides': {}})
             assert isinstance(chords, dict)
@@ -1105,19 +1210,25 @@ class LearningSync:
                 else:
                     self._materialized_overrides[key] = value
                 changed = True
+            if _deferred_id is not None:
+                self._mark_deferred_applied(_deferred_id)
+                changed = True
             if changed:
                 self._touch()
         finally:
             self._lock.release()
 
     def record_settings(self, config: Mapping[str, object],
-                        previous: Mapping[str, object]) -> None:
+                        previous: Mapping[str, object],
+                        _deferred_id: str | None = None) -> None:
         if not self._lock.acquire(blocking=False):
             self._defer('settings', deepcopy(dict(config)),
                         deepcopy(dict(previous)))
             return
         try:
             if not self.enabled:
+                return
+            if _deferred_id is not None and self._deferred_marker_present(_deferred_id):
                 return
             values = learning_settings_from_config(config)
             before = learning_settings_from_config(previous)
@@ -1130,6 +1241,9 @@ class LearningSync:
                 stamp = self._now()
                 registers[key] = {'value': value, 'hlc': stamp.to_data(),
                                   'replica_id': self.replica_id}
+                changed = True
+            if _deferred_id is not None:
+                self._mark_deferred_applied(_deferred_id)
                 changed = True
             if changed:
                 self._touch()
@@ -1147,16 +1261,16 @@ class LearningSync:
     def sync_now(self) -> SyncResult:
         """Publish the local replica then merge all valid visible replicas."""
         with self._lock:
-            self._apply_deferred()
-            if not self.enabled:
-                self.status = SyncStatus()
-                return SyncResult(self.status)
-            root = self.sync_root
-            collection = self.collection_id
-            if root is None or collection is None:
-                self.status = SyncStatus('waiting', 'Waiting for sync configuration.')
-                return SyncResult(self.status)
             try:
+                self._apply_deferred()
+                if not self.enabled:
+                    self.status = SyncStatus()
+                    return SyncResult(self.status)
+                root = self.sync_root
+                collection = self.collection_id
+                if root is None or collection is None:
+                    self.status = SyncStatus('waiting', 'Waiting for sync configuration.')
+                    return SyncResult(self.status)
                 if not root.is_dir():
                     raise SyncError('the selected folder is unavailable')
                 if self._legacy_capture_needed and \
