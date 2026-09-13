@@ -1374,6 +1374,9 @@ class LearningSync:
             if not isinstance(sync, dict) or not self.enabled:
                 return self.status
             sync['managed_library_consent'] = bool(consent)
+            if not consent:
+                self.status.message = (
+                    'Managed books are unavailable until managed-library consent is enabled.')
             try:
                 self._save_bootstrap()
             except OSError as error:
@@ -1568,10 +1571,21 @@ class LearningSync:
             return
         last = self._last_materialized()
         last_counts = _valid_count_map(last.get('chord_counts', {}))
-        for key, count in {**last_counts, **counts}.items():
+        legacy_counts = self._read_legacy_chord_counts()
+        for key, count in {**last_counts, **counts, **legacy_counts}.items():
             if isinstance(key, str) and key and _is_int(count) and count >= 0:
                 self._local_chord_counts[key] = max(
                     self._local_chord_counts.get(key, 0), count)
+
+    def _read_legacy_chord_counts(self) -> dict[str, int]:
+        path = self.legacy_dir / 'chord-mastery.json'
+        try:
+            data = _read_json(path)
+        except ValidationError:
+            return {}
+        if not isinstance(data, dict) or not isinstance(data.get('progress'), dict):
+            return {}
+        return _valid_count_map(data['progress'])
 
     def deferred_settings(self) -> dict[str, object]:
         pending: dict[str, object] = {}
@@ -2341,10 +2355,15 @@ class LearningSync:
                     self._diagnose(
                         'Failed managed EPUB import left pending state requiring recovery: {}'.format(
                             rollback_error))
-                    if not before_pending_exists and self.pending_path.exists():
-                        self._recover_candidate(
+                    if self.pending_path.exists() and self._recover_candidate(
                             self.pending_path,
-                            'failed managed EPUB import pending state')
+                            'failed managed EPUB import pending state'):
+                        try:
+                            self.pending_path.unlink(missing_ok=True)
+                        except OSError as cleanup_error:
+                            self._diagnose(
+                                'Failed managed EPUB import pending state could not be removed: {}'.format(
+                                    cleanup_error))
                 if isinstance(error, SyncError):
                     raise
                 raise SyncError('managed EPUB import failed: {}'.format(error)) from error

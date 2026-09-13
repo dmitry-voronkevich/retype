@@ -381,7 +381,8 @@ class MainController(QObject):
         # type: (MainController) -> None
         self.library = LibraryController(
             self.config['user_dir'], self.config['library_paths'],
-            str(self.learning_sync.managed_library_dir), self._recordSyncBook)
+            str(self.learning_sync.managed_library_dir), self._recordSyncBook,
+            self.learning_sync.managed_library_consent)
 
     def _populateLibrary(self):
         # type: (MainController) -> None
@@ -421,7 +422,7 @@ class MainController(QObject):
             managed_worker.wait()
         self.library.__init__(  # type: ignore[misc]
             user_dir, library_paths, str(self.learning_sync.managed_library_dir),
-            self._recordSyncBook)
+            self._recordSyncBook, self.learning_sync.managed_library_consent)
         shelf_view = self.views[View.shelf_view]
         self.library.instantiateBooks(include_managed=False)
         shelf_view.repopulate()
@@ -567,7 +568,24 @@ class MainController(QObject):
     def setManagedLibraryConsent(self, consent):
         # type: (MainController, bool) -> object
         status = self.learning_sync.set_managed_library_consent(consent)
-        if consent:
+        library_worker = self._managed_library_worker
+        self._managed_library_generation += 1
+        if library_worker is not None and library_worker.isRunning():
+            library_worker.wait()
+        if not consent:
+            book_view = self.views.get(View.book_view)
+            active_book = getattr(book_view, 'book', None)
+            managed_root = str(self.learning_sync.managed_library_dir)
+            if active_book is not None and os.path.abspath(
+                    os.path.dirname(active_book.path)) == os.path.abspath(managed_root):
+                book_view.maybeSave()
+                book_view.book = None
+                self.setViewByEnum(View.shelf_view)
+            self.library.setManagedLibraryConsent(False)
+            self.views[View.shelf_view].repopulate()
+        else:
+            self.library.setManagedLibraryConsent(True)
+            self._startManagedLibraryLoad()
             self.requestSync()
         self._updateSyncPresentation()
         return status

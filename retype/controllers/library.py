@@ -52,11 +52,12 @@ def _save_position_key(data):
 
 class LibraryController(object):
     def __init__(self, user_dir, library_paths, managed_library_path=None,
-                 on_save=None):
-        # type: (LibraryController, str, list[str], str | None, object | None) -> None
+                 on_save=None, managed_library_consent=True):
+        # type: (LibraryController, str, list[str], str | None, object | None, bool) -> None
         self.user_dir = user_dir
         self.library_paths = list(library_paths)
         self.managed_library_path = managed_library_path
+        self.managed_library_consent = bool(managed_library_consent)
         self.on_save = on_save
         self._library_items = self.indexLibrary(self.library_paths)
         self.indexManagedLibrary(self._library_items)
@@ -94,8 +95,21 @@ class LibraryController(object):
         book_checksum_list = []
         library_items = {}
         idn = 0
+        managed_root = os.path.abspath(self.managed_library_path) \
+            if self.managed_library_path else None
         for library_path in library_paths:
             for root, dirs, files in os.walk(library_path):
+                root_path = os.path.abspath(root)
+                if managed_root is not None:
+                    try:
+                        if os.path.commonpath((root_path, managed_root)) == managed_root:
+                            continue
+                        dirs[:] = [directory for directory in dirs
+                                   if os.path.commonpath((
+                                       os.path.abspath(os.path.join(root, directory)),
+                                       managed_root)) != managed_root]
+                    except ValueError:
+                        pass
                 for f in files:
                     if f.lower().endswith(".epub"):
                         path = os.path.join(root, f)
@@ -143,7 +157,7 @@ class LibraryController(object):
 
     def indexManagedLibrary(self, library_items):
         # type: (LibraryController, dict[int, LibraryItem]) -> None
-        if not self.managed_library_path:
+        if not self.managed_library_path or not self.managed_library_consent:
             return
         try:
             index = self._load_managed_index()
@@ -196,6 +210,25 @@ class LibraryController(object):
         except OSError:
             return
 
+    def setManagedLibraryConsent(self, consent):
+        # type: (LibraryController, bool) -> None
+        consent = bool(consent)
+        if consent == self.managed_library_consent:
+            return
+        self.managed_library_consent = consent
+        if consent:
+            self.indexManagedLibrary(self._library_items)
+            return
+        managed_root = os.path.abspath(self.managed_library_path) \
+            if self.managed_library_path else None
+        managed_ids = [idn for idn, item in self._library_items.items()
+                       if managed_root is not None and
+                       os.path.abspath(os.path.dirname(item.path)) == managed_root]
+        for idn in managed_ids:
+            self._library_items.pop(idn, None)
+            if self.books is not None:
+                self.books.pop(idn, None)
+
     def instantiateBooks(self, include_managed=True):
         # type: (LibraryController, bool) -> None
         self.books = {}
@@ -210,6 +243,8 @@ class LibraryController(object):
 
     def managedBookLoadData(self):
         # type: (LibraryController) -> list[tuple[LibraryItem, SaveData | None]]
+        if not self.managed_library_consent:
+            return []
         if self.save_file_contents is None:
             self.loadSaveFile()
         save = self.save_file_contents or {}
@@ -244,7 +279,8 @@ class LibraryController(object):
     def addManagedBooks(self, managed_books, validated_checksums=None,
                         loaded_books=None):
         # type: (LibraryController, dict[str, dict[str, object]], set[str] | None, dict[str, object] | None) -> list[BookWrapper]
-        if self.books is None or not self.managed_library_path:
+        if self.books is None or not self.managed_library_path or \
+                not self.managed_library_consent:
             return []
         existing = {book.checksum for book in self.books.values()}
         next_id = max(self._library_items, default=-1) + 1
