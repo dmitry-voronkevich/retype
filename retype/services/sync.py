@@ -740,13 +740,26 @@ class LearningSync:
             loaded.append((event_collection, event_id, kind, tuple(args)))
         return loaded
 
+    def _deferred_part_path(self, generation: str, index: int) -> Path:
+        if not isinstance(generation, str) or not re.fullmatch(
+                r'[A-Za-z0-9_-]{1,128}', generation):
+            raise ValidationError('deferred sync generation is malformed')
+        return self.deferred_parts_dir / '{}-{:08d}.json'.format(
+            generation, index)
+
     def _read_deferred_generation(self, generation: str, count: int) -> list[tuple[str, str, str, tuple[object, ...]]]:
         if not isinstance(generation, str) or not generation or not _is_int(count) or \
                 count < 1 or count > MAX_DEFERRED_BYTES:
             raise ValidationError('deferred sync generation is malformed')
+        new_paths = [self._deferred_part_path(generation, index)
+                     for index in range(count)]
+        if all(path.exists() for path in new_paths):
+            paths = new_paths
+        else:
+            paths = [self.deferred_parts_dir / '{:08d}.json'.format(index)
+                     for index in range(count)]
         loaded = []
-        for index in range(count):
-            path = self.deferred_parts_dir / '{:08d}.json'.format(index)
+        for index, path in enumerate(paths):
             data = _read_json(path, MAX_DEFERRED_BYTES)
             if not isinstance(data, dict) or data.get('generation') != generation or \
                     data.get('index') != index or data.get('count') != count:
@@ -789,10 +802,12 @@ class LearningSync:
         return complete
 
     def _load_deferred(self) -> None:
-        if not self.deferred_path.exists():
+        pointer_exists = self.deferred_path.exists()
+        if not pointer_exists and not self.deferred_parts_dir.exists():
             return
         try:
-            data = _read_json(self.deferred_path, MAX_DEFERRED_BYTES)
+            data = _read_json(self.deferred_path, MAX_DEFERRED_BYTES) \
+                if pointer_exists else None
             legacy = isinstance(data, dict) and 'count' not in data
             candidates = self._complete_deferred_generations()
             generation = data.get('generation') if isinstance(data, dict) else None
@@ -801,17 +816,20 @@ class LearningSync:
             if isinstance(data, dict) and _is_int(data.get('count')):
                 count = data['count']
                 try:
-                    candidates.append((generation, self._read_deferred_generation(
-                        generation, count)))
+                    candidates.append((generation or '',
+                                      self._read_deferred_generation(
+                                          generation, count)))
                 except ValidationError:
                     pass
-            else:
+            elif data is not None:
                 candidates.append((generation or '', self._read_deferred_events(
                     data, self.collection_id, legacy)))
                 if generation is not None:
                     for path in sorted(self.deferred_parts_dir.glob('*.json')):
                         part = _read_json(path, MAX_DEFERRED_BYTES)
-                        if not isinstance(part, dict) or part.get('generation') != generation:
+                        if not isinstance(part, dict) or \
+                                part.get('generation') != generation or \
+                                'count' in part:
                             continue
                         candidates[-1][1].extend(self._read_deferred_events(
                             part, self.collection_id))
@@ -823,13 +841,21 @@ class LearningSync:
                                   item[0]))
             with self._deferred_lock:
                 self._deferred = loaded
-            if legacy or selected_generation != generation:
-                with self._deferred_lock:
-                    self._persist_deferred_locked()
-        except ValidationError as error:
-            self._recover_candidate(
-                self.deferred_path,
-                'deferred sync mutations could not be read: {}'.format(error))
+            if not pointer_exists or legacy or selected_generation != generation:
+                try:
+                    with self._deferred_lock:
+                        self._persist_deferred_locked()
+                except (OSError, SyncError) as error:
+                    self._diagnose(
+                        'Deferred sync mutations could not be rewritten: {}'.format(error))
+        except (OSError, SyncError, ValidationError) as error:
+            if pointer_exists:
+                self._recover_candidate(
+                    self.deferred_path,
+                    'deferred sync mutations could not be read: {}'.format(error))
+            else:
+                self._diagnose(
+                    'Deferred sync mutations could not be recovered: {}'.format(error))
 
     def _persist_deferred_locked(self) -> None:
         if not self._deferred:
@@ -860,20 +886,19 @@ class LearningSync:
             raise SyncError('a deferred sync mutation exceeds the size limit')
 
         self.deferred_parts_dir.mkdir(parents=True, exist_ok=True)
+        current_parts = set()
         for index, chunk in enumerate(chunks):
+            path = self._deferred_part_path(generation, index)
+            current_parts.add(path)
             atomic_write_json(
-                self.deferred_parts_dir / '{:08d}.json'.format(index),
-                {'generation': generation, 'index': index, 'count': count,
-                 'events': chunk}, self.recovery_dir / 'deferred')
+                path, {'generation': generation, 'index': index, 'count': count,
+                       'events': chunk}, self.recovery_dir / 'deferred')
         atomic_write_json(
             self.deferred_path,
             {'generation': generation, 'count': count},
             self.recovery_dir / 'deferred')
         for path in self.deferred_parts_dir.glob('*.json'):
-            try:
-                if int(path.stem) >= count:
-                    path.unlink()
-            except ValueError:
+            if path not in current_parts:
                 path.unlink(missing_ok=True)
 
     def _now(self) -> HLC:
@@ -913,8 +938,15 @@ class LearningSync:
         self._sequence += 1
         self._dirty = True
         if self.enabled:
-            atomic_write_json(self.pending_path, self._envelope(),
-                              self.recovery_dir / 'pending')
+            try:
+                atomic_write_json(self.pending_path, self._envelope(),
+                                  self.recovery_dir / 'pending')
+            except OSError as error:
+                self._diagnose(
+                    'Local pending sync state could not be written: {}'.format(error))
+                self.status = SyncStatus(
+                    'waiting', 'Local sync state could not be saved; retrying.',
+                    time.time(), list(self.status.diagnostics))
 
     def _diagnose(self, message: str) -> None:
         logger.warning('Learning sync: %s', message)

@@ -151,14 +151,14 @@ class LibraryController(object):
                             logger.warning('Ignoring oversized managed EPUB: %s',
                                            entry.path)
                             continue
+                        if _file_sha256(entry.path) != checksum:
+                            logger.warning('Ignoring managed EPUB with a hash mismatch: %s',
+                                           entry.path)
+                            continue
                         record = index.get(checksum)
                         if not isinstance(record, dict) or \
                                 record.get('size') != stat.st_size or \
                                 record.get('mtime_ns') != stat.st_mtime_ns:
-                            if _file_sha256(entry.path) != checksum:
-                                logger.warning('Ignoring managed EPUB with a hash mismatch: %s',
-                                               entry.path)
-                                continue
                             index[checksum] = {
                                 'size': stat.st_size, 'mtime_ns': stat.st_mtime_ns}
                             index_changed = True

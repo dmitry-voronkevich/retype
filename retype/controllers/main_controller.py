@@ -431,7 +431,10 @@ class MainController(QObject):
         # Update library’s user_dir
         self.library.user_dir = config['user_dir']
         self.learning_sync.set_legacy_dir(config['user_dir'])
-        self.learning_sync.record_settings(config.raw, previous_config)
+        try:
+            self.learning_sync.record_settings(config.raw, previous_config)
+        except OSError as error:
+            self._syncMutationFailed(error)
         self._scheduleSync()
 
         # Update book display font
@@ -443,14 +446,28 @@ class MainController(QObject):
         # Update console font
         self.console.font_family = config['console_font']
 
+    def _syncMutationFailed(self, error):
+        # type: (MainController, OSError) -> None
+        self.learning_sync._diagnose(
+            'Local pending sync state could not be written: {}'.format(error))
+        self.learning_sync.status.message = (
+            'Local sync state could not be saved; retrying.')
+        self._updateSyncPresentation()
+
     def _recordSyncBook(self, identity, data):
         # type: (MainController, str, dict) -> None
-        self.learning_sync.record_book(identity, data)
+        try:
+            self.learning_sync.record_book(identity, data)
+        except OSError as error:
+            self._syncMutationFailed(error)
         self._scheduleSync()
 
     def _recordSyncChords(self, progress, overrides):
         # type: (MainController, dict[str, int], dict[str, bool]) -> None
-        self.learning_sync.record_chords(progress, overrides)
+        try:
+            self.learning_sync.record_chords(progress, overrides)
+        except OSError as error:
+            self._syncMutationFailed(error)
         self._scheduleSync()
 
     def sync_status(self):
