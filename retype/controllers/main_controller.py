@@ -4,8 +4,6 @@ from copy import deepcopy
 from enum import Enum
 from qt import (QApplication, QObject, pyqtSignal, QUrl, QDesktopServices,
                 QMessageBox, QThread, QTimer)
-from ebooklib import epub
-
 from typing import TYPE_CHECKING
 
 from retype.ui import (MainWin, ShelfView, BookView, CustomisationDialog,
@@ -13,6 +11,7 @@ from retype.ui import (MainWin, ShelfView, BookView, CustomisationDialog,
 from retype.games.typespeed import TypespeedView
 from retype.games.steno import StenoView
 from retype.controllers import SafeConfig, MenuController, LibraryController
+from retype.controllers.library import BookWrapper
 from retype.console import Console
 from retype.services.icon_set import Icons
 from retype.services.platform import platform_policy
@@ -45,6 +44,22 @@ class _SyncWorker(QThread):
         self.completed.emit(self.sync.sync_now())
 
 
+class _ManagedLibraryLoadWorker(QThread):
+    completed = pyqtSignal(object)
+
+    def __init__(self, load_data):
+        # type: (_ManagedLibraryLoadWorker, list[tuple[object, object]]) -> None
+        QThread.__init__(self)
+        self.load_data = load_data
+
+    def run(self):
+        books = {}
+        for item, save_data in self.load_data:
+            book = BookWrapper(item, save_data, report_errors=False)
+            books[item.idn] = book
+        self.completed.emit(books)
+
+
 class _ManagedBookImportWorker(QThread):
     completed = pyqtSignal(object)
     failed = pyqtSignal(str)
@@ -59,14 +74,10 @@ class _ManagedBookImportWorker(QThread):
         # type: (_ManagedBookImportWorker) -> None
         try:
             metadata = self.sync.import_book(self.path)
-            book_path = self.sync.managed_library_dir / (
-                metadata['digest'] + '.epub')
-            try:
-                loaded_book = epub.read_epub(
-                    str(book_path), options={'ignore_ncx': True})
-            except Exception as error:
-                raise SyncError(
-                    'managed EPUB could not be loaded: {}'.format(error)) from error
+            loaded_book = self.sync.take_loaded_managed_book(
+                str(metadata['digest']))
+            if loaded_book is None:
+                raise SyncError('managed EPUB could not be loaded')
             self.completed.emit((metadata, loaded_book))
         except SyncError as error:
             self.failed.emit(str(error))
@@ -96,6 +107,7 @@ class MainController(QObject):
                                           self.config['user_dir'])
         self._sync_worker = None  # type: _SyncWorker | None
         self._managed_book_worker = None  # type: _ManagedBookImportWorker | None
+        self._managed_library_worker = None  # type: _ManagedLibraryLoadWorker | None
         self._sync_pending = False
         self._sync_retry_timer = QTimer(self)
         self._sync_retry_timer.setSingleShot(True)
@@ -367,19 +379,41 @@ class MainController(QObject):
 
     def _populateLibrary(self):
         # type: (MainController) -> None
-        """Instantiate all the book wrappers and shelf items"""
         shelf_view = self.views[View.shelf_view]  # type: ShelfView
-        self.library.instantiateBooks()
+        self.library.instantiateBooks(include_managed=False)
         shelf_view._populate()
+        self._startManagedLibraryLoad()
+
+    def _startManagedLibraryLoad(self):
+        # type: (MainController) -> None
+        if self._managed_library_worker is not None and \
+                self._managed_library_worker.isRunning():
+            return
+        worker = _ManagedLibraryLoadWorker(self.library.managedBookLoadData())
+        self._managed_library_worker = worker
+        worker.completed.connect(self._managedLibraryLoadCompleted)
+        worker.finished.connect(worker.deleteLater)
+        worker.start()
+
+    def _managedLibraryLoadCompleted(self, books):
+        # type: (MainController, dict[int, BookWrapper]) -> None
+        self._managed_library_worker = None
+        self.library.installManagedBooks(books)
+        self.views[View.shelf_view].addBooks(
+            [book for book in books.values() if book.valid])
 
     def _repopulateLibrary(self, user_dir, library_paths):
         # type: (MainController, str, list[str]) -> None
+        managed_worker = self._managed_library_worker
+        if managed_worker is not None and managed_worker.isRunning():
+            managed_worker.wait()
         self.library.__init__(  # type: ignore[misc]
             user_dir, library_paths, str(self.learning_sync.managed_library_dir),
             self._recordSyncBook)
         shelf_view = self.views[View.shelf_view]
-        self.library.instantiateBooks()
+        self.library.instantiateBooks(include_managed=False)
         shelf_view.repopulate()
+        self._startManagedLibraryLoad()
 
     def loadBook(self, book_id=0):
         # type: (MainController, int) -> None
@@ -639,7 +673,8 @@ class MainController(QObject):
             if result.managed_books and hasattr(self, 'library') and \
                     self.learning_sync.managed_library_consent:
                 added = self.library.addManagedBooks(
-                    result.managed_books, result.managed_books_ready)
+                    result.managed_books, result.managed_books_ready,
+                    result.managed_books_loaded)
                 if added:
                     self.views[View.shelf_view].addBooks(added)
             if result.status.state == 'synced':
@@ -690,6 +725,9 @@ class MainController(QObject):
         import_worker = self._managed_book_worker
         if import_worker is not None and import_worker.isRunning():
             import_worker.wait()
+        library_worker = self._managed_library_worker
+        if library_worker is not None and library_worker.isRunning():
+            library_worker.wait()
         if self.learning_sync.enabled:
             # This is a local-folder write attempt, not a claim that a cloud
             # provider has uploaded it to any other device.

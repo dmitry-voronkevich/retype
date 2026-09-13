@@ -24,6 +24,8 @@ from math import isfinite
 from typing import Mapping
 from uuid import UUID, uuid4
 
+from ebooklib import epub
+
 
 logger = logging.getLogger(__name__)
 
@@ -95,6 +97,7 @@ class SyncResult:
     book_resumes: dict[str, dict[str, object]] = field(default_factory=dict)
     managed_books_materialized: bool = False
     managed_books_ready: set[str] = field(default_factory=set)
+    managed_books_loaded: dict[str, object] = field(default_factory=dict)
 
 
 def _is_int(value: object) -> bool:
@@ -569,6 +572,7 @@ class LearningSync:
         self.deferred_parts_dir = self.local_root / 'deferred-sync-mutations.parts'
         self.recovery_dir = self.local_root / 'recovery' / 'sync'
         self.managed_library_dir = self.local_root / 'managed-books'
+        self._loaded_managed_books: dict[str, object] = {}
         self._lock = threading.RLock()
         # UI callbacks must never wait on a provider-folder scan. A callback
         # that arrives while the worker owns ``_lock`` is replayed before the
@@ -980,7 +984,10 @@ class LearningSync:
         self._dirty = True
         if self.enabled:
             try:
-                atomic_write_json(self.pending_path, self._envelope(),
+                envelope = self._envelope()
+                if len(_json_bytes(envelope)) > MAX_REPLICA_BYTES:
+                    raise OSError('local learning state exceeds the 5 MiB replica limit')
+                atomic_write_json(self.pending_path, envelope,
                                   self.recovery_dir / 'pending')
             except OSError as error:
                 self._diagnose(
@@ -1722,12 +1729,18 @@ class LearningSync:
                 if source.stat().st_size != metadata['size'] or _file_sha256(source) != digest:
                     self._recover_candidate(source, 'managed book hash or size mismatch')
                     continue
-                if not _is_epub_file(source):
+                if not _is_loadable_epub_file(source):
                     self._recover_candidate(source, 'managed book is not a valid EPUB')
                     continue
                 if not destination.exists() or destination.stat().st_size != metadata['size'] or \
                         _file_sha256(destination) != digest:
                     _copy_atomic(source, destination, digest, int(metadata['size']))
+                try:
+                    loaded = _load_epub(destination)
+                except Exception:
+                    self._recover_candidate(destination, 'managed book could not be loaded')
+                    continue
+                result.managed_books_loaded[digest] = loaded
                 ready.add(digest)
             except OSError as error:
                 self._diagnose('Managed book {} is unavailable: {}'.format(
@@ -1761,7 +1774,7 @@ class LearningSync:
                     is_epub_archive = _is_epub_file(path)
                 except OSError as error:
                     raise SyncError('the selected EPUB cannot be read: {}'.format(error)) from error
-                if not is_epub_archive:
+                if not is_epub_archive or not _is_loadable_epub_file(path):
                     raise SyncError('the selected EPUB is corrupt or unsupported')
                 size = path.stat().st_size
                 if size <= 0 or size > MAX_MANAGED_BOOK_BYTES:
@@ -1805,26 +1818,41 @@ class LearningSync:
                     created_paths.append(manifest)
                 atomic_write_json(manifest, metadata, self.recovery_dir / 'books')
                 local_copy = self.managed_library_dir / (digest + '.epub')
+                replaced_local_copy = False
                 if not local_copy.exists() or local_copy.stat().st_size != size or \
                         _file_sha256(local_copy) != digest:
                     if not local_copy.exists():
                         created_paths.append(local_copy)
+                    else:
+                        replaced_local_copy = True
                     _copy_atomic(path, local_copy, digest, size)
+                if not _is_epub_file(local_copy):
+                    raise SyncError('the managed EPUB could not be loaded after copying')
+                try:
+                    loaded_book = _load_epub(local_copy)
+                except Exception as error:
+                    raise SyncError(
+                        'the managed EPUB could not be loaded after copying') from error
                 previous_editions = [item for key, item in managed.items()
                                      if key != digest and isinstance(item, dict) and
                                      item.get('original_filename') == path.name]
                 managed[digest] = metadata
                 self._touch()
+                self._loaded_managed_books[digest] = loaded_book
                 if previous_editions:
                     self._diagnose('Imported {} as a separate edition; progress is not '
                                    'mapped between changed EPUB bytes.'.format(path.name))
                 return metadata
-            except SyncError:
-                raise
-            except OSError as error:
+            except (SyncError, OSError) as error:
                 for created in reversed(created_paths):
                     try:
                         created.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+                if 'local_copy' in locals() and 'replaced_local_copy' in locals() and \
+                        replaced_local_copy:
+                    try:
+                        local_copy.unlink(missing_ok=True)
                     except OSError:
                         pass
                 if managed is not None and digest is not None:
@@ -1832,7 +1860,12 @@ class LearningSync:
                         managed.pop(digest, None)
                     else:
                         managed[digest] = previous_metadata
+                if isinstance(error, SyncError):
+                    raise
                 raise SyncError('managed EPUB import failed: {}'.format(error)) from error
+
+    def take_loaded_managed_book(self, digest: str):
+        return self._loaded_managed_books.pop(digest, None)
 
     def diagnostics_text(self) -> str:
         with self._lock:
@@ -1851,6 +1884,20 @@ def _is_epub_file(path: Path) -> bool:
                 archive.read(info) == b'application/epub+zip'
     except (KeyError, OSError, zipfile.BadZipFile):
         return False
+
+
+def _load_epub(path: Path):
+    return epub.read_epub(str(path), options={'ignore_ncx': True})
+
+
+def _is_loadable_epub_file(path: Path) -> bool:
+    if not _is_epub_file(path):
+        return False
+    try:
+        _load_epub(path)
+    except Exception:
+        return False
+    return True
 
 
 def _file_sha256(path: Path) -> str:

@@ -56,9 +56,28 @@ def _enable(tmp_path, name, sync_root, *, progress=None, chords=None, config=Non
 
 
 def _epub(path: Path, data=b'book'):
+    content = data.decode('utf-8', errors='replace')
     with zipfile.ZipFile(path, 'w') as archive:
-        archive.writestr('mimetype', 'application/epub+zip')
-        archive.writestr('content.txt', data)
+        archive.writestr('mimetype', 'application/epub+zip', compress_type=zipfile.ZIP_STORED)
+        archive.writestr('META-INF/container.xml', '''<?xml version="1.0"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+  <rootfiles><rootfile full-path="OEBPS/content.opf"
+    media-type="application/oebps-package+xml"/></rootfiles>
+</container>''')
+        archive.writestr('OEBPS/content.opf', '''<?xml version="1.0" encoding="UTF-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="2.0"
+    unique-identifier="bookid">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:identifier id="bookid">test-book</dc:identifier>
+    <dc:title>Test Book</dc:title><dc:language>en</dc:language>
+  </metadata>
+  <manifest><item id="content" href="content.xhtml"
+    media-type="application/xhtml+xml"/></manifest>
+  <spine><itemref idref="content"/></spine>
+</package>''')
+        archive.writestr('OEBPS/content.xhtml',
+                         '<html xmlns="http://www.w3.org/1999/xhtml"><body>' +
+                         content + '</body></html>')
 
 
 def test_legacy_path_progress_is_imported_using_file_identity(tmp_path):

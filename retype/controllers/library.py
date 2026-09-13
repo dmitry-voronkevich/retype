@@ -190,12 +190,36 @@ class LibraryController(object):
         except OSError:
             return
 
-    def instantiateBooks(self):
-        # type: (LibraryController) -> None
+    def instantiateBooks(self, include_managed=True):
+        # type: (LibraryController, bool) -> None
         self.books = {}
+        if not include_managed and self._library_items:
+            self.loadSaveFile()
         for idn, item in self._library_items.items():
+            if not include_managed and _MANAGED_BOOK_FILENAME.fullmatch(
+                    item.checksum + '.epub'):
+                continue
             book = BookWrapper(item, self.load(item))
             self.books[idn] = book
+
+    def managedBookLoadData(self):
+        # type: (LibraryController) -> list[tuple[LibraryItem, SaveData | None]]
+        if self.save_file_contents is None:
+            self.loadSaveFile()
+        save = self.save_file_contents or {}
+        return [(item, deepcopy(save.get(item.checksum)))
+                for item in self._library_items.values()
+                if _MANAGED_BOOK_FILENAME.fullmatch(item.checksum + '.epub')]
+
+    def installManagedBooks(self, books):
+        # type: (LibraryController, dict[int, BookWrapper]) -> None
+        if self.books is None:
+            self.books = {}
+        for idn, book in books.items():
+            if book.valid:
+                self.books[idn] = book
+            else:
+                self._library_items.pop(idn, None)
 
     def addManagedBooks(self, managed_books, validated_checksums=None,
                         loaded_books=None):
@@ -393,14 +417,16 @@ class LibraryItem:
 
 
 class BookWrapper(object):
-    def __init__(self, library_item, save_data=None, loaded_book=None):
-        # type: (BookWrapper, LibraryItem, SaveData | None, object | None) -> None
+    def __init__(self, library_item, save_data=None, loaded_book=None,
+                 report_errors=True):
+        # type: (BookWrapper, LibraryItem, SaveData | None, object | None, bool) -> None
         self.valid = False
         self._library_item = library_item
         self.path = library_item.path
         self.idn = library_item.idn
         self.checksum = library_item.checksum
-        self._book = loaded_book if loaded_book is not None else self._readEpub()
+        self._book = loaded_book if loaded_book is not None else self._readEpub(
+            report_errors)
         if loaded_book is not None:
             self.valid = True
         self.title = self._book.title
@@ -415,20 +441,21 @@ class BookWrapper(object):
         self.progress = save_data['progress'] if save_data else 0.0
         self.progress_subscribers = []  # type: list[Callable[[float], None]]
 
-    def _readEpub(self):
-        # type: (BookWrapper) -> epub.EpubBook
+    def _readEpub(self, report_errors=True):
+        # type: (BookWrapper, bool) -> epub.EpubBook
         ret = None
         try:
             ret = epub.read_epub(self.path, options={'ignore_ncx': True})
             self.valid = True
-        except (LookupError, OSError) as e:
+        except Exception as e:
             s = (f'Unable to read epub {self.idn}:\n{self.path}.\n\n'
                  'This is not fatal, but the book will not be loaded.')
             logger.error(f"{s}\n{e}", exc_info=True)
-            msg = QMessageBox(QMessageBox.Icon.Warning, 'retype', s)
-            msg.setDetailedText(f'Path: {self.path}\n\n'
-                                f'{traceback.format_exc()}')
-            msg.exec()
+            if report_errors:
+                msg = QMessageBox(QMessageBox.Icon.Warning, 'retype', s)
+                msg.setDetailedText(f'Path: {self.path}\n\n'
+                                    f'{traceback.format_exc()}')
+                msg.exec()
         return ret or epub.EpubBook()
 
     def _parseChaptersContent(self, chapters):
