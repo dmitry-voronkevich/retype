@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING
 from retype.extras.space import isspaceorempty
 from retype.extras.hashing import generate_file_md5
 from retype.services.sync import (MAX_MANAGED_BOOK_BYTES, _is_epub_file,
-                                  _is_loadable_epub_file)
+                                  _is_loadable_epub_file, _validate_save)
 
 logger = logging.getLogger(__name__)
 
@@ -48,13 +48,10 @@ def is_valid_managed_book(path, checksum):
 
 def _save_position_key(data):
     # type: (object) -> tuple[float, int, int] | None
-    if not isinstance(data, dict):
+    data = _validate_save(data)
+    if data is None:
         return None
-    try:
-        return (float(data['progress']), int(data['chapter_pos']),
-                int(data['persistent_pos']))
-    except (KeyError, TypeError, ValueError, OverflowError):
-        return None
+    return (data['progress'], data['chapter_pos'], data['persistent_pos'])
 
 
 class LibraryController(object):
@@ -240,7 +237,8 @@ class LibraryController(object):
             if not include_managed and _MANAGED_BOOK_FILENAME.fullmatch(
                     item.checksum + '.epub'):
                 continue
-            book = BookWrapper(item, self.load(item))
+            save_data = _validate_save(self.load(item))
+            book = BookWrapper(item, save_data)
             self.books[idn] = book
 
     def managedBookLoadData(self):
@@ -250,7 +248,7 @@ class LibraryController(object):
         if self.save_file_contents is None:
             self.loadSaveFile()
         save = self.save_file_contents or {}
-        return [(item, deepcopy(save.get(item.checksum)))
+        return [(item, _validate_save(deepcopy(save.get(item.checksum))))
                 for item in self._library_items.values()
                 if _MANAGED_BOOK_FILENAME.fullmatch(item.checksum + '.epub')]
 
@@ -270,8 +268,9 @@ class LibraryController(object):
             else:
                 current = self.save_file_contents.get(book.checksum) \
                     if self.save_file_contents else None
-                if _save_position_key(current) is not None:
-                    book.save_data = deepcopy(current)
+                current = _validate_save(current)
+                if current is not None:
+                    book.save_data = current
                     book.updateProgress(current['progress'])
                 self.books[idn] = book
                 existing.add(book.checksum)
@@ -310,9 +309,7 @@ class LibraryController(object):
                 continue
             item = LibraryItem(next_id, path, checksum)
             loaded_book = (loaded_books or {}).get(checksum)
-            save_data = self.load(item)
-            if _save_position_key(save_data) is None:
-                save_data = None
+            save_data = _validate_save(self.load(item))
             book = BookWrapper(item, save_data, loaded_book,
                                report_errors=False)
             if not book.valid:

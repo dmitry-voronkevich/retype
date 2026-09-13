@@ -1103,6 +1103,12 @@ class LearningSync:
         now = int(time.time() * 1000)
         if now > self._clock.wall_ms:
             self._clock = HLC(now, 0)
+        elif self._clock.counter >= MAX_HLC_COUNTER:
+            next_wall = self._clock.wall_ms + 1
+            if next_wall > now + MAX_HLC_FUTURE_MS:
+                self._clock = HLC(now, 0)
+            else:
+                self._clock = HLC(next_wall, 0)
         else:
             self._clock = HLC(self._clock.wall_ms, self._clock.counter + 1)
         return self._clock

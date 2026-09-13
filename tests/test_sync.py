@@ -89,6 +89,20 @@ def test_hlc_rejects_unbounded_remote_timestamps():
         HLC.from_data({'wall_ms': 0, 'counter': 1_000_001})
 
 
+def test_hlc_counter_rollover_keeps_boundary_timestamp_valid(tmp_path):
+    sync = LearningSync(tmp_path / 'local', tmp_path / 'legacy')
+    sync._observe(HLC(int(time.time() * 1000) + 24 * 60 * 60 * 1000,
+                      1_000_000))
+
+    first = sync._now()
+    second = sync._now()
+
+    assert first.counter <= 1_000_000
+    assert second.counter <= 1_000_000
+    HLC.from_data(first.to_data())
+    HLC.from_data(second.to_data())
+
+
 def test_legacy_path_progress_is_imported_using_file_identity(tmp_path):
     source = tmp_path / 'legacy.epub'
     source.write_bytes(b'legacy book')
