@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import dataclass, field
-from hashlib import sha256
+from hashlib import md5, sha256
 import json
 import logging
 import os
@@ -188,7 +188,9 @@ def atomic_write_json(path: Path, data: object, backup_dir: Path | None = None,
                 pass
 
 
-def _copy_atomic(source: Path, destination: Path) -> None:
+def _copy_atomic(source: Path, destination: Path,
+                 expected_digest: str | None = None,
+                 expected_size: int | None = None) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
     descriptor = None
     temporary = None
@@ -201,6 +203,11 @@ def _copy_atomic(source: Path, destination: Path) -> None:
             shutil.copyfileobj(input_file, output, length=1024 * 1024)
             output.flush()
             os.fsync(output.fileno())
+        temporary_path = Path(temporary)
+        if expected_size is not None and temporary_path.stat().st_size != expected_size:
+            raise OSError('copied file size does not match its metadata')
+        if expected_digest is not None and _file_sha256(temporary_path) != expected_digest:
+            raise OSError('copied file digest does not match its metadata')
         os.replace(temporary, destination)
         temporary = None
     finally:
@@ -211,6 +218,14 @@ def _copy_atomic(source: Path, destination: Path) -> None:
                 os.unlink(temporary)
             except OSError:
                 pass
+
+
+def _file_md5(path: Path) -> str:
+    digest = md5()
+    with path.open('rb') as file:
+        for chunk in iter(lambda: file.read(1024 * 1024), b''):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _empty_payload() -> dict[str, object]:
@@ -1213,6 +1228,26 @@ class LearningSync:
             _validate_settings_value(key, register.get('value'))
         }
 
+    def _legacy_save_entries(self, raw_save: object):
+        if not isinstance(raw_save, dict):
+            return
+        for identity, item in raw_save.items():
+            if not isinstance(identity, str) or not isinstance(item, dict):
+                continue
+            resolved_identity = identity
+            if identity.lower().endswith('.epub'):
+                try:
+                    if not os.path.isfile(identity):
+                        continue
+                    resolved_identity = _file_md5(Path(identity))
+                except OSError as error:
+                    self._diagnose('Legacy progress file could not be hashed: {}'.format(error))
+                    continue
+            if _BOOK_IDENTITY.fullmatch(resolved_identity):
+                valid = _validate_save(item)
+                if valid is not None:
+                    yield resolved_identity, valid
+
     def _capture_local_only_changes(self) -> None:
         """Queue changes made while sync was disabled without re-counting it."""
         baseline = self._last_materialized()
@@ -1253,14 +1288,12 @@ class LearningSync:
         try:
             raw_save = _read_json(save_path)
             if isinstance(raw_save, dict):
-                for identity, value in raw_save.items():
-                    if isinstance(identity, str) and _BOOK_IDENTITY.fullmatch(identity) and \
-                            _validate_save(value) is not None:
-                        prior = self._payload.get('books', {})
-                        prior_value = prior.get(identity) if isinstance(prior, dict) else None
-                        if _validate_save(prior_value) is None or \
-                                _progress_key(value) > _progress_key(prior_value):
-                            self.record_book(identity, value)
+                for identity, value in self._legacy_save_entries(raw_save):
+                    prior = self._payload.get('books', {})
+                    prior_value = prior.get(identity) if isinstance(prior, dict) else None
+                    if _validate_save(prior_value) is None or \
+                            _progress_key(value) > _progress_key(prior_value):
+                        self.record_book(identity, value)
         except ValidationError as error:
             if save_path.exists():
                 self._diagnose('Local-only book progress could not be queued: {}'.format(error))
@@ -1281,9 +1314,10 @@ class LearningSync:
         try:
             raw_save = _read_json(save_path)
             if isinstance(raw_save, dict):
-                for identity, item in raw_save.items():
-                    valid = _validate_save(item)
-                    if isinstance(identity, str) and _BOOK_IDENTITY.fullmatch(identity) and valid:
+                for identity, valid in self._legacy_save_entries(raw_save):
+                    prior = books.get(identity)
+                    if _validate_save(prior) is None or \
+                            _progress_key(valid) > _progress_key(prior):
                         books[identity] = valid
         except ValidationError as error:
             if save_path.exists():
@@ -1484,7 +1518,11 @@ class LearningSync:
                     return SyncResult(self.status)
                 if not root.is_dir():
                     raise SyncError('the selected folder is unavailable')
-                if self._legacy_capture_needed and \
+                if self._bootstrap.get('legacy_migrated') is True and \
+                        self._bootstrap.get('last_materialized') is not None:
+                    self._capture_local_only_changes()
+                    self._legacy_capture_needed = False
+                elif self._legacy_capture_needed and \
                         self._bootstrap.get('last_materialized') is not None:
                     self._capture_local_only_changes()
                     self._legacy_capture_needed = False
@@ -1689,7 +1727,7 @@ class LearningSync:
                     continue
                 if not destination.exists() or destination.stat().st_size != metadata['size'] or \
                         _file_sha256(destination) != digest:
-                    _copy_atomic(source, destination)
+                    _copy_atomic(source, destination, digest, int(metadata['size']))
                 ready.add(digest)
             except OSError as error:
                 self._diagnose('Managed book {} is unavailable: {}'.format(
@@ -1762,14 +1800,14 @@ class LearningSync:
                     raise SyncError('the selected folder contains a rejected book with this digest')
                 if not destination.exists():
                     created_paths.append(destination)
-                    _copy_atomic(path, destination)
+                    _copy_atomic(path, destination, digest, size)
                 if not manifest.exists():
                     created_paths.append(manifest)
                 atomic_write_json(manifest, metadata, self.recovery_dir / 'books')
                 local_copy = self.managed_library_dir / (digest + '.epub')
-                if not local_copy.exists():
-                    created_paths.append(local_copy)
-                    _copy_atomic(path, local_copy)
+                if not local_copy.exists() or local_copy.stat().st_size != size or \
+                        _file_sha256(local_copy) != digest:
+                    _copy_atomic(path, local_copy, digest, size)
                 previous_editions = [item for key, item in managed.items()
                                      if key != digest and isinstance(item, dict) and
                                      item.get('original_filename') == path.name]

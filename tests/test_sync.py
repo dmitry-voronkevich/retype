@@ -1,5 +1,6 @@
 import json
 import os
+from hashlib import md5
 from pathlib import Path
 from threading import Event, Thread
 from unittest.mock import patch
@@ -9,9 +10,9 @@ import zipfile
 import pytest
 
 from retype.services.sync import (
-    HLC, LearningSync, SyncError, apply_learning_settings, atomic_write_json,
-    learning_settings_from_config,
-    merge_replicas, validate_envelope,
+    HLC, LearningSync, SyncError, _copy_atomic, apply_learning_settings,
+    atomic_write_json, learning_settings_from_config, merge_replicas,
+    validate_envelope,
 )
 
 
@@ -58,6 +59,48 @@ def _epub(path: Path, data=b'book'):
     with zipfile.ZipFile(path, 'w') as archive:
         archive.writestr('mimetype', 'application/epub+zip')
         archive.writestr('content.txt', data)
+
+
+def test_legacy_path_progress_is_imported_using_file_identity(tmp_path):
+    source = tmp_path / 'legacy.epub'
+    source.write_bytes(b'legacy book')
+    progress = {
+        'persistent_pos': 8, 'chapter_pos': 1, 'progress': 20,
+    }
+    sync, _ = _enable(
+        tmp_path, 'one', tmp_path / 'folder',
+        progress={str(source): progress}, config=_config())
+
+    identity = md5(source.read_bytes()).hexdigest()
+    assert sync.sync_now().save[identity]['progress'] == 20
+
+
+def test_legacy_progress_recovery_survives_sync_state_write_failures(tmp_path):
+    sync, legacy = _enable(tmp_path, 'one', tmp_path / 'folder', config=_config())
+    sync.sync_now()
+    (legacy / 'chord-mastery.json').write_text(
+        json.dumps({'version': 2, 'progress': {'word': 1}}), encoding='utf-8')
+
+    with patch.object(sync, '_touch', side_effect=OSError('disk full')), \
+            patch.object(sync, '_defer', return_value=False), \
+            patch.object(sync, '_save_bootstrap', side_effect=OSError('disk full')):
+        sync.record_chords({'word': 1}, {})
+
+    restarted = LearningSync(tmp_path / 'one-local', legacy)
+    assert restarted.sync_now().chord_counts == {'word': 1}
+
+
+def test_copy_atomic_rejects_changed_bytes_before_replacing_destination(tmp_path):
+    source = tmp_path / 'source.epub'
+    destination = tmp_path / 'destination.epub'
+    source.write_bytes(b'new')
+    destination.write_bytes(b'old')
+
+    with pytest.raises(OSError, match='digest'):
+        _copy_atomic(source, destination, '0' * 64, 3)
+
+    assert destination.read_bytes() == b'old'
+    assert not list(tmp_path.glob('.destination.epub.*.tmp'))
 
 
 def test_managed_book_progress_accepts_sha256_identity(tmp_path):
