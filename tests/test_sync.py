@@ -281,6 +281,57 @@ def test_reenable_does_not_restamp_unchanged_remote_settings(tmp_path):
     assert first.sync_now().settings['auto_newline'] is False
 
 
+def test_partial_merge_retains_newer_materialized_setting(tmp_path):
+    root = tmp_path / 'folder'
+    receiver, receiver_legacy = _enable(tmp_path, 'receiver', root, config=_config())
+    receiver.sync_now()
+    remote_config = _config()
+    remote_config['auto_newline'] = False
+    remote, _ = _enable(tmp_path, 'remote', root, config=remote_config)
+    remote.sync_now()
+    receiver_config = json.loads((receiver_legacy / 'config.json').read_text())
+    receiver_config['auto_newline'] = False
+    receiver_legacy.joinpath('config.json').write_text(
+        json.dumps(receiver_config), encoding='utf-8')
+    assert receiver.sync_now().settings['auto_newline'] is False
+
+    (root / 'replicas' / (remote.replica_id + '.json')).unlink()
+    assert receiver.sync_now().settings['auto_newline'] is False
+
+
+def test_materialized_recovery_preserves_local_chord_baseline(tmp_path):
+    root = tmp_path / 'folder'
+    sender, _ = _enable(
+        tmp_path, 'sender', root,
+        chords={'version': 2, 'progress': {'word': 4}}, config=_config())
+    sender.sync_now()
+    receiver, legacy = _enable(tmp_path, 'receiver', root, config=_config())
+    receiver.sync_now()
+    sender.record_chords({'word': 5}, {})
+    sender.sync_now()
+
+    with patch.object(receiver, '_save_bootstrap', side_effect=OSError('disk full')):
+        receiver.sync_now()
+
+    assert receiver.materialized_recovery_path.exists()
+    restarted = LearningSync(tmp_path / 'receiver-local', legacy)
+    assert restarted.sync_now().chord_counts == {'word': 5}
+
+
+def test_materialized_recovery_is_scoped_to_collection(tmp_path):
+    first_root = tmp_path / 'first-folder'
+    sync, legacy = _enable(tmp_path, 'one', first_root, config=_config())
+    sync.sync_now()
+    with patch.object(sync, '_save_bootstrap', side_effect=OSError('disk full')):
+        sync.sync_now()
+    assert sync.materialized_recovery_path.exists()
+
+    second_root = tmp_path / 'second-folder'
+    assert sync.configure(second_root).state == 'ready'
+    restarted = LearningSync(tmp_path / 'one-local', legacy)
+    assert restarted._last_materialized() == {}
+
+
 def test_disable_without_delete_queues_only_new_local_chord_uses_on_reenable(tmp_path):
     root = tmp_path / 'folder'
     first, _ = _enable(

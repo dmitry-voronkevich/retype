@@ -143,11 +143,11 @@ Attempting to load config from: {}".format(user_dir, custom_path))
         self.safe_dict.raw = self.raw  # type: ignore[assignment]
 
     def save(self):
-        # type: (_SafeConfig) -> None
+        # type: (_SafeConfig) -> bool
         user_dir = self.raw['user_dir']
         path = os.path.join(user_dir, self.config_rel_path)
         if not self._save(path, self.raw):  # Saving failed
-            return
+            return False
 
         if not self.isPathDefaultUserDir(user_dir):
             dconfig = self.loadDconfig() if os.path.exists(
@@ -156,7 +156,8 @@ Attempting to load config from: {}".format(user_dir, custom_path))
             dconfig['user_dir'] = user_dir
             # Keep the bootstrap at the application-data root.  The previous
             # code accidentally wrote this second copy to ``path`` again.
-            self._save(self.base_config_abs_path, dconfig)
+            return self._save(self.base_config_abs_path, dconfig)
+        return True
 
     def _save(self, path, data):
         # type: (_SafeConfig, str, Config) -> bool

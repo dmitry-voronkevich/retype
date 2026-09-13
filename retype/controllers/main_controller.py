@@ -683,8 +683,10 @@ class MainController(QObject):
                 updated = apply_learning_settings(self.config.raw, settings)
                 if updated != self.config.raw:
                     self.config.populate(updated)
-                    self.config.save()
-                    self._applySyncedSettingsToLiveViews()
+                    if self.config.save():
+                        self._applySyncedSettingsToLiveViews()
+                    else:
+                        self.learning_sync.rollback_materialized_settings()
             merged_save_changed = set()
             if result.save and hasattr(self, 'library'):
                 merged_save_changed = self.library.applyMergedSave(result.save)

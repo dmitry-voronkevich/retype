@@ -92,6 +92,7 @@ class SyncResult:
     chord_overrides: dict[str, bool] = field(default_factory=dict)
     chord_override_registers: dict[str, dict[str, object]] = field(default_factory=dict)
     settings: dict[str, object] = field(default_factory=dict)
+    settings_registers: dict[str, dict[str, object]] = field(default_factory=dict)
     settings_revisions: dict[str, int] = field(default_factory=dict)
     managed_books: dict[str, dict[str, object]] = field(default_factory=dict)
     # Kept separate from ``save`` because legacy BookView accepts every save
@@ -132,6 +133,18 @@ def _valid_override_register_map(value: object) -> dict[str, dict[str, object]]:
         key: dict(register) for key, register in value.items()
         if isinstance(key, str) and key and isinstance(register, dict) and
         (register.get('value') is None or isinstance(register.get('value'), bool)) and
+        _register_stamp(register) is not None
+    }
+
+
+def _valid_settings_register_map(value: object) -> dict[str, dict[str, object]]:
+    if not isinstance(value, dict):
+        return {}
+    return {
+        key: dict(register) for key, register in value.items()
+        if isinstance(key, str) and key in VALID_SETTINGS and
+        isinstance(register, dict) and
+        _validate_settings_value(key, register.get('value')) and
         _register_stamp(register) is not None
     }
 
@@ -587,10 +600,15 @@ def merge_replicas(replicas: list[Mapping[str, object]]) -> SyncResult:
     }
     settings = {key: deepcopy(value) for key, (_, _, value)
                 in setting_registers.items()}
+    settings_registers = {
+        key: {'value': value, 'hlc': stamp.to_data(), 'replica_id': author}
+        for key, (stamp, author, value) in setting_registers.items()
+    }
     return SyncResult(status=SyncStatus(), save=save,
                       chord_counts=chord_counts, chord_overrides=overrides,
                       chord_override_registers=override_registers,
-                      settings=settings, managed_books=managed,
+                      settings=settings, settings_registers=settings_registers,
+                      managed_books=managed,
                       book_resumes=book_resumes)
 
 
@@ -643,6 +661,11 @@ class LearningSync:
         self._materialized_overrides = _valid_override_map(baseline_overrides)
         self._materialized_override_registers = _valid_override_register_map(
             baseline_override_registers)
+        baseline_setting_registers = baseline.get('settings_registers') \
+            if isinstance(baseline, dict) else None
+        self._materialized_settings_registers = _valid_settings_register_map(
+            baseline_setting_registers)
+        self._materialized_settings_before_commit = None
         self._local_chord_counts = _valid_count_map(
             self._bootstrap.get('local_chord_counts'))
         self._load_published()
@@ -736,12 +759,25 @@ class LearningSync:
                         'chord_counts', 'chord_overrides',
                         'chord_override_registers', 'settings')):
                 raise ValidationError('materialized sync state is malformed')
+            if data.get('collection_id') != self.collection_id or \
+                    not _valid_uuid(data.get('collection_id')):
+                raise ValidationError('materialized sync state belongs to another collection')
             settings = data['settings']
             if any(key not in VALID_SETTINGS or
                    not _validate_settings_value(key, value)
                    for key, value in settings.items()):
                 raise ValidationError('materialized sync settings are malformed')
+            setting_registers = data.get('settings_registers', {})
+            if not isinstance(setting_registers, dict) or \
+                    len(_valid_settings_register_map(setting_registers)) != \
+                    len(setting_registers):
+                raise ValidationError('materialized sync setting registers are malformed')
+            local_counts = data.get('local_chord_counts', {})
+            if not isinstance(local_counts, dict) or \
+                    len(_valid_count_map(local_counts)) != len(local_counts):
+                raise ValidationError('materialized sync local counts are malformed')
             self._bootstrap['last_materialized'] = data
+            self._bootstrap['local_chord_counts'] = dict(local_counts)
         except ValidationError as error:
             self._recover_candidate(
                 self.materialized_recovery_path,
@@ -1284,6 +1320,8 @@ class LearningSync:
                     self._materialized_counts = {}
                     self._materialized_overrides = {}
                     self._materialized_override_registers = {}
+                    self._materialized_settings_registers = {}
+                    self._materialized_settings_before_commit = None
                     self._local_chord_counts = {}
                     self._bootstrap.pop('last_materialized', None)
                     self._bootstrap.pop('local_chord_counts', None)
@@ -1872,14 +1910,34 @@ class LearningSync:
 
     def _retain_materialized_settings(self, result: SyncResult) -> None:
         baseline = self._last_materialized().get('settings')
-        if not isinstance(baseline, dict):
-            return
         retained = {
             key: deepcopy(value) for key, value in baseline.items()
             if key in VALID_SETTINGS and _validate_settings_value(key, value)
-        }
-        retained.update(result.settings)
+        } if isinstance(baseline, dict) else {}
+        registers = dict(self._materialized_settings_registers)
+        for key, register in registers.items():
+            if key in VALID_SETTINGS and isinstance(register, dict) and \
+                    _validate_settings_value(key, register.get('value')):
+                retained[key] = deepcopy(register['value'])
+        for key, register in result.settings_registers.items():
+            if key not in VALID_SETTINGS or not isinstance(register, dict) or \
+                    not _validate_settings_value(key, register.get('value')):
+                continue
+            current = registers.get(key)
+            current_stamp = _register_stamp(current)
+            incoming_stamp = _register_stamp(register)
+            if current_stamp is not None and incoming_stamp is not None and \
+                    incoming_stamp <= current_stamp:
+                continue
+            registers[key] = deepcopy(register)
+            retained[key] = deepcopy(register['value'])
+        for key, value in result.settings.items():
+            if key not in retained and key in VALID_SETTINGS and \
+                    _validate_settings_value(key, value) and key not in registers:
+                retained[key] = deepcopy(value)
+        self._materialized_settings_registers = registers
         result.settings = retained
+        result.settings_registers = deepcopy(registers)
 
     def _retain_materialized_chord_state(self, result: SyncResult) -> None:
         counts = dict(self._materialized_counts)
@@ -1910,34 +1968,91 @@ class LearningSync:
         result.chord_overrides = dict(overrides)
 
     def _remember_local_chord_baseline(self, result: SyncResult) -> None:
-        self._local_chord_counts = dict(result.chord_counts)
+        for key, count in result.chord_counts.items():
+            self._local_chord_counts[key] = max(
+                self._local_chord_counts.get(key, 0), count)
         self._bootstrap['local_chord_counts'] = dict(self._local_chord_counts)
-        self._save_bootstrap()
+        try:
+            self._save_bootstrap()
+        except OSError:
+            previous = self._last_materialized()
+            recovery = {
+                'collection_id': self.collection_id,
+                'chord_counts': deepcopy(previous.get('chord_counts', {})),
+                'chord_overrides': deepcopy(previous.get('chord_overrides', {})),
+                'chord_override_registers': deepcopy(
+                    previous.get('chord_override_registers', {})),
+                'settings': deepcopy(previous.get('settings', {})),
+                'settings_registers': deepcopy(
+                    previous.get('settings_registers', {})),
+                'local_chord_counts': dict(self._local_chord_counts),
+            }
+            try:
+                atomic_write_json(self.materialized_recovery_path, recovery,
+                                  self.recovery_dir / 'materialized')
+            except OSError as error:
+                self._diagnose(
+                    'Materialized sync recovery could not be written: {}'.format(error))
+            raise
 
     def _remember_materialized(self, result: SyncResult) -> None:
+        previous = self._last_materialized()
+        self._materialized_settings_before_commit = (
+            deepcopy(previous.get('settings', {})),
+            deepcopy(previous.get('settings_registers', {})))
+        for key, count in result.chord_counts.items():
+            self._local_chord_counts[key] = max(
+                self._local_chord_counts.get(key, 0), count)
         settings = dict(result.settings)
-        previous = self._last_materialized().get('settings')
-        if isinstance(previous, dict):
-            for key, value in previous.items():
+        if isinstance(previous.get('settings'), dict):
+            for key, value in previous['settings'].items():
                 if key not in settings and key in VALID_SETTINGS and \
                         _validate_settings_value(key, value):
                     settings[key] = deepcopy(value)
         result.settings = settings
         state = {
+            'collection_id': self.collection_id,
             'chord_counts': dict(result.chord_counts),
             'chord_overrides': dict(result.chord_overrides),
             'chord_override_registers': deepcopy(result.chord_override_registers),
             'settings': deepcopy(settings),
+            'settings_registers': deepcopy(self._materialized_settings_registers),
+            'local_chord_counts': dict(self._local_chord_counts),
         }
         atomic_write_json(self.materialized_recovery_path, state,
                           self.recovery_dir / 'materialized')
         self._bootstrap['last_materialized'] = state
+        self._bootstrap['local_chord_counts'] = dict(self._local_chord_counts)
         try:
             self._save_bootstrap()
         except OSError:
             raise
         else:
             self.materialized_recovery_path.unlink(missing_ok=True)
+
+    def rollback_materialized_settings(self) -> None:
+        with self._lock:
+            if self._materialized_settings_before_commit is None:
+                return
+            settings, registers = self._materialized_settings_before_commit
+            state = deepcopy(self._last_materialized())
+            state['collection_id'] = self.collection_id
+            state['settings'] = deepcopy(settings)
+            state['settings_registers'] = deepcopy(registers)
+            state['local_chord_counts'] = dict(self._local_chord_counts)
+            self._materialized_settings_registers = _valid_settings_register_map(registers)
+            self._bootstrap['last_materialized'] = state
+            self._bootstrap['local_chord_counts'] = dict(self._local_chord_counts)
+            try:
+                atomic_write_json(self.materialized_recovery_path, state,
+                                  self.recovery_dir / 'materialized')
+                self._save_bootstrap()
+            except OSError as error:
+                self._diagnose(
+                    'Materialized sync settings could not be rolled back: {}'.format(error))
+                return
+            self.materialized_recovery_path.unlink(missing_ok=True)
+            self._materialized_settings_before_commit = None
 
     def _materialize_legacy_state(self, result: SyncResult) -> bool:
         """Keep existing local consumers working from a merged cache.
