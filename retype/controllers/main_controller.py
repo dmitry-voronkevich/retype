@@ -462,7 +462,8 @@ class MainController(QObject):
         status = self.learning_sync.configure(folder, managed_library_consent)
         if status.state == 'ready':
             # A first-run config can still be in memory rather than on disk.
-            self.learning_sync.record_settings(self.config.raw, {})
+            self.learning_sync.record_settings(
+                self.config.raw, self.learning_sync.settings_baseline())
             self.requestSync()
         self._updateSyncPresentation()
         return status

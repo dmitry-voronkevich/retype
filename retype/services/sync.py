@@ -740,26 +740,90 @@ class LearningSync:
             loaded.append((event_collection, event_id, kind, tuple(args)))
         return loaded
 
+    def _read_deferred_generation(self, generation: str, count: int) -> list[tuple[str, str, str, tuple[object, ...]]]:
+        if not isinstance(generation, str) or not generation or not _is_int(count) or \
+                count < 1 or count > MAX_DEFERRED_BYTES:
+            raise ValidationError('deferred sync generation is malformed')
+        loaded = []
+        for index in range(count):
+            path = self.deferred_parts_dir / '{:08d}.json'.format(index)
+            data = _read_json(path, MAX_DEFERRED_BYTES)
+            if not isinstance(data, dict) or data.get('generation') != generation or \
+                    data.get('index') != index or data.get('count') != count:
+                raise ValidationError('deferred sync generation is incomplete')
+            loaded.extend(self._read_deferred_events(data, self.collection_id))
+        return loaded
+
+    def _complete_deferred_generations(self) -> list[tuple[str, list[tuple[str, str, str, tuple[object, ...]]]]]:
+        groups: dict[str, dict[int, tuple[int, object]]] = {}
+        if not self.deferred_parts_dir.is_dir():
+            return []
+        for path in sorted(self.deferred_parts_dir.glob('*.json')):
+            try:
+                data = _read_json(path, MAX_DEFERRED_BYTES)
+                if not isinstance(data, dict):
+                    continue
+                generation = data.get('generation')
+                index = data.get('index')
+                count = data.get('count')
+                if not isinstance(generation, str) or not _is_int(index) or \
+                        not _is_int(count) or index < 0 or count < 1 or index >= count:
+                    continue
+                groups.setdefault(generation, {})[index] = (count, data)
+            except ValidationError:
+                continue
+        complete = []
+        for generation, parts in groups.items():
+            counts = {count for count, _ in parts.values()}
+            count = next(iter(counts)) if len(counts) == 1 else 0
+            if count < 1 or len(parts) != count or set(parts) != set(range(count)):
+                continue
+            try:
+                events = []
+                for index in range(count):
+                    events.extend(self._read_deferred_events(
+                        parts[index][1], self.collection_id))
+                complete.append((generation, events))
+            except ValidationError:
+                continue
+        return complete
+
     def _load_deferred(self) -> None:
         if not self.deferred_path.exists():
             return
         try:
             data = _read_json(self.deferred_path, MAX_DEFERRED_BYTES)
-            legacy = isinstance(data, dict) and 'generation' not in data
-            loaded = self._read_deferred_events(data, self.collection_id, legacy)
+            legacy = isinstance(data, dict) and 'count' not in data
+            candidates = self._complete_deferred_generations()
             generation = data.get('generation') if isinstance(data, dict) else None
             if generation is not None and not isinstance(generation, str):
                 raise ValidationError('deferred sync generation is malformed')
-            if generation is not None:
-                for path in sorted(self.deferred_parts_dir.glob('*.json')):
-                    part = _read_json(path, MAX_DEFERRED_BYTES)
-                    if not isinstance(part, dict) or part.get('generation') != generation:
-                        continue
-                    loaded.extend(self._read_deferred_events(
-                        part, self.collection_id))
+            if isinstance(data, dict) and _is_int(data.get('count')):
+                count = data['count']
+                try:
+                    candidates.append((generation, self._read_deferred_generation(
+                        generation, count)))
+                except ValidationError:
+                    pass
+            else:
+                candidates.append((generation or '', self._read_deferred_events(
+                    data, self.collection_id, legacy)))
+                if generation is not None:
+                    for path in sorted(self.deferred_parts_dir.glob('*.json')):
+                        part = _read_json(path, MAX_DEFERRED_BYTES)
+                        if not isinstance(part, dict) or part.get('generation') != generation:
+                            continue
+                        candidates[-1][1].extend(self._read_deferred_events(
+                            part, self.collection_id))
+            if not candidates:
+                raise ValidationError('deferred sync mutations are incomplete')
+            selected_generation, loaded = max(
+                candidates,
+                key=lambda item: (len(item[0]) > 21 and item[0][:20].isdigit(),
+                                  item[0]))
             with self._deferred_lock:
                 self._deferred = loaded
-            if legacy:
+            if legacy or selected_generation != generation:
                 with self._deferred_lock:
                     self._persist_deferred_locked()
         except ValidationError as error:
@@ -776,40 +840,41 @@ class LearningSync:
                 self.deferred_parts_dir.rmdir()
             return
 
-        generation = str(uuid4())
+        generation = '{:020d}-{}'.format(time.time_ns(), uuid4().hex)
         chunks: list[list[list[object]]] = [[]]
         for event in self._deferred:
             record = self._deferred_record(event)
             candidate = chunks[-1] + [record]
-            if len(_json_bytes({'generation': generation, 'events': candidate})) > \
-                    MAX_DEFERRED_BYTES:
+            if len(_json_bytes({'generation': generation, 'index': 0,
+                                'count': MAX_DEFERRED_BYTES,
+                                'events': candidate})) > MAX_DEFERRED_BYTES:
                 if not chunks[-1]:
                     raise SyncError('a deferred sync mutation exceeds the size limit')
                 chunks.append([record])
             else:
                 chunks[-1] = candidate
-        if any(len(_json_bytes({'generation': generation, 'events': chunk})) >
-               MAX_DEFERRED_BYTES for chunk in chunks):
+        count = len(chunks)
+        if any(len(_json_bytes({'generation': generation, 'index': index,
+                                'count': count, 'events': chunk})) >
+               MAX_DEFERRED_BYTES for index, chunk in enumerate(chunks)):
             raise SyncError('a deferred sync mutation exceeds the size limit')
 
         self.deferred_parts_dir.mkdir(parents=True, exist_ok=True)
-        for index, chunk in enumerate(chunks[1:], 1):
+        for index, chunk in enumerate(chunks):
             atomic_write_json(
                 self.deferred_parts_dir / '{:08d}.json'.format(index),
-                {'generation': generation, 'events': chunk},
-                self.recovery_dir / 'deferred')
+                {'generation': generation, 'index': index, 'count': count,
+                 'events': chunk}, self.recovery_dir / 'deferred')
         atomic_write_json(
             self.deferred_path,
-            {'generation': generation, 'events': chunks[0]},
+            {'generation': generation, 'count': count},
             self.recovery_dir / 'deferred')
         for path in self.deferred_parts_dir.glob('*.json'):
             try:
-                if int(path.stem) >= len(chunks):
+                if int(path.stem) >= count:
                     path.unlink()
             except ValueError:
                 path.unlink(missing_ok=True)
-        if not chunks[1:]:
-            self.deferred_parts_dir.rmdir()
 
     def _now(self) -> HLC:
         now = int(time.time() * 1000)
@@ -1016,6 +1081,20 @@ class LearningSync:
     def _last_materialized(self) -> dict[str, object]:
         data = self._bootstrap.get('last_materialized')
         return data if isinstance(data, dict) else {}
+
+    def settings_baseline(self) -> dict[str, object]:
+        baseline = self._last_materialized().get('settings')
+        if isinstance(baseline, dict):
+            return deepcopy(baseline)
+        registers = self._payload.get('settings', {})
+        if not isinstance(registers, dict):
+            return {}
+        return {
+            key: deepcopy(register.get('value'))
+            for key, register in registers.items()
+            if key in VALID_SETTINGS and isinstance(register, dict) and
+            _validate_settings_value(key, register.get('value'))
+        }
 
     def _capture_local_only_changes(self) -> None:
         """Queue changes made while sync was disabled without re-counting it."""
@@ -1459,6 +1538,9 @@ class LearningSync:
                 if source.stat().st_size != metadata['size'] or _file_sha256(source) != digest:
                     self._recover_candidate(source, 'managed book hash or size mismatch')
                     continue
+                if not _is_epub_file(source):
+                    self._recover_candidate(source, 'managed book is not a valid EPUB')
+                    continue
                 if not destination.exists() or destination.stat().st_size != metadata['size'] or \
                         _file_sha256(destination) != digest:
                     _copy_atomic(source, destination)
@@ -1492,7 +1574,7 @@ class LearningSync:
                 except ValueError:
                     pass
                 try:
-                    is_epub_archive = zipfile.is_zipfile(path)
+                    is_epub_archive = _is_epub_file(path)
                 except OSError as error:
                     raise SyncError('the selected EPUB cannot be read: {}'.format(error)) from error
                 if not is_epub_archive:
@@ -1571,6 +1653,18 @@ class LearningSync:
             lines = [self.status.message]
             lines.extend(self.status.diagnostics)
             return '\n'.join(lines)
+
+
+def _is_epub_file(path: Path) -> bool:
+    if not zipfile.is_zipfile(path):
+        return False
+    try:
+        with zipfile.ZipFile(path) as archive:
+            info = archive.getinfo('mimetype')
+            return info.compress_type == zipfile.ZIP_STORED and \
+                archive.read(info) == b'application/epub+zip'
+    except (KeyError, OSError, zipfile.BadZipFile):
+        return False
 
 
 def _file_sha256(path: Path) -> str:

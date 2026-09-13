@@ -169,6 +169,26 @@ def test_pending_chord_use_is_not_counted_again_on_reenable(tmp_path):
     assert sync.sync_now().chord_counts == {'word': 4}
 
 
+def test_reenable_does_not_restamp_unchanged_remote_settings(tmp_path):
+    root = tmp_path / 'folder'
+    first, first_legacy = _enable(tmp_path, 'first', root, config=_config())
+    first.sync_now()
+
+    remote_config = _config()
+    remote_config['auto_newline'] = False
+    second, _ = _enable(tmp_path, 'second', root, config=remote_config)
+    second.sync_now()
+    first.sync_now()
+
+    local_config = json.loads((first_legacy / 'config.json').read_text())
+    local_config['auto_newline'] = False
+    (first_legacy / 'config.json').write_text(
+        json.dumps(local_config), encoding='utf-8')
+    first.disable()
+    assert first.configure(root).state == 'ready'
+    assert first.sync_now().settings['auto_newline'] is False
+
+
 def test_disable_without_delete_queues_only_new_local_chord_uses_on_reenable(tmp_path):
     root = tmp_path / 'folder'
     first, _ = _enable(

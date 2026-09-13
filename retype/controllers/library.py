@@ -97,11 +97,45 @@ class LibraryController(object):
                         idn += 1
         return library_items
 
+    def _managed_index_path(self):
+        return os.path.join(self.managed_library_path,
+                            '.retype-managed-index.json')
+
+    def _load_managed_index(self):
+        try:
+            with open(self._managed_index_path(), 'r', encoding='utf-8') as file:
+                data = json.load(file)
+        except (OSError, ValueError, TypeError):
+            return {}
+        if not isinstance(data, dict):
+            return {}
+        return {
+            checksum: record for checksum, record in data.items()
+            if isinstance(checksum, str) and
+            _MANAGED_BOOK_FILENAME.fullmatch(checksum + '.epub') and
+            isinstance(record, dict) and isinstance(record.get('size'), int) and
+            isinstance(record.get('mtime_ns'), int)
+        }
+
+    def _save_managed_index(self, index):
+        temporary = self._managed_index_path() + '.tmp'
+        try:
+            with open(temporary, 'w', encoding='utf-8') as file:
+                json.dump(index, file, sort_keys=True)
+            os.replace(temporary, self._managed_index_path())
+        except (OSError, TypeError, ValueError):
+            try:
+                os.unlink(temporary)
+            except OSError:
+                pass
+
     def indexManagedLibrary(self, library_items):
         # type: (LibraryController, dict[int, LibraryItem]) -> None
         if not self.managed_library_path:
             return
         try:
+            index = self._load_managed_index()
+            index_changed = False
             with os.scandir(self.managed_library_path) as entries:
                 managed_entries = sorted(entries, key=lambda entry: entry.name)
                 existing = {item.checksum for item in library_items.values()}
@@ -112,14 +146,22 @@ class LibraryController(object):
                         continue
                     checksum = entry.name[:-len('.epub')]
                     try:
-                        if entry.stat().st_size > MAX_MANAGED_BOOK_BYTES:
+                        stat = entry.stat()
+                        if stat.st_size > MAX_MANAGED_BOOK_BYTES:
                             logger.warning('Ignoring oversized managed EPUB: %s',
                                            entry.path)
                             continue
-                        if _file_sha256(entry.path) != checksum:
-                            logger.warning('Ignoring managed EPUB with a hash mismatch: %s',
-                                           entry.path)
-                            continue
+                        record = index.get(checksum)
+                        if not isinstance(record, dict) or \
+                                record.get('size') != stat.st_size or \
+                                record.get('mtime_ns') != stat.st_mtime_ns:
+                            if _file_sha256(entry.path) != checksum:
+                                logger.warning('Ignoring managed EPUB with a hash mismatch: %s',
+                                               entry.path)
+                                continue
+                            index[checksum] = {
+                                'size': stat.st_size, 'mtime_ns': stat.st_mtime_ns}
+                            index_changed = True
                     except OSError as error:
                         logger.warning('Unable to verify managed EPUB %s: %s',
                                        entry.path, error)
@@ -130,6 +172,8 @@ class LibraryController(object):
                         next_id, entry.path, checksum)
                     existing.add(checksum)
                     next_id += 1
+            if index_changed:
+                self._save_managed_index(index)
         except OSError:
             return
 
