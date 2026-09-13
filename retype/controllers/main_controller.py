@@ -65,11 +65,6 @@ class MainController(QObject):
                                           self.config['user_dir'])
         self._sync_worker = None  # type: _SyncWorker | None
         self._sync_pending = False
-        initial_sync = self.learning_sync.sync_now()
-        if initial_sync.settings:
-            self.config.populate(apply_learning_settings(self.config.raw,
-                                                         initial_sync.settings))
-            self.config.save()
         if device_reader_factory is not None:
             self._device_reader_factory = device_reader_factory
         elif callable(device_reader):
@@ -119,6 +114,7 @@ class MainController(QObject):
         self._populateLibrary()
         self._verifyUserDir()
         self._startDeviceChordLoad()
+        self.requestSync()
 
     def _setDeviceStatus(self, message, loading=False):
         # type: (MainController, str, bool) -> None
@@ -580,10 +576,14 @@ class MainController(QObject):
 
     def _syncOnClosing(self):
         # type: (MainController) -> None
+        book_view = self.views.get(View.book_view) \
+            if hasattr(self, 'views') else None
+        if book_view is not None:
+            book_view.maybeSave()
         worker = self._sync_worker
         if worker is not None and worker.isRunning():
-            worker.wait(1500)
-        if self.learning_sync.enabled and (worker is None or not worker.isRunning()):
+            worker.wait()
+        if self.learning_sync.enabled:
             # This is a local-folder write attempt, not a claim that a cloud
             # provider has uploaded it to any other device.
             self.learning_sync.sync_now()

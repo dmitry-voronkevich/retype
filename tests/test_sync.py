@@ -244,6 +244,44 @@ def test_merge_is_duplicate_reorder_independent_and_lww_ties_are_deterministic(t
         'word': 7}
 
 
+def test_restart_restores_published_replica_without_fork_recovery(tmp_path):
+    root = tmp_path / 'folder'
+    local = tmp_path / 'one-local'
+    legacy = tmp_path / 'one-legacy'
+    _legacy(legacy, config=_config())
+    first = LearningSync(local, legacy)
+    assert first.configure(root).state == 'ready'
+    first.record_chords({'word': 2}, {})
+    first.sync_now()
+    replica_id = first.replica_id
+
+    restarted = LearningSync(local, legacy)
+    result = restarted.sync_now()
+
+    assert restarted.replica_id == replica_id
+    assert result.chord_counts == {'word': 2}
+    restarted.record_chords({'word': 3}, {})
+    assert restarted.sync_now().chord_counts == {'word': 3}
+    assert not any('duplicated' in item for item in result.status.diagnostics)
+
+
+def test_remote_managed_books_are_not_materialized_without_consent(tmp_path):
+    root = tmp_path / 'folder'
+    source = tmp_path / 'private.epub'
+    _epub(source)
+    sender, _ = _enable(tmp_path, 'sender', root, config=_config())
+    sender.set_managed_library_consent(True)
+    metadata = sender.import_book(source)
+    sender.sync_now()
+
+    receiver, _ = _enable(tmp_path, 'receiver', root, config=_config())
+    result = receiver.sync_now()
+
+    assert not (receiver.managed_library_dir /
+                (metadata['digest'] + '.epub')).exists()
+    assert any('consent' in item for item in result.status.diagnostics)
+
+
 def test_invalid_replica_is_recovered_and_provider_absence_keeps_local_operation(tmp_path):
     sync, _ = _enable(tmp_path, 'one', tmp_path / 'folder', config=_config())
     sync.sync_now()
@@ -374,6 +412,7 @@ def test_managed_book_hash_mismatch_is_diagnosed_without_indexing_bad_bytes(tmp_
     one.sync_now()
 
     two, _ = _enable(tmp_path, 'two', root, config=_config())
+    two.set_managed_library_consent(True)
     (root / 'books' / 'sha256' / (metadata['digest'] + '.epub')).write_bytes(b'bad')
     result = two.sync_now()
     assert any('hash or size mismatch' in item for item in result.status.diagnostics)

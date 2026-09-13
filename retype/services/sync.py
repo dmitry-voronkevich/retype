@@ -555,9 +555,17 @@ class LearningSync:
         self._predecessor: str | None = None
         self._clock = HLC(0, 0)
         self._dirty = False
-        self._materialized_counts: dict[str, int] = {}
-        self._materialized_overrides: dict[str, bool] = {}
+        baseline = self._bootstrap.get('last_materialized')
+        baseline_counts = baseline.get('chord_counts') \
+            if isinstance(baseline, dict) else None
+        baseline_overrides = baseline.get('chord_overrides') \
+            if isinstance(baseline, dict) else None
+        self._materialized_counts = dict(baseline_counts) \
+            if isinstance(baseline_counts, dict) else {}
+        self._materialized_overrides = dict(baseline_overrides) \
+            if isinstance(baseline_overrides, dict) else {}
         self.status = SyncStatus()
+        self._load_published()
         self._load_pending()
 
     @property
@@ -615,6 +623,27 @@ class LearningSync:
         atomic_write_json(self.bootstrap_path, self._bootstrap,
                           self.recovery_dir / 'bootstrap')
 
+    def _load_published(self) -> None:
+        root = self.sync_root
+        collection = self.collection_id
+        if root is None or collection is None:
+            return
+        path = root / 'replicas' / (self.replica_id + '.json')
+        if not path.exists():
+            return
+        try:
+            data = validate_envelope(_read_json(path), collection)
+            if data['replica_id'] != self.replica_id:
+                raise ValidationError('published replica file ownership is invalid')
+            self._payload = deepcopy(data['payload'])  # type: ignore[arg-type]
+            self._sequence = int(data['sequence'])
+            self._predecessor = data.get('predecessor_digest')  # type: ignore[assignment]
+            self._clock = HLC.from_data(data['hlc'])
+        except ValidationError as error:
+            self._recover_candidate(
+                path,
+                'published local sync data could not be read: {}'.format(error))
+
     def _load_pending(self) -> None:
         if not self.pending_path.exists():
             return
@@ -623,7 +652,8 @@ class LearningSync:
             collection = self.collection_id
             if collection is not None:
                 data = validate_envelope(data, collection)
-                if data['replica_id'] == self.replica_id:
+                if data['replica_id'] == self.replica_id and \
+                        int(data['sequence']) >= self._sequence:
                     self._payload = deepcopy(data['payload'])  # type: ignore[arg-type]
                     self._sequence = int(data['sequence'])
                     self._predecessor = data.get('predecessor_digest')  # type: ignore[assignment]
@@ -742,6 +772,10 @@ class LearningSync:
                     self._payload = _empty_payload()
                     self._sequence = 0
                     self._predecessor = None
+                    self._materialized_counts = {}
+                    self._materialized_overrides = {}
+                    self._bootstrap.pop('last_materialized', None)
+                    self.pending_path.unlink(missing_ok=True)
                     self._bootstrap['legacy_migrated'] = False
                 self._bootstrap['sync'] = {
                     'enabled': True,
@@ -1087,6 +1121,7 @@ class LearningSync:
                 raise SyncError('replica identity conflict requires recovery')
             if existing_digest == local_digest and existing['sequence'] == envelope['sequence']:
                 self._dirty = False
+                self.pending_path.unlink(missing_ok=True)
                 return
             envelope['predecessor_digest'] = existing_digest
             self._predecessor = existing_digest
@@ -1179,6 +1214,10 @@ class LearningSync:
             self._diagnose('Merged learning data could not be materialized locally: {}'.format(error))
 
     def _materialize_managed_books(self, root: Path, result: SyncResult) -> bool:
+        if not self.managed_library_consent:
+            if result.managed_books:
+                self._diagnose('Managed books are unavailable until managed-library consent is enabled.')
+            return False
         total = sum(int(meta['size']) for meta in result.managed_books.values())
         if total > MAX_MANAGED_LIBRARY_BYTES:
             self._diagnose('Managed library exceeds the configured 1 GiB limit.')
