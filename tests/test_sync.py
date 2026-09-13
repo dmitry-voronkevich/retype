@@ -80,6 +80,15 @@ def _epub(path: Path, data=b'book'):
                          content + '</body></html>')
 
 
+def test_hlc_rejects_unbounded_remote_timestamps():
+    future = int(time.time() * 1000) + 24 * 60 * 60 * 1000 + 1
+
+    with pytest.raises(ValidationError):
+        HLC.from_data({'wall_ms': future, 'counter': 0})
+    with pytest.raises(ValidationError):
+        HLC.from_data({'wall_ms': 0, 'counter': 1_000_001})
+
+
 def test_legacy_path_progress_is_imported_using_file_identity(tmp_path):
     source = tmp_path / 'legacy.epub'
     source.write_bytes(b'legacy book')

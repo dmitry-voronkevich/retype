@@ -36,6 +36,8 @@ SYNC_VERSION = 1
 MAX_REPLICA_BYTES = 5 * 1024 * 1024
 MAX_DEFERRED_BYTES = MAX_REPLICA_BYTES
 MAX_DEFERRED_PARTS = 1024
+MAX_HLC_FUTURE_MS = 24 * 60 * 60 * 1000
+MAX_HLC_COUNTER = 1_000_000
 MAX_MANAGED_BOOK_BYTES = 100 * 1024 * 1024
 MAX_MANAGED_LIBRARY_BYTES = 1024 * 1024 * 1024
 MAX_BACKUPS = 5
@@ -71,7 +73,10 @@ class HLC:
             raise ValidationError('timestamp is not an object')
         wall = data.get('wall_ms')
         counter = data.get('counter')
-        if not _is_int(wall) or wall < 0 or not _is_int(counter) or counter < 0:
+        if (not _is_int(wall) or wall < 0 or
+                wall > int(time.time() * 1000) + MAX_HLC_FUTURE_MS or
+                not _is_int(counter) or counter < 0 or
+                counter > MAX_HLC_COUNTER):
             raise ValidationError('timestamp is malformed')
         return cls(wall, counter)
 
