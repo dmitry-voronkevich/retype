@@ -30,6 +30,19 @@ def _setup():
     return library, book, data, save
 
 
+def test_oversized_managed_books_are_not_indexed(tmp_path):
+    managed = tmp_path / 'managed-books'
+    managed.mkdir()
+    content = b'too large'
+    checksum = sha256(content).hexdigest()
+    (managed / (checksum + '.epub')).write_bytes(content)
+
+    with patch('retype.controllers.library.MAX_MANAGED_BOOK_BYTES', len(content) - 1):
+        library = LibraryController('', [], str(managed))
+
+    assert library._library_items == {}
+
+
 def test_managed_books_are_indexed_from_content_addressed_filenames(tmp_path):
     managed = tmp_path / 'managed-books'
     managed.mkdir()

@@ -541,6 +541,8 @@ class LearningSync:
         self.legacy_dir = Path(legacy_dir)
         self.bootstrap_path = self.local_root / 'local-bootstrap.json'
         self.pending_path = self.local_root / 'pending-sync-replica.json'
+        self.published_path = self.local_root / 'last-published-sync-replica.json'
+        self.deferred_path = self.local_root / 'deferred-sync-mutations.json'
         self.recovery_dir = self.local_root / 'recovery' / 'sync'
         self.managed_library_dir = self.local_root / 'managed-books'
         self._lock = threading.RLock()
@@ -556,6 +558,7 @@ class LearningSync:
         self._clock = HLC(0, 0)
         self._dirty = False
         self._legacy_capture_needed = False
+        self.status = SyncStatus()
         baseline = self._bootstrap.get('last_materialized')
         baseline_counts = baseline.get('chord_counts') \
             if isinstance(baseline, dict) else None
@@ -565,9 +568,9 @@ class LearningSync:
             if isinstance(baseline_counts, dict) else {}
         self._materialized_overrides = dict(baseline_overrides) \
             if isinstance(baseline_overrides, dict) else {}
-        self.status = SyncStatus()
         self._load_published()
         self._load_pending()
+        self._load_deferred()
 
     @property
     def enabled(self) -> bool:
@@ -624,26 +627,55 @@ class LearningSync:
         atomic_write_json(self.bootstrap_path, self._bootstrap,
                           self.recovery_dir / 'bootstrap')
 
-    def _load_published(self) -> None:
-        root = self.sync_root
-        collection = self.collection_id
-        if root is None or collection is None:
-            return
-        path = root / 'replicas' / (self.replica_id + '.json')
+    def _install_published(self, data: Mapping[str, object]) -> None:
+        self._payload = deepcopy(data['payload'])  # type: ignore[arg-type]
+        self._sequence = int(data['sequence'])
+        self._predecessor = data.get('predecessor_digest')  # type: ignore[assignment]
+        self._clock = HLC.from_data(data['hlc'])
+
+    def _read_published_candidate(self, path: Path,
+                                  collection: str) -> dict[str, object] | None:
         if not path.exists():
-            return
+            return None
         try:
             data = validate_envelope(_read_json(path), collection)
             if data['replica_id'] != self.replica_id:
                 raise ValidationError('published replica file ownership is invalid')
-            self._payload = deepcopy(data['payload'])  # type: ignore[arg-type]
-            self._sequence = int(data['sequence'])
-            self._predecessor = data.get('predecessor_digest')  # type: ignore[assignment]
-            self._clock = HLC.from_data(data['hlc'])
+            return data
         except ValidationError as error:
             self._recover_candidate(
                 path,
                 'published local sync data could not be read: {}'.format(error))
+            return None
+
+    def _remember_published_envelope(self, data: Mapping[str, object]) -> None:
+        atomic_write_json(self.published_path, data,
+                          self.recovery_dir / 'published')
+
+    def _load_published(self) -> None:
+        root = self.sync_root
+        collection = self.collection_id
+        if collection is None:
+            return
+        local = self._read_published_candidate(self.published_path, collection)
+        provider = None
+        if root is not None:
+            provider = self._read_published_candidate(
+                root / 'replicas' / (self.replica_id + '.json'), collection)
+        selected = local
+        if provider is not None and (local is None or
+                                     int(provider['sequence']) > int(local['sequence'])):
+            selected = provider
+        elif provider is not None and local is not None:
+            if int(provider['sequence']) < int(local['sequence']):
+                self._diagnose('The provider replica is stale; retaining the last local publication.')
+            elif provider['payload_digest'] != local['payload_digest']:
+                self._diagnose('The provider replica conflicts with the last local publication.')
+        if selected is None:
+            return
+        self._install_published(selected)
+        if provider is selected and local is not selected:
+            self._remember_published_envelope(selected)
 
     def _load_pending(self) -> None:
         if not self.pending_path.exists():
@@ -664,6 +696,46 @@ class LearningSync:
             self._recover_candidate(
                 self.pending_path,
                 'pending local sync data could not be read: {}'.format(error))
+
+    def _load_deferred(self) -> None:
+        if not self.deferred_path.exists():
+            return
+        try:
+            data = _read_json(self.deferred_path)
+            events = data.get('events') if isinstance(data, dict) else None
+            if not isinstance(events, list):
+                raise ValidationError('deferred sync mutations are malformed')
+            loaded = []
+            for event in events:
+                if not isinstance(event, list) or len(event) != 2 or \
+                        not isinstance(event[0], str) or event[0] not in (
+                            'book', 'chords', 'settings') or \
+                        not isinstance(event[1], list) or len(event[1]) != 2:
+                    raise ValidationError('deferred sync mutations are malformed')
+                if event[0] == 'book' and \
+                        (not isinstance(event[1][0], str) or
+                         not isinstance(event[1][1], dict)):
+                    raise ValidationError('deferred book mutation is malformed')
+                if event[0] in ('chords', 'settings') and \
+                        (not isinstance(event[1][0], dict) or
+                         not isinstance(event[1][1], dict)):
+                    raise ValidationError('deferred sync mutation is malformed')
+                loaded.append((event[0], tuple(event[1])))
+            with self._deferred_lock:
+                self._deferred = loaded
+        except ValidationError as error:
+            self._recover_candidate(
+                self.deferred_path,
+                'deferred sync mutations could not be read: {}'.format(error))
+
+    def _persist_deferred_locked(self) -> None:
+        if self._deferred:
+            atomic_write_json(
+                self.deferred_path,
+                {'events': [[kind, list(args)] for kind, args in self._deferred]},
+                self.recovery_dir / 'deferred')
+        else:
+            self.deferred_path.unlink(missing_ok=True)
 
     def _now(self) -> HLC:
         now = int(time.time() * 1000)
@@ -713,18 +785,28 @@ class LearningSync:
     def _defer(self, kind: str, *args: object) -> None:
         with self._deferred_lock:
             self._deferred.append((kind, args))
+            try:
+                self._persist_deferred_locked()
+            except OSError as error:
+                logger.warning('Deferred sync mutation could not be persisted: %s', error)
 
     def _apply_deferred(self) -> None:
-        with self._deferred_lock:
-            events = self._deferred
-            self._deferred = []
-        for kind, args in events:
+        while True:
+            with self._deferred_lock:
+                if not self._deferred:
+                    return
+                event = self._deferred[0]
+            kind, args = event
             if kind == 'book':
                 self.record_book(str(args[0]), args[1])  # type: ignore[arg-type]
             elif kind == 'chords':
                 self.record_chords(args[0], args[1])  # type: ignore[arg-type]
             elif kind == 'settings':
                 self.record_settings(args[0], args[1])  # type: ignore[arg-type]
+            with self._deferred_lock:
+                if self._deferred and self._deferred[0] == event:
+                    self._deferred.pop(0)
+                    self._persist_deferred_locked()
 
     @property
     def has_deferred_changes(self) -> bool:
@@ -1089,6 +1171,11 @@ class LearningSync:
                 self._publish(replicas_dir)
                 replicas = self._scan_replicas(replicas_dir, collection)
                 result = merge_replicas(replicas)
+                while self.has_deferred_changes:
+                    self._apply_deferred()
+                    self._publish(replicas_dir)
+                    replicas = self._scan_replicas(replicas_dir, collection)
+                    result = merge_replicas(replicas)
                 result.status = SyncStatus('synced',
                     'Local changes are saved in the selected sync folder.',
                     time.time(), list(self.status.diagnostics))
@@ -1133,13 +1220,16 @@ class LearningSync:
             if int(existing['sequence']) > int(envelope['sequence']):
                 self._handle_replica_fork(existing, envelope)
                 raise SyncError('replica identity conflict requires recovery')
-            if existing_digest == local_digest and existing['sequence'] == envelope['sequence']:
+            if existing_digest == local_digest and \
+                    existing['sequence'] == envelope['sequence']:
+                self._remember_published_envelope(envelope)
                 self._dirty = False
                 self.pending_path.unlink(missing_ok=True)
                 return
             envelope['predecessor_digest'] = existing_digest
             self._predecessor = existing_digest
         atomic_write_json(target, envelope, self.recovery_dir / 'replicas')
+        self._remember_published_envelope(envelope)
         self._dirty = False
         self.pending_path.unlink(missing_ok=True)
 

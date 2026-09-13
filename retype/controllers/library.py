@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 
 from retype.extras.space import isspaceorempty
 from retype.extras.hashing import generate_file_md5
+from retype.services.sync import MAX_MANAGED_BOOK_BYTES
 
 logger = logging.getLogger(__name__)
 
@@ -111,6 +112,10 @@ class LibraryController(object):
                         continue
                     checksum = entry.name[:-len('.epub')]
                     try:
+                        if entry.stat().st_size > MAX_MANAGED_BOOK_BYTES:
+                            logger.warning('Ignoring oversized managed EPUB: %s',
+                                           entry.path)
+                            continue
                         if _file_sha256(entry.path) != checksum:
                             logger.warning('Ignoring managed EPUB with a hash mismatch: %s',
                                            entry.path)

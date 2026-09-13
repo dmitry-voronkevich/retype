@@ -244,6 +244,85 @@ def test_merge_is_duplicate_reorder_independent_and_lww_ties_are_deterministic(t
         'word': 7}
 
 
+def test_restart_retains_last_publication_when_provider_is_stale(tmp_path):
+    root = tmp_path / 'folder'
+    local = tmp_path / 'one-local'
+    legacy = tmp_path / 'one-legacy'
+    _legacy(legacy, config=_config())
+    first = LearningSync(local, legacy)
+    assert first.configure(root).state == 'ready'
+    first.record_chords({'word': 2}, {})
+    first.sync_now()
+    stale = json.loads((root / 'replicas' /
+                        (first.replica_id + '.json')).read_text())
+    first.record_chords({'word': 3}, {})
+    assert first.sync_now().chord_counts == {'word': 3}
+    (root / 'replicas' / (first.replica_id + '.json')).write_text(
+        json.dumps(stale), encoding='utf-8')
+
+    restarted = LearningSync(local, legacy)
+    result = restarted.sync_now()
+
+    assert result.chord_counts == {'word': 3}
+    assert any('provider replica is stale' in item
+               for item in result.status.diagnostics)
+
+
+def test_deferred_mutations_survive_restart(tmp_path):
+    root = tmp_path / 'folder'
+    local = tmp_path / 'one-local'
+    legacy = tmp_path / 'one-legacy'
+    _legacy(legacy, config=_config())
+    first = LearningSync(local, legacy)
+    assert first.configure(root).state == 'ready'
+    first.sync_now()
+    locked = Event()
+    release = Event()
+
+    def hold_sync_lock():
+        with first._lock:
+            locked.set()
+            release.wait()
+
+    worker = Thread(target=hold_sync_lock)
+    worker.start()
+    assert locked.wait(1)
+    first.record_chords({'word': 1}, {})
+    release.set()
+    worker.join(1)
+    assert (local / 'deferred-sync-mutations.json').exists()
+
+    restarted = LearningSync(local, legacy)
+    assert restarted.sync_now().chord_counts == {'word': 1}
+    assert not (local / 'deferred-sync-mutations.json').exists()
+
+
+def test_post_scan_deferred_settings_are_included_in_result(tmp_path):
+    root = tmp_path / 'folder'
+    sync, _ = _enable(tmp_path, 'one', root, config=_config())
+    sync.sync_now()
+    original_scan = sync._scan_replicas
+    triggered = False
+    changed = _config()
+    changed['auto_newline'] = False
+
+    def scan(directory, collection):
+        nonlocal triggered
+        result = original_scan(directory, collection)
+        if not triggered:
+            triggered = True
+            callback = Thread(target=sync.record_settings,
+                              args=(changed, _config()))
+            callback.start()
+            callback.join(1)
+        return result
+
+    sync._scan_replicas = scan
+    result = sync.sync_now()
+
+    assert result.settings['auto_newline'] is False
+
+
 def test_restart_restores_published_replica_without_fork_recovery(tmp_path):
     root = tmp_path / 'folder'
     local = tmp_path / 'one-local'
