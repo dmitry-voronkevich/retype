@@ -65,6 +65,11 @@ class MainController(QObject):
                                           self.config['user_dir'])
         self._sync_worker = None  # type: _SyncWorker | None
         self._sync_pending = False
+        self._sync_retry_timer = QTimer(self)
+        self._sync_retry_timer.setSingleShot(True)
+        self._sync_retry_timer.timeout.connect(self._retrySync)
+        self._sync_retry_delay = 1000
+        self._sync_closing = False
         if device_reader_factory is not None:
             self._device_reader_factory = device_reader_factory
         elif callable(device_reader):
@@ -465,6 +470,8 @@ class MainController(QObject):
     def setManagedLibraryConsent(self, consent):
         # type: (MainController, bool) -> object
         status = self.learning_sync.set_managed_library_consent(consent)
+        if consent:
+            self.requestSync()
         self._updateSyncPresentation()
         return status
 
@@ -482,7 +489,8 @@ class MainController(QObject):
             self.learning_sync.status.message = str(error)
             self._updateSyncPresentation()
             return None
-        self._repopulateLibrary(self.config['user_dir'], self.config['library_paths'])
+        added = self.library.addManagedBooks({metadata['digest']: metadata})
+        self.views[View.shelf_view].addBooks(added)
         self.requestSync()
         self._updateSyncPresentation()
         return metadata
@@ -490,7 +498,9 @@ class MainController(QObject):
     def requestSync(self):
         # type: (MainController) -> None
         """Run provider-folder I/O outside the Qt/typing event path."""
-        if not self.learning_sync.enabled:
+        if self._sync_retry_timer.isActive():
+            self._sync_retry_timer.stop()
+        if not self.learning_sync.enabled or self._sync_closing:
             return
         if self._sync_worker is not None and self._sync_worker.isRunning():
             self._sync_pending = True
@@ -502,6 +512,17 @@ class MainController(QObject):
         worker.finished.connect(worker.deleteLater)
         worker.start()
         self._updateSyncPresentation()
+
+    def _retrySync(self):
+        if self.learning_sync.enabled and not self._sync_closing:
+            self.requestSync()
+
+    def _scheduleSyncRetry(self):
+        if self._sync_closing or not self.learning_sync.enabled:
+            return
+        if not self._sync_retry_timer.isActive():
+            self._sync_retry_timer.start(self._sync_retry_delay)
+            self._sync_retry_delay = min(self._sync_retry_delay * 2, 30000)
 
     def _scheduleSync(self):
         # type: (MainController) -> None
@@ -529,6 +550,8 @@ class MainController(QObject):
 
     def _syncCompleted(self, result):
         # type: (MainController, object) -> None
+        waiting_for_provider = isinstance(result, SyncResult) and \
+            result.status.state == 'waiting'
         if isinstance(result, SyncResult):
             book_view = self.views.get(View.book_view) \
                 if hasattr(self, 'views') else None
@@ -544,9 +567,11 @@ class MainController(QObject):
                     self._applySyncedSettingsToLiveViews()
             if result.save and hasattr(self, 'library'):
                 self.library.applyMergedSave(result.save)
-            if result.managed_books_materialized and hasattr(self, 'library'):
-                self._repopulateLibrary(self.config['user_dir'],
-                                         self.config['library_paths'])
+            if result.managed_books and hasattr(self, 'library') and \
+                    self.learning_sync.managed_library_consent:
+                added = self.library.addManagedBooks(result.managed_books)
+                if added:
+                    self.views[View.shelf_view].addBooks(added)
             if hasattr(self, 'views') and View.book_view in self.views:
                 self.chord_progress = ChordMasteryProgress(
                     ChordMasteryStorage(self.config['user_dir'], self._recordSyncChords))
@@ -564,9 +589,15 @@ class MainController(QObject):
                         self.views[View.book_view].setBook(book, book.save_data)
         self._updateSyncPresentation()
         self._sync_worker = None
-        if self._sync_pending or self.learning_sync.has_deferred_changes:
+        if waiting_for_provider:
+            self._scheduleSyncRetry()
             self._sync_pending = False
+        elif self._sync_pending or self.learning_sync.has_deferred_changes:
+            self._sync_pending = False
+            self._sync_retry_delay = 1000
             self.requestSync()
+        else:
+            self._sync_retry_delay = 1000
 
     def _updateSyncPresentation(self):
         # type: (MainController) -> None
@@ -576,6 +607,8 @@ class MainController(QObject):
 
     def _syncOnClosing(self):
         # type: (MainController) -> None
+        self._sync_closing = True
+        self._sync_retry_timer.stop()
         book_view = self.views.get(View.book_view) \
             if hasattr(self, 'views') else None
         if book_view is not None:

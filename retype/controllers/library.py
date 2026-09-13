@@ -35,10 +35,7 @@ class LibraryController(object):
         self.library_paths = list(library_paths)
         self.managed_library_path = managed_library_path
         self.on_save = on_save
-        indexed_paths = list(library_paths)
-        if managed_library_path and managed_library_path not in indexed_paths:
-            indexed_paths.append(managed_library_path)
-        self._library_items = self.indexLibrary(indexed_paths)
+        self._library_items = self.indexLibrary(self.library_paths)
         self.books = None  # type: dict[int, BookWrapper] | None
         self.save_file_contents = None  # type: Save | None
 
@@ -93,6 +90,28 @@ class LibraryController(object):
             book = BookWrapper(item, self.load(item))
             self.books[idn] = book
 
+    def addManagedBooks(self, managed_books):
+        # type: (LibraryController, dict[str, dict[str, object]]) -> list[BookWrapper]
+        if self.books is None or not self.managed_library_path:
+            return []
+        existing = {book.checksum for book in self.books.values()}
+        next_id = max(self._library_items, default=-1) + 1
+        added = []
+        for checksum in managed_books:
+            if checksum in existing:
+                continue
+            path = os.path.join(self.managed_library_path, checksum + '.epub')
+            if not os.path.isfile(path):
+                continue
+            item = LibraryItem(next_id, path, checksum)
+            self._library_items[next_id] = item
+            book = BookWrapper(item, self.load(item))
+            self.books[next_id] = book
+            added.append(book)
+            existing.add(checksum)
+            next_id += 1
+        return added
+
     def setBook(self, book_id, book_view, switchView):
         # type: (LibraryController, int, BookView, pyqtBoundSignal) -> None
         if book_view.book:
@@ -130,7 +149,7 @@ class LibraryController(object):
             if isinstance(data, dict):
                 book.save_data = data
                 if isinstance(data.get('progress'), (int, float)):
-                    book.progress = data['progress']
+                    book.updateProgress(data['progress'])
 
     def save(self, book, data):
         # type: (LibraryController, BookWrapper, SaveData) -> bool

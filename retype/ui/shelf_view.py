@@ -55,12 +55,11 @@ class ShelfView(QWidget):
         self.layout_.setContentsMargins(0, 0, 0, 0)
         self.layout_.addWidget(self.shelves)
 
-    def _populate(self):
-        # type: (ShelfView) -> None
-        if self._library.books is None:
-            logger.error('_populate: _library.books is None')
-            return
-        for book in self._library.books.values():
+    def _populate(self, books=None):
+        # type: (ShelfView, object) -> None
+        if books is None:
+            books = self._library.books.values() if self._library.books is not None else []
+        for book in books:
             loadBook = self._controller.loadBookRequested
             item = ShelfItem(book, loadBook)
             if item.book.valid:
@@ -68,6 +67,10 @@ class ShelfView(QWidget):
             else:
                 logger.warning("_populate: skipping invalid book "
                                f"{item.book.idn}:{item.book.path}")
+
+    def addBooks(self, books):
+        # type: (ShelfView, object) -> None
+        self._populate(books)
 
     def repopulate(self):
         # type: (ShelfView) -> None

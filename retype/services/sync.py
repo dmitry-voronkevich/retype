@@ -555,6 +555,7 @@ class LearningSync:
         self._predecessor: str | None = None
         self._clock = HLC(0, 0)
         self._dirty = False
+        self._legacy_capture_needed = False
         baseline = self._bootstrap.get('last_materialized')
         baseline_counts = baseline.get('chord_counts') \
             if isinstance(baseline, dict) else None
@@ -777,6 +778,7 @@ class LearningSync:
                     self._bootstrap.pop('last_materialized', None)
                     self.pending_path.unlink(missing_ok=True)
                     self._bootstrap['legacy_migrated'] = False
+                    self._legacy_capture_needed = False
                 self._bootstrap['sync'] = {
                     'enabled': True,
                     'root': str(root),
@@ -787,6 +789,7 @@ class LearningSync:
                 if previous_collection == collection_id and \
                         self._bootstrap.get('legacy_migrated') is True:
                     self._capture_local_only_changes()
+                    self._legacy_capture_needed = False
                 else:
                     self._migrate_legacy_once()
                 self.status = SyncStatus('ready',
@@ -819,7 +822,10 @@ class LearningSync:
 
     def set_legacy_dir(self, directory: str | Path) -> None:
         with self._lock:
-            self.legacy_dir = Path(directory)
+            directory = Path(directory)
+            self._legacy_capture_needed = self._legacy_capture_needed or \
+                directory != self.legacy_dir
+            self.legacy_dir = directory
 
     def _migrate_legacy_once(self) -> None:
         if self._bootstrap.get('legacy_migrated') is True:
@@ -875,7 +881,11 @@ class LearningSync:
                 for identity, value in raw_save.items():
                     if isinstance(identity, str) and _HEX.fullmatch(identity) and \
                             _validate_save(value) is not None:
-                        self.record_book(identity, value)
+                        prior = self._payload.get('books', {})
+                        prior_value = prior.get(identity) if isinstance(prior, dict) else None
+                        if _validate_save(prior_value) is None or \
+                                _progress_key(value) > _progress_key(prior_value):
+                            self.record_book(identity, value)
         except ValidationError as error:
             if save_path.exists():
                 self._diagnose('Local-only book progress could not be queued: {}'.format(error))
@@ -1067,6 +1077,10 @@ class LearningSync:
             try:
                 if not root.is_dir():
                     raise SyncError('the selected folder is unavailable')
+                if self._legacy_capture_needed and \
+                        self._bootstrap.get('last_materialized') is not None:
+                    self._capture_local_only_changes()
+                    self._legacy_capture_needed = False
                 if self._collection_manifest(root) != collection:
                     raise SyncError('the selected folder belongs to a different collection')
                 replicas_dir = root / 'replicas'
@@ -1181,7 +1195,11 @@ class LearningSync:
                 save_valid = not save_path.exists()
                 self._diagnose('Existing local progress was left untouched: {}'.format(error))
             materialized = dict(current) if isinstance(current, dict) else {}
-            materialized.update(deepcopy(result.save))
+            for identity, data in result.save.items():
+                current_data = materialized.get(identity)
+                if _validate_save(current_data) is None or \
+                        _progress_key(data) > _progress_key(current_data):
+                    materialized[identity] = deepcopy(data)
             if save_valid and (result.save or save_path.exists()):
                 atomic_write_json(save_path, materialized,
                                   self.recovery_dir / 'materialized')
@@ -1200,7 +1218,10 @@ class LearningSync:
                 self._diagnose('Existing local chord progress has an unsupported format and was left untouched.')
             raw_progress = chord_data.get('progress', {})
             progress = dict(raw_progress) if isinstance(raw_progress, dict) else {}
-            progress.update(result.chord_counts)
+            for key, count in result.chord_counts.items():
+                current_count = progress.get(key)
+                if not _is_int(current_count) or count > current_count:
+                    progress[key] = count
             if chord_valid and (result.chord_counts or result.chord_overrides or chord_path.exists()):
                 chord_data['version'] = 2
                 chord_data['progress'] = progress

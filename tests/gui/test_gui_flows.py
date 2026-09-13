@@ -93,6 +93,22 @@ def test_learning_sync_is_opt_in_and_disables_without_deleting_folder(
     assert panel.disable_button.isEnabled() is False
 
 
+def test_learning_sync_retries_after_folder_returns(controller, qtbot, tmp_path):
+    folder = tmp_path / 'sync-folder'
+    controller.enableSync(str(folder))
+    qtbot.waitUntil(
+        lambda: controller.learning_sync.status.state == 'synced', timeout=5000)
+
+    unavailable = tmp_path / 'unavailable-folder'
+    folder.rename(unavailable)
+    controller.requestSync()
+    qtbot.waitUntil(
+        lambda: controller.learning_sync.status.state == 'waiting', timeout=5000)
+    unavailable.rename(folder)
+    qtbot.waitUntil(
+        lambda: controller.learning_sync.status.state == 'synced', timeout=5000)
+
+
 def test_customisation_dialog_refreshes_mastery_on_reopen(
         controller, qtbot):
     book_view = controller.views[View.book_view]
