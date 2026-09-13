@@ -94,6 +94,7 @@ class SyncResult:
     # retained LWW value makes a later "recent position" recovery UX possible.
     book_resumes: dict[str, dict[str, object]] = field(default_factory=dict)
     managed_books_materialized: bool = False
+    managed_books_ready: set[str] = field(default_factory=set)
 
 
 def _is_int(value: object) -> bool:
@@ -972,20 +973,39 @@ class LearningSync:
                 self.status = SyncStatus(
                     'waiting', 'Local sync state could not be saved; retrying.',
                     time.time(), list(self.status.diagnostics))
+                raise
+
+    def _touch_or_defer(self, kind: str, *args: object,
+                        deferred_id: str | None = None) -> None:
+        try:
+            self._touch()
+        except OSError:
+            if deferred_id is not None:
+                raise
+            if self._defer(kind, *args):
+                return
+            try:
+                self._bootstrap['legacy_migrated'] = False
+                self._save_bootstrap()
+            except OSError as error:
+                self._diagnose(
+                    'Local sync recovery state could not be written: {}'.format(error))
 
     def _diagnose(self, message: str) -> None:
         logger.warning('Learning sync: %s', message)
         self.status.diagnostics.append(message)
         self.status.diagnostics = self.status.diagnostics[-20:]
 
-    def _defer(self, kind: str, *args: object) -> None:
+    def _defer(self, kind: str, *args: object) -> bool:
         event = (self.collection_id or '', str(uuid4()), kind, args)
         with self._deferred_lock:
             self._deferred.append(event)
             try:
                 self._persist_deferred_locked()
+                return True
             except (OSError, SyncError) as error:
                 logger.warning('Deferred sync mutation could not be persisted: %s', error)
+                return False
 
     def _prune_deferred_markers(self) -> None:
         markers = self._payload.get('_applied_deferred')
@@ -1342,7 +1362,8 @@ class LearningSync:
             books[identity] = valid
             if _deferred_id is not None:
                 self._mark_deferred_applied(_deferred_id)
-            self._touch()
+            self._touch_or_defer('book', identity, dict(data),
+                                  deferred_id=_deferred_id)
         finally:
             self._lock.release()
 
@@ -1374,7 +1395,8 @@ class LearningSync:
                 # Subsequent local callbacks carry a global total. Remember
                 # this observation so each newly recorded use contributes one,
                 # rather than repeatedly adding all local uses since a scan.
-                self._materialized_counts[key] = total
+                self._materialized_counts[key] = max(
+                    self._materialized_counts.get(key, 0), total)
             current = {key: value for key, value in overrides.items()
                        if isinstance(key, str) and key and isinstance(value, bool)}
             for key in set(current) | set(self._materialized_overrides):
@@ -1396,7 +1418,8 @@ class LearningSync:
                 self._mark_deferred_applied(_deferred_id)
                 changed = True
             if changed:
-                self._touch()
+                self._touch_or_defer('chords', dict(progress), dict(overrides),
+                                      deferred_id=_deferred_id)
         finally:
             self._lock.release()
 
@@ -1428,7 +1451,9 @@ class LearningSync:
                 self._mark_deferred_applied(_deferred_id)
                 changed = True
             if changed:
-                self._touch()
+                self._touch_or_defer('settings', deepcopy(dict(config)),
+                                      deepcopy(dict(previous)),
+                                      deferred_id=_deferred_id)
         finally:
             self._lock.release()
 
@@ -1480,8 +1505,9 @@ class LearningSync:
                 self._materialized_overrides = dict(result.chord_overrides)
                 self._remember_materialized(result)
                 self._materialize_legacy_state(result)
-                result.managed_books_materialized = self._materialize_managed_books(
+                result.managed_books_ready = self._materialize_managed_books(
                     root, result)
+                result.managed_books_materialized = bool(result.managed_books_ready)
                 result.status.diagnostics = list(self.status.diagnostics)
                 if result.status.diagnostics:
                     result.status.message = (
@@ -1620,16 +1646,16 @@ class LearningSync:
         except OSError as error:
             self._diagnose('Merged learning data could not be materialized locally: {}'.format(error))
 
-    def _materialize_managed_books(self, root: Path, result: SyncResult) -> bool:
+    def _materialize_managed_books(self, root: Path, result: SyncResult) -> set[str]:
         if not self.managed_library_consent:
             if result.managed_books:
                 self._diagnose('Managed books are unavailable until managed-library consent is enabled.')
-            return False
+            return set()
         total = sum(int(meta['size']) for meta in result.managed_books.values())
         if total > MAX_MANAGED_LIBRARY_BYTES:
             self._diagnose('Managed library exceeds the configured 1 GiB limit.')
-            return False
-        materialized = False
+            return set()
+        ready = set()
         for digest, metadata in result.managed_books.items():
             source = root / 'books' / 'sha256' / (digest + '.epub')
             destination = self.managed_library_dir / (digest + '.epub')
@@ -1647,11 +1673,11 @@ class LearningSync:
                 if not destination.exists() or destination.stat().st_size != metadata['size'] or \
                         _file_sha256(destination) != digest:
                     _copy_atomic(source, destination)
-                    materialized = True
+                ready.add(digest)
             except OSError as error:
                 self._diagnose('Managed book {} is unavailable: {}'.format(
                     metadata['original_filename'], error))
-        return materialized
+        return ready
 
     def import_book(self, source: str | Path, title: str | None = None) -> dict[str, object]:
         """Explicitly copy one user-selected EPUB into the managed library."""

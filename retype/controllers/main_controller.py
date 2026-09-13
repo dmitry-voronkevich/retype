@@ -507,7 +507,8 @@ class MainController(QObject):
             self.learning_sync.status.message = str(error)
             self._updateSyncPresentation()
             return None
-        added = self.library.addManagedBooks({metadata['digest']: metadata})
+        added = self.library.addManagedBooks(
+            {metadata['digest']: metadata}, {metadata['digest']})
         self.views[View.shelf_view].addBooks(added)
         self.requestSync()
         self._updateSyncPresentation()
@@ -587,7 +588,8 @@ class MainController(QObject):
                 self.library.applyMergedSave(result.save)
             if result.managed_books and hasattr(self, 'library') and \
                     self.learning_sync.managed_library_consent:
-                added = self.library.addManagedBooks(result.managed_books)
+                added = self.library.addManagedBooks(
+                    result.managed_books, result.managed_books_ready)
                 if added:
                     self.views[View.shelf_view].addBooks(added)
             if result.status.state == 'synced':

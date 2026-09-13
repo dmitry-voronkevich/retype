@@ -197,8 +197,8 @@ class LibraryController(object):
             book = BookWrapper(item, self.load(item))
             self.books[idn] = book
 
-    def addManagedBooks(self, managed_books):
-        # type: (LibraryController, dict[str, dict[str, object]]) -> list[BookWrapper]
+    def addManagedBooks(self, managed_books, validated_checksums=None):
+        # type: (LibraryController, dict[str, dict[str, object]], set[str] | None) -> list[BookWrapper]
         if self.books is None or not self.managed_library_path:
             return []
         existing = {book.checksum for book in self.books.values()}
@@ -214,8 +214,11 @@ class LibraryController(object):
             try:
                 stat = os.stat(path)
                 if stat.st_size > MAX_MANAGED_BOOK_BYTES or \
-                        stat.st_size != metadata.get('size') or \
-                        _file_sha256(path) != checksum or not _is_epub_file(path):
+                        stat.st_size != metadata.get('size'):
+                    logger.warning('Ignoring invalid managed EPUB: %s', path)
+                    continue
+                if checksum not in (validated_checksums or ()) and \
+                        (_file_sha256(path) != checksum or not _is_epub_file(path)):
                     logger.warning('Ignoring invalid managed EPUB: %s', path)
                     continue
             except OSError as error:
