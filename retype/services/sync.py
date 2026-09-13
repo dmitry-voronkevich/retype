@@ -105,8 +105,11 @@ def _is_int(value: object) -> bool:
 
 
 def _json_bytes(data: object) -> bytes:
-    return json.dumps(data, sort_keys=True, separators=(',', ':'),
-                      ensure_ascii=False).encode('utf-8')
+    try:
+        return json.dumps(data, sort_keys=True, separators=(',', ':'),
+                          ensure_ascii=False).encode('utf-8')
+    except UnicodeEncodeError as error:
+        raise ValidationError('JSON contains invalid Unicode') from error
 
 
 def _digest(data: object) -> str:
@@ -1160,6 +1163,14 @@ class LearningSync:
                     }, self.recovery_dir / 'manifest')
                 previous_collection = self.collection_id
                 if previous_collection != collection_id:
+                    if self._bootstrap_recovered:
+                        if self.pending_path.exists():
+                            self._recover_candidate(
+                                self.pending_path,
+                                'pending state was retained after malformed bootstrap recovery')
+                        if self.deferred_path.exists() or self.deferred_parts_dir.is_dir():
+                            self._recover_deferred_state(
+                                'deferred state was retained after malformed bootstrap recovery')
                     with self._deferred_lock:
                         self._deferred.clear()
                         self._persist_deferred_locked()
@@ -1171,14 +1182,6 @@ class LearningSync:
                     self._materialized_counts = {}
                     self._materialized_overrides = {}
                     self._bootstrap.pop('last_materialized', None)
-                    if self._bootstrap_recovered:
-                        if self.pending_path.exists():
-                            self._recover_candidate(
-                                self.pending_path,
-                                'pending state was retained after malformed bootstrap recovery')
-                        if self.deferred_path.exists() or self.deferred_parts_dir.is_dir():
-                            self._recover_deferred_state(
-                                'deferred state was retained after malformed bootstrap recovery')
                     self.pending_path.unlink(missing_ok=True)
                     self._bootstrap['legacy_migrated'] = False
                     self._legacy_capture_needed = False
@@ -1620,12 +1623,6 @@ class LearningSync:
                                 self._finalizing_counts_baseline[key] = max(
                                     self._finalizing_counts_baseline.get(key, 0), total)
                     self._materialized_counts = dict(result.chord_counts)
-                    if pending_chords:
-                        pending_keys = {
-                            key for progress in pending_chords for key in progress
-                            if isinstance(key, str) and key}
-                        for key in pending_keys:
-                            self._materialized_counts[key] = baseline.get(key, 0)
                 self._materialized_overrides = dict(result.chord_overrides)
                 self._remember_materialized(result)
                 result.status.diagnostics = list(self.status.diagnostics)

@@ -11,7 +11,7 @@ from retype.ui import (MainWin, ShelfView, BookView, CustomisationDialog,
 from retype.games.typespeed import TypespeedView
 from retype.games.steno import StenoView
 from retype.controllers import SafeConfig, MenuController, LibraryController
-from retype.controllers.library import BookWrapper
+from retype.controllers.library import BookWrapper, is_valid_managed_book
 from retype.console import Console
 from retype.services.icon_set import Icons
 from retype.services.platform import platform_policy
@@ -55,6 +55,8 @@ class _ManagedLibraryLoadWorker(QThread):
     def run(self):
         books = {}
         for item, save_data in self.load_data:
+            if not is_valid_managed_book(item.path, item.checksum):
+                continue
             book = BookWrapper(item, save_data, report_errors=False)
             books[item.idn] = book
         self.completed.emit(books)
@@ -667,8 +669,9 @@ class MainController(QObject):
                     self.config.populate(updated)
                     self.config.save()
                     self._applySyncedSettingsToLiveViews()
+            merged_save_changed = set()
             if result.save and hasattr(self, 'library'):
-                self.library.applyMergedSave(result.save)
+                merged_save_changed = self.library.applyMergedSave(result.save)
             if result.managed_books and hasattr(self, 'library') and \
                     self.learning_sync.managed_library_consent:
                 added = self.library.addManagedBooks(
@@ -686,7 +689,7 @@ class MainController(QObject):
                         dialog.chordProgress = self.chord_progress
                         if hasattr(dialog, 'chord_mastery'):
                             dialog.chord_mastery.setProgress(self.chord_progress)
-                if active_checksum in (result.save if result.save else {}):
+                if active_checksum in merged_save_changed:
                     book = next((item for item in self.library.books.values()
                                  if item.checksum == active_checksum), None) \
                         if self.library.books else None

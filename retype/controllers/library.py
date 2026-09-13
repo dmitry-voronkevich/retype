@@ -30,6 +30,15 @@ def _file_sha256(path):
     return digest.hexdigest()
 
 
+def is_valid_managed_book(path, checksum):
+    try:
+        stat = os.stat(path)
+        return stat.st_size <= MAX_MANAGED_BOOK_BYTES and \
+            _file_sha256(path) == checksum and _is_loadable_epub_file(path)
+    except OSError:
+        return False
+
+
 def _save_position_key(data):
     # type: (object) -> tuple[float, int, int] | None
     if not isinstance(data, dict):
@@ -154,6 +163,10 @@ class LibraryController(object):
                             logger.warning('Ignoring oversized managed EPUB: %s',
                                            entry.path)
                             continue
+                        if not _is_epub_file(entry.path):
+                            logger.warning('Ignoring invalid managed EPUB: %s',
+                                           entry.path)
+                            continue
                         record = index.get(checksum)
                         unchanged = isinstance(record, dict) and \
                             record.get('size') == stat.st_size and \
@@ -161,14 +174,6 @@ class LibraryController(object):
                             record.get('ctime_ns') == stat.st_ctime_ns and \
                             record.get('inode') == stat.st_ino
                         if not unchanged:
-                            if _file_sha256(entry.path) != checksum:
-                                logger.warning('Ignoring managed EPUB with a hash mismatch: %s',
-                                               entry.path)
-                                continue
-                            if not _is_epub_file(entry.path):
-                                logger.warning('Ignoring invalid managed EPUB: %s',
-                                               entry.path)
-                                continue
                             index[checksum] = {
                                 'size': stat.st_size,
                                 'mtime_ns': stat.st_mtime_ns,
@@ -216,6 +221,8 @@ class LibraryController(object):
         # type: (LibraryController, dict[int, BookWrapper]) -> list[BookWrapper]
         if self.books is None:
             self.books = {}
+        if self.save_file_contents is None:
+            self.loadSaveFile()
         existing = {book.checksum for book in self.books.values()}
         installed = []
         for idn, book in books.items():
@@ -224,6 +231,11 @@ class LibraryController(object):
             elif book.checksum in existing:
                 self._library_items.pop(idn, None)
             else:
+                current = self.save_file_contents.get(book.checksum) \
+                    if self.save_file_contents else None
+                if _save_position_key(current) is not None:
+                    book.save_data = deepcopy(current)
+                    book.updateProgress(current['progress'])
                 self.books[idn] = book
                 existing.add(book.checksum)
                 installed.append(book)
@@ -292,24 +304,27 @@ class LibraryController(object):
         book_view.display.centreAroundCursor()
 
     def applyMergedSave(self, merged_save):
-        # type: (LibraryController, Save) -> None
+        # type: (LibraryController, Save) -> set[str]
         if self.save_file_contents is None:
             self.loadSaveFile()
         assert self.save_file_contents is not None
+        changed = set()
         for key, data in merged_save.items():
             current = self.save_file_contents.get(key)
             if _save_position_key(current) is None or \
                     (_save_position_key(data) is not None and
                      _save_position_key(current) < _save_position_key(data)):
                 self.save_file_contents[key] = deepcopy(data)
+                changed.add(key)
         if self.books is None:
-            return
+            return changed
         for book in self.books.values():
             data = self.save_file_contents.get(book.checksum)
             if isinstance(data, dict):
                 book.save_data = data
                 if isinstance(data.get('progress'), (int, float)):
                     book.updateProgress(data['progress'])
+        return changed
 
     def save(self, book, data):
         # type: (LibraryController, BookWrapper, SaveData) -> bool
