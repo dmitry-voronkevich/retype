@@ -44,6 +44,27 @@ class _SyncWorker(QThread):
         self.completed.emit(self.sync.sync_now())
 
 
+class _ManagedBookImportWorker(QThread):
+    completed = pyqtSignal(object)
+    failed = pyqtSignal(str)
+
+    def __init__(self, sync, path):
+        # type: (_ManagedBookImportWorker, LearningSync, str) -> None
+        QThread.__init__(self)
+        self.sync = sync
+        self.path = path
+
+    def run(self):
+        # type: (_ManagedBookImportWorker) -> None
+        try:
+            self.completed.emit(self.sync.import_book(self.path))
+        except SyncError as error:
+            self.failed.emit(str(error))
+        except Exception as error:
+            logger.exception("Managed EPUB import failed")
+            self.failed.emit('managed EPUB import failed: {}'.format(error))
+
+
 class MainController(QObject):
     views = {}  # type: ViewsDict  # type: ignore[assignment]
     switchViewRequested = pyqtSignal(int)
@@ -64,6 +85,7 @@ class MainController(QObject):
         self.learning_sync = LearningSync(bootstrap_root,
                                           self.config['user_dir'])
         self._sync_worker = None  # type: _SyncWorker | None
+        self._managed_book_worker = None  # type: _ManagedBookImportWorker | None
         self._sync_pending = False
         self._sync_retry_timer = QTimer(self)
         self._sync_retry_timer.setSingleShot(True)
@@ -500,19 +522,35 @@ class MainController(QObject):
         return status
 
     def importManagedBook(self, path):
-        # type: (MainController, str) -> object
-        try:
-            metadata = self.learning_sync.import_book(path)
-        except SyncError as error:
-            self.learning_sync.status.message = str(error)
-            self._updateSyncPresentation()
-            return None
+        # type: (MainController, str) -> None
+        worker = self._managed_book_worker
+        if self._sync_closing or (worker is not None and worker.isRunning()):
+            return
+        self.learning_sync.status.message = 'Importing the selected EPUB…'
+        worker = _ManagedBookImportWorker(self.learning_sync, path)
+        self._managed_book_worker = worker
+        worker.completed.connect(self._managedBookImportCompleted)
+        worker.failed.connect(self._managedBookImportFailed)
+        worker.finished.connect(worker.deleteLater)
+        worker.start()
+        self._updateSyncPresentation()
+
+    def _managedBookImportCompleted(self, metadata):
+        # type: (MainController, dict[str, object]) -> None
+        self._managed_book_worker = None
         added = self.library.addManagedBooks(
             {metadata['digest']: metadata}, {metadata['digest']})
         self.views[View.shelf_view].addBooks(added)
+        self.learning_sync.status.message = (
+            'The EPUB was added to the managed library.')
         self.requestSync()
         self._updateSyncPresentation()
-        return metadata
+
+    def _managedBookImportFailed(self, message):
+        # type: (MainController, str) -> None
+        self._managed_book_worker = None
+        self.learning_sync.status.message = message
+        self._updateSyncPresentation()
 
     def requestSync(self):
         # type: (MainController) -> None
@@ -637,6 +675,9 @@ class MainController(QObject):
         worker = self._sync_worker
         if worker is not None and worker.isRunning():
             worker.wait()
+        import_worker = self._managed_book_worker
+        if import_worker is not None and import_worker.isRunning():
+            import_worker.wait()
         if self.learning_sync.enabled:
             # This is a local-folder write attempt, not a claim that a cloud
             # provider has uploaded it to any other device.

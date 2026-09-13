@@ -335,6 +335,45 @@ def test_deferred_mutations_survive_restart(tmp_path):
     assert not (local / 'deferred-sync-mutations.json').exists()
 
 
+def test_deferred_chord_callback_during_final_materialization_is_retained(tmp_path):
+    root = tmp_path / 'folder'
+    sender, _ = _enable(
+        tmp_path, 'sender', root,
+        chords={'version': 2, 'progress': {'word': 5}}, config=_config())
+    sender.sync_now()
+    receiver, _ = _enable(tmp_path, 'receiver', root, config=_config())
+    original_materialize = receiver._materialize_legacy_state
+    triggered = False
+
+    def materialize(result):
+        nonlocal triggered
+        if not triggered:
+            triggered = True
+            callback = Thread(target=receiver.record_chords,
+                              args=({'word': 1}, {}))
+            callback.start()
+            callback.join(1)
+            assert not callback.is_alive()
+        original_materialize(result)
+
+    receiver._materialize_legacy_state = materialize
+    result = receiver.sync_now()
+
+    assert result.chord_counts == {'word': 6}
+
+
+def test_stale_deferred_marker_cleanup_failure_is_diagnostic(tmp_path):
+    sync, _ = _enable(tmp_path, 'one', tmp_path / 'folder', config=_config())
+    sync.sync_now()
+    sync._payload['_applied_deferred'] = ['stale-event']
+
+    with patch.object(sync, '_touch', side_effect=OSError('disk full')):
+        sync._prune_deferred_markers()
+
+    assert any('Stale deferred markers' in item
+               for item in sync.status.diagnostics)
+
+
 def test_post_scan_deferred_settings_are_included_in_result(tmp_path):
     root = tmp_path / 'folder'
     sync, _ = _enable(tmp_path, 'one', root, config=_config())

@@ -1021,7 +1021,11 @@ class LearningSync:
         else:
             self._payload.pop('_applied_deferred', None)
         if self.enabled:
-            self._touch()
+            try:
+                self._touch()
+            except OSError as error:
+                self._diagnose(
+                    'Stale deferred markers could not be cleared: {}'.format(error))
 
     def _deferred_marker_present(self, event_id: str) -> bool:
         markers = self._payload.get('_applied_deferred', [])
@@ -1501,13 +1505,26 @@ class LearningSync:
                     'Local changes are saved in the selected sync folder.',
                     time.time(), list(self.status.diagnostics))
                 self.status = result.status
-                self._materialized_counts = dict(result.chord_counts)
-                self._materialized_overrides = dict(result.chord_overrides)
-                self._remember_materialized(result)
                 self._materialize_legacy_state(result)
                 result.managed_books_ready = self._materialize_managed_books(
                     root, result)
                 result.managed_books_materialized = bool(result.managed_books_ready)
+                while self.has_deferred_changes:
+                    self._apply_deferred()
+                    self._publish(replicas_dir)
+                    replicas = self._scan_replicas(replicas_dir, collection)
+                    result = merge_replicas(replicas)
+                    result.status = SyncStatus('synced',
+                        'Local changes are saved in the selected sync folder.',
+                        time.time(), list(self.status.diagnostics))
+                    self.status = result.status
+                    self._materialize_legacy_state(result)
+                    result.managed_books_ready = self._materialize_managed_books(
+                        root, result)
+                    result.managed_books_materialized = bool(result.managed_books_ready)
+                self._materialized_counts = dict(result.chord_counts)
+                self._materialized_overrides = dict(result.chord_overrides)
+                self._remember_materialized(result)
                 result.status.diagnostics = list(self.status.diagnostics)
                 if result.status.diagnostics:
                     result.status.message = (
