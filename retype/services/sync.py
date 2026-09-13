@@ -102,6 +102,7 @@ class SyncResult:
     managed_books_materialized: bool = False
     managed_books_ready: set[str] = field(default_factory=set)
     managed_books_loaded: dict[str, object] = field(default_factory=dict)
+    chord_revision: int = 0
 
 
 def _is_int(value: object) -> bool:
@@ -651,6 +652,7 @@ class LearningSync:
         self._pending_touch_durable = False
         self._legacy_capture_needed = False
         self._settings_revisions: dict[str, int] = {}
+        self._chord_revision = 0
         baseline = self._bootstrap.get('last_materialized')
         baseline_counts = baseline.get('chord_counts') \
             if isinstance(baseline, dict) else None
@@ -695,6 +697,10 @@ class LearningSync:
         sync = self._bootstrap.get('sync')
         value = sync.get('root') if isinstance(sync, dict) else None
         return Path(value) if isinstance(value, str) and value else None
+
+    @property
+    def chord_revision(self) -> int:
+        return self._chord_revision
 
     @property
     def managed_library_consent(self) -> bool:
@@ -848,22 +854,11 @@ class LearningSync:
                 data = validate_envelope(data, collection)
                 if data['replica_id'] == self.replica_id and \
                         int(data['sequence']) >= self._sequence:
-                    previous_chords = self._payload.get('chords', {})
-                    pending_chords = data['payload'].get('chords', {}) \
-                        if isinstance(data.get('payload'), dict) else {}
-                    previous_counts = previous_chords.get('counts', {}) \
-                        if isinstance(previous_chords, dict) else {}
-                    pending_counts = pending_chords.get('counts', {}) \
-                        if isinstance(pending_chords, dict) else {}
-                    if isinstance(previous_counts, dict) and \
-                            isinstance(pending_counts, dict):
-                        published_counts = _valid_count_map(previous_counts)
-                        for key, count in _valid_count_map(pending_counts).items():
-                            delta = count - published_counts.get(key, 0)
-                            if delta > 0:
-                                self._local_chord_counts[key] = max(
-                                    self._local_chord_counts.get(key, 0),
-                                    self._local_chord_counts.get(key, 0) + delta)
+                    pending_local_counts = _valid_count_map(
+                        data.get('local_chord_counts'))
+                    for key, count in pending_local_counts.items():
+                        self._local_chord_counts[key] = max(
+                            self._local_chord_counts.get(key, 0), count)
                     self._payload = deepcopy(data['payload'])  # type: ignore[arg-type]
                     self._sequence = int(data['sequence'])
                     self._predecessor = data.get('predecessor_digest')  # type: ignore[assignment]
@@ -1125,6 +1120,7 @@ class LearningSync:
             'collection_id': self.collection_id,
             'replica_id': self.replica_id,
             'sequence': self._sequence,
+            'local_chord_counts': dict(self._local_chord_counts),
             'hlc': stamp.to_data(),
             'predecessor_digest': self._predecessor,
             'payload_digest': _digest(self._payload),
@@ -1640,11 +1636,14 @@ class LearningSync:
                       _deferred_id: str | None = None,
                       _deferred_baseline: Mapping[str, int] | None = None) -> None:
         if not self._lock.acquire(blocking=False):
+            if self.enabled:
+                self._chord_revision += 1
             self._defer('chords', dict(progress), dict(overrides))
             return
         try:
             if not self.enabled:
                 return
+            self._chord_revision += 1
             if _deferred_id is not None and self._deferred_marker_present(_deferred_id):
                 return
             chords = self._payload.setdefault('chords', {'counts': {}, 'overrides': {}})
@@ -1855,6 +1854,7 @@ class LearningSync:
                     key: self._settings_revisions.get(key, 0)
                     for key in result.settings
                 }
+                result.chord_revision = self._chord_revision
                 if result.status.diagnostics:
                     result.status.message = (
                         'Sync completed with recovery notices. Show recovery '
@@ -2207,6 +2207,13 @@ class LearningSync:
             created_paths = []
             digest = None
             managed = None
+            before_payload = deepcopy(self._payload)
+            before_sequence = self._sequence
+            before_predecessor = self._predecessor
+            before_clock = self._clock
+            before_dirty = self._dirty
+            before_pending_touch_durable = self._pending_touch_durable
+            before_pending_exists = self.pending_path.exists()
             missing = object()
             previous_metadata = missing
             try:
@@ -2315,6 +2322,29 @@ class LearningSync:
                         managed.pop(digest, None)
                     else:
                         managed[digest] = previous_metadata
+                self._payload = before_payload
+                self._sequence = before_sequence
+                self._predecessor = before_predecessor
+                self._clock = before_clock
+                self._dirty = before_dirty
+                self._pending_touch_durable = before_pending_touch_durable
+                if digest is not None:
+                    self._loaded_managed_books.pop(digest, None)
+                try:
+                    if before_pending_exists:
+                        atomic_write_json(
+                            self.pending_path, self._envelope(),
+                            self.recovery_dir / 'pending')
+                    else:
+                        self.pending_path.unlink(missing_ok=True)
+                except (OSError, SyncError) as rollback_error:
+                    self._diagnose(
+                        'Failed managed EPUB import left pending state requiring recovery: {}'.format(
+                            rollback_error))
+                    if not before_pending_exists and self.pending_path.exists():
+                        self._recover_candidate(
+                            self.pending_path,
+                            'failed managed EPUB import pending state')
                 if isinstance(error, SyncError):
                     raise
                 raise SyncError('managed EPUB import failed: {}'.format(error)) from error

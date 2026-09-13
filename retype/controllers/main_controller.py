@@ -11,7 +11,8 @@ from retype.ui import (MainWin, ShelfView, BookView, CustomisationDialog,
 from retype.games.typespeed import TypespeedView
 from retype.games.steno import StenoView
 from retype.controllers import SafeConfig, MenuController, LibraryController
-from retype.controllers.library import BookWrapper, is_valid_managed_book
+from retype.controllers.library import (BookWrapper, is_valid_managed_book,
+                                          _save_position_key)
 from retype.console import Console
 from retype.services.icon_set import Icons
 from retype.services.platform import platform_policy
@@ -57,6 +58,8 @@ class _ManagedLibraryLoadWorker(QThread):
         for item, save_data in self.load_data:
             if not is_valid_managed_book(item.path, item.checksum):
                 continue
+            if save_data is not None and _save_position_key(save_data) is None:
+                save_data = None
             book = BookWrapper(item, save_data, report_errors=False)
             books[item.idn] = book
         self.completed.emit(books)
@@ -555,7 +558,8 @@ class MainController(QObject):
         if status.state == 'ready':
             # A first-run config can still be in memory rather than on disk.
             self.learning_sync.record_settings(
-                self.config.raw, self.learning_sync.settings_baseline())
+                self.config.raw,
+                apply_learning_settings({}, self.learning_sync.settings_baseline()))
             self.requestSync()
         self._updateSyncPresentation()
         return status
@@ -700,8 +704,11 @@ class MainController(QObject):
                 if added:
                     self.views[View.shelf_view].addBooks(added)
             if result.status.state == 'synced':
+                overrides = result.chord_overrides
+                if result.chord_revision != self.learning_sync.chord_revision:
+                    overrides = self.chord_progress.manual_overrides()
                 self.chord_progress.apply_merged(
-                    result.chord_counts, result.chord_overrides)
+                    result.chord_counts, overrides)
                 if hasattr(self, 'views') and View.book_view in self.views:
                     self.views[View.book_view].setChordProgress(self.chord_progress)
                     dialog = getattr(self, 'customisation_dialog', None)

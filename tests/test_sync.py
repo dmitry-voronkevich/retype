@@ -245,6 +245,23 @@ def test_typing_callback_queues_without_waiting_for_a_folder_scan(tmp_path):
     assert sync.sync_now().chord_counts == {'word': 1}
 
 
+def test_pending_chord_use_is_not_counted_again_after_restart(tmp_path):
+    root = tmp_path / 'folder'
+    local = tmp_path / 'one-local'
+    legacy = tmp_path / 'one-legacy'
+    _legacy(legacy, chords={'version': 2, 'progress': {'word': 3}},
+            config=_config())
+    sync = LearningSync(local, legacy)
+    assert sync.configure(root).state == 'ready'
+    sync.sync_now()
+    sync.record_chords({'word': 4}, {})
+
+    restarted = LearningSync(local, legacy)
+    restarted.record_chords({'word': 5}, {})
+
+    assert restarted.sync_now().chord_counts == {'word': 5}
+
+
 def test_pending_chord_use_is_not_counted_again_on_reenable(tmp_path):
     root = tmp_path / 'folder'
     sync, legacy = _enable(
@@ -850,6 +867,24 @@ def test_settings_allowlist_never_roams_paths_or_visual_preferences():
     assert updated['adaptive_chord_lesson_limit'] == 7
     assert updated['user_dir'] == '/local/other'
     assert updated['window']['x'] == 999
+
+
+def test_failed_managed_book_import_removes_pending_metadata(tmp_path):
+    root = tmp_path / 'folder'
+    sync, _ = _enable(tmp_path, 'one', root, config=_config())
+    sync.set_managed_library_consent(True)
+    source = tmp_path / 'private.epub'
+    _epub(source)
+
+    with patch.object(sync, '_save_bootstrap', side_effect=OSError('disk full')):
+        with pytest.raises(SyncError, match='managed EPUB import failed'):
+            sync.import_book(source)
+
+    assert not sync._payload['managed_books']
+    pending = json.loads(sync.pending_path.read_text(encoding='utf-8'))
+    assert not pending['payload']['managed_books']
+    assert not list(sync.managed_library_dir.glob('*.epub'))
+    assert not list((root / 'books' / 'sha256').glob('*.epub'))
 
 
 def test_managed_books_need_consent_are_content_addressed_and_never_auto_imported(tmp_path):
