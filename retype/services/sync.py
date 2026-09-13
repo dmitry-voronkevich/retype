@@ -90,6 +90,7 @@ class SyncResult:
     chord_counts: dict[str, int] = field(default_factory=dict)
     chord_overrides: dict[str, bool] = field(default_factory=dict)
     settings: dict[str, object] = field(default_factory=dict)
+    settings_revisions: dict[str, int] = field(default_factory=dict)
     managed_books: dict[str, dict[str, object]] = field(default_factory=dict)
     # Kept separate from ``save`` because legacy BookView accepts every save
     # mapping key as an attribute.  V1 opens the furthest position, while this
@@ -610,6 +611,7 @@ class LearningSync:
         self._clock = HLC(0, 0)
         self._dirty = False
         self._legacy_capture_needed = False
+        self._settings_revisions: dict[str, int] = {}
         baseline = self._bootstrap.get('last_materialized')
         baseline_counts = baseline.get('chord_counts') \
             if isinstance(baseline, dict) else None
@@ -1155,24 +1157,26 @@ class LearningSync:
         with self._deferred_lock:
             return bool(self._deferred)
 
-    def _recover_candidate(self, path: Path, reason: str) -> None:
+    def _recover_candidate(self, path: Path, reason: str) -> bool:
+        recovered = True
         try:
             self.recovery_dir.mkdir(parents=True, exist_ok=True)
             bytes_ = path.read_bytes()
             name = '{}.{}.rejected'.format(path.name, sha256(bytes_).hexdigest()[:12])
             (self.recovery_dir / name).write_bytes(bytes_)
-        except OSError:
-            pass
+        except OSError as error:
+            recovered = False
+            self._diagnose('{} could not be preserved: {}'.format(path.name, error))
         self._diagnose('{}: {}'.format(path.name, reason))
+        return recovered
 
-    def _recover_deferred_state(self, reason: str) -> None:
+    def _recover_deferred_state(self, reason: str) -> bool:
         paths = []
         if self.deferred_path.exists():
             paths.append(self.deferred_path)
         if self.deferred_parts_dir.is_dir():
             paths.extend(sorted(self.deferred_parts_dir.glob('*.json')))
-        for path in paths:
-            self._recover_candidate(path, reason)
+        return all(self._recover_candidate(path, reason) for path in paths)
 
     def configure(self, sync_root: str | Path,
                   managed_library_consent: bool = False) -> SyncStatus:
@@ -1201,13 +1205,16 @@ class LearningSync:
                     }, self.recovery_dir / 'manifest')
                 previous_collection = self.collection_id
                 if previous_collection != collection_id:
-                    if self.pending_path.exists():
-                        self._recover_candidate(
+                    if self.pending_path.exists() and not self._recover_candidate(
                             self.pending_path,
-                            'pending state was retained while switching sync collections')
-                    if self.deferred_path.exists() or self.deferred_parts_dir.is_dir():
-                        self._recover_deferred_state(
-                            'deferred state was retained while switching sync collections')
+                            'pending state was retained while switching sync collections'):
+                        raise SyncError(
+                            'pending sync state could not be preserved while switching collections')
+                    if (self.deferred_path.exists() or self.deferred_parts_dir.is_dir()) and \
+                            not self._recover_deferred_state(
+                                'deferred state was retained while switching sync collections'):
+                        raise SyncError(
+                            'deferred sync state could not be preserved while switching collections')
                     with self._deferred_lock:
                         self._deferred.clear()
                         self._persist_deferred_locked()
@@ -1595,6 +1602,8 @@ class LearningSync:
                 stamp = self._now()
                 registers[key] = {'value': value, 'hlc': stamp.to_data(),
                                   'replica_id': self.replica_id}
+                self._settings_revisions[key] = \
+                    self._settings_revisions.get(key, 0) + 1
                 changed = True
             if _deferred_id is not None:
                 self._mark_deferred_applied(_deferred_id)
@@ -1695,6 +1704,10 @@ class LearningSync:
                 if legacy_materialized:
                     self._remember_materialized(result)
                 result.status.diagnostics = list(self.status.diagnostics)
+                result.settings_revisions = {
+                    key: self._settings_revisions.get(key, 0)
+                    for key in result.settings
+                }
                 if result.status.diagnostics:
                     result.status.message = (
                         'Sync completed with recovery notices. Show recovery '
@@ -1835,6 +1848,15 @@ class LearningSync:
             raw_progress = chord_data.get('progress', {})
             if chord_path.exists() and ('progress' not in chord_data or
                                          not isinstance(raw_progress, dict)):
+                chord_valid = False
+                success = False
+                self._diagnose('Existing local chord progress has an unsupported format and was left untouched.')
+            raw_overrides = chord_data.get('manual_overrides', {})
+            if chord_path.exists() and (
+                    not isinstance(raw_overrides, dict) or any(
+                        not isinstance(key, str) or not key or
+                        not isinstance(value, bool)
+                        for key, value in raw_overrides.items())):
                 chord_valid = False
                 success = False
                 self._diagnose('Existing local chord progress has an unsupported format and was left untouched.')

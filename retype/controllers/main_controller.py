@@ -110,6 +110,7 @@ class MainController(QObject):
         self._sync_worker = None  # type: _SyncWorker | None
         self._managed_book_worker = None  # type: _ManagedBookImportWorker | None
         self._managed_library_worker = None  # type: _ManagedLibraryLoadWorker | None
+        self._managed_library_generation = 0
         self._sync_pending = False
         self._sync_retry_timer = QTimer(self)
         self._sync_retry_timer.setSingleShot(True)
@@ -391,20 +392,27 @@ class MainController(QObject):
         if self._managed_library_worker is not None and \
                 self._managed_library_worker.isRunning():
             return
+        self._managed_library_generation += 1
+        generation = self._managed_library_generation
         worker = _ManagedLibraryLoadWorker(self.library.managedBookLoadData())
         self._managed_library_worker = worker
-        worker.completed.connect(self._managedLibraryLoadCompleted)
+        worker.completed.connect(
+            lambda books, generation=generation:
+                self._managedLibraryLoadCompleted(books, generation))
         worker.finished.connect(worker.deleteLater)
         worker.start()
 
-    def _managedLibraryLoadCompleted(self, books):
-        # type: (MainController, dict[int, BookWrapper]) -> None
+    def _managedLibraryLoadCompleted(self, books, generation=None):
+        # type: (MainController, dict[int, BookWrapper], int | None) -> None
+        if generation is not None and generation != self._managed_library_generation:
+            return
         self._managed_library_worker = None
         installed = self.library.installManagedBooks(books)
         self.views[View.shelf_view].addBooks(installed)
 
     def _repopulateLibrary(self, user_dir, library_paths):
         # type: (MainController, str, list[str]) -> None
+        self._managed_library_generation += 1
         managed_worker = self._managed_library_worker
         if managed_worker is not None and managed_worker.isRunning():
             managed_worker.wait()
@@ -663,8 +671,14 @@ class MainController(QObject):
                                       'checksum', None)
             if book_view is not None:
                 book_view.maybeSave()
+            deferred_settings = self.learning_sync.deferred_settings()
             settings = dict(result.settings)
-            settings.update(self.learning_sync.deferred_settings())
+            settings.update(deferred_settings)
+            for key in result.settings:
+                if key not in deferred_settings and \
+                        self.learning_sync._settings_revisions.get(key, 0) != \
+                        result.settings_revisions.get(key, 0):
+                    settings.pop(key, None)
             if settings:
                 updated = apply_learning_settings(self.config.raw, settings)
                 if updated != self.config.raw:
