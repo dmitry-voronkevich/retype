@@ -60,6 +60,24 @@ def _epub(path: Path, data=b'book'):
         archive.writestr('content.txt', data)
 
 
+def test_managed_book_progress_accepts_sha256_identity(tmp_path):
+    sync, _ = _enable(tmp_path, 'one', tmp_path / 'folder', config=_config())
+    identity = 'c' * 64
+    sync.record_book(identity, {
+        'persistent_pos': 8, 'chapter_pos': 1, 'progress': 20})
+
+    assert sync.sync_now().save[identity]['progress'] == 20
+
+
+def test_initial_legacy_chord_count_is_used_as_callback_baseline(tmp_path):
+    sync, _ = _enable(
+        tmp_path, 'one', tmp_path / 'folder',
+        chords={'version': 2, 'progress': {'word': 3}}, config=_config())
+    sync.record_chords({'word': 4}, {})
+
+    assert sync.sync_now().chord_counts == {'word': 4}
+
+
 def test_migration_keeps_legacy_files_and_materializes_syncable_state(tmp_path):
     original_save = {BOOK_A: {
         'persistent_pos': 8, 'chapter_pos': 1, 'progress': 20,

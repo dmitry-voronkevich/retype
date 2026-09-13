@@ -40,7 +40,7 @@ VALID_SETTINGS = (
     'sdict', 'rdict', 'auto_newline', 'adaptive_chord_lessons',
     'adaptive_chord_lesson_limit', 'steno.kdict',
 )
-_HEX = re.compile(r'^[0-9a-f]{32}$')
+_BOOK_IDENTITY = re.compile(r'^(?:[0-9a-f]{32}|[0-9a-f]{64})$')
 _SHA256 = re.compile(r'^[0-9a-f]{64}$')
 
 
@@ -364,7 +364,7 @@ def _validate_payload(payload: Mapping[str, object]) -> None:
     if not isinstance(books, dict):
         raise ValidationError('books is malformed')
     for identity, entry in books.items():
-        if not isinstance(identity, str) or not _HEX.fullmatch(identity) or \
+        if not isinstance(identity, str) or not _BOOK_IDENTITY.fullmatch(identity) or \
                 not isinstance(entry, dict) or _validate_save(entry) is None:
             raise ValidationError('book progress is malformed')
         last = entry.get('last_resume')
@@ -579,6 +579,7 @@ class LearningSync:
             if isinstance(baseline_overrides, dict) else {}
         self._load_published()
         self._load_pending()
+        self._initialize_materialized_count_baseline()
         self._load_deferred()
         self._prune_deferred_markers()
 
@@ -1229,7 +1230,7 @@ class LearningSync:
             raw_save = _read_json(save_path)
             if isinstance(raw_save, dict):
                 for identity, value in raw_save.items():
-                    if isinstance(identity, str) and _HEX.fullmatch(identity) and \
+                    if isinstance(identity, str) and _BOOK_IDENTITY.fullmatch(identity) and \
                             _validate_save(value) is not None:
                         prior = self._payload.get('books', {})
                         prior_value = prior.get(identity) if isinstance(prior, dict) else None
@@ -1258,7 +1259,7 @@ class LearningSync:
             if isinstance(raw_save, dict):
                 for identity, item in raw_save.items():
                     valid = _validate_save(item)
-                    if isinstance(identity, str) and _HEX.fullmatch(identity) and valid:
+                    if isinstance(identity, str) and _BOOK_IDENTITY.fullmatch(identity) and valid:
                         books[identity] = valid
         except ValidationError as error:
             if save_path.exists():
@@ -1295,11 +1296,21 @@ class LearningSync:
         except ValidationError as error:
             if config_path.exists():
                 self._diagnose('Legacy learning settings were not imported: {}'.format(error))
+        self._initialize_materialized_count_baseline()
         self._touch()
+
+    def _initialize_materialized_count_baseline(self) -> None:
+        chords = self._payload.get('chords', {})
+        counts = chords.get('counts', {}) if isinstance(chords, dict) else {}
+        if not isinstance(counts, dict):
+            return
+        for key, count in counts.items():
+            if isinstance(key, str) and key and _is_int(count) and count >= 0:
+                self._materialized_counts.setdefault(key, count)
 
     def record_book(self, identity: str, data: Mapping[str, object],
                     _deferred_id: str | None = None) -> None:
-        if not _HEX.fullmatch(identity):
+        if not _BOOK_IDENTITY.fullmatch(identity):
             return
         valid = _validate_save(dict(data))
         if valid is None:
