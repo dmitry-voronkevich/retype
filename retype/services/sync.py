@@ -559,6 +559,8 @@ class LearningSync:
         # next scan/publish instead.
         self._deferred_lock = threading.Lock()
         self._deferred: list[tuple[str, str, str, tuple[object, ...]]] = []
+        self._bootstrap_recovered = False
+        self.status = SyncStatus()
         self._bootstrap = self._load_bootstrap()
         self._payload: dict[str, object] = _empty_payload()
         self._sequence = 0
@@ -566,7 +568,6 @@ class LearningSync:
         self._clock = HLC(0, 0)
         self._dirty = False
         self._legacy_capture_needed = False
-        self.status = SyncStatus()
         baseline = self._bootstrap.get('last_materialized')
         baseline_counts = baseline.get('chord_counts') \
             if isinstance(baseline, dict) else None
@@ -579,6 +580,7 @@ class LearningSync:
         self._load_published()
         self._load_pending()
         self._load_deferred()
+        self._prune_deferred_markers()
 
     @property
     def enabled(self) -> bool:
@@ -617,12 +619,30 @@ class LearningSync:
             }
         try:
             data = _read_json(self.bootstrap_path)
+            sync = data.get('sync') if isinstance(data, dict) else None
+            valid_sync = isinstance(sync, dict) and \
+                (('enabled' not in sync) or isinstance(sync['enabled'], bool)) and \
+                (('root' not in sync) or isinstance(sync['root'], str)) and \
+                (('collection_id' not in sync) or _valid_uuid(sync['collection_id'])) and \
+                (('managed_library_consent' not in sync) or
+                 isinstance(sync['managed_library_consent'], bool))
             if (isinstance(data, dict) and data.get('schema') == BOOTSTRAP_SCHEMA
                     and data.get('version') == SYNC_VERSION and
-                    _valid_uuid(data.get('replica_id'))):
+                    _valid_uuid(data.get('replica_id')) and valid_sync and
+                    (('legacy_migrated' not in data) or
+                     isinstance(data['legacy_migrated'], bool)) and
+                    (('last_materialized' not in data) or
+                     isinstance(data['last_materialized'], dict))):
                 return data
         except ValidationError as error:
-            logger.warning('Ignoring malformed local sync bootstrap: %s', error)
+            self._bootstrap_recovered = True
+            self._recover_candidate(
+                self.bootstrap_path,
+                'local sync bootstrap could not be read: {}'.format(error))
+        else:
+            self._bootstrap_recovered = True
+            self._recover_candidate(
+                self.bootstrap_path, 'local sync bootstrap is malformed')
         return {
             'schema': BOOTSTRAP_SCHEMA,
             'version': SYNC_VERSION,
@@ -683,7 +703,11 @@ class LearningSync:
             return
         self._install_published(selected)
         if provider is selected and local is not selected:
-            self._remember_published_envelope(selected)
+            try:
+                self._remember_published_envelope(selected)
+            except OSError as error:
+                self._diagnose(
+                    'Last published sync state could not be saved: {}'.format(error))
 
     def _load_pending(self) -> None:
         if not self.pending_path.exists():
@@ -962,6 +986,22 @@ class LearningSync:
             except (OSError, SyncError) as error:
                 logger.warning('Deferred sync mutation could not be persisted: %s', error)
 
+    def _prune_deferred_markers(self) -> None:
+        markers = self._payload.get('_applied_deferred')
+        if not isinstance(markers, list):
+            return
+        with self._deferred_lock:
+            active = {event[1] for event in self._deferred}
+        retained = [marker for marker in markers if marker in active]
+        if retained == markers:
+            return
+        if retained:
+            self._payload['_applied_deferred'] = retained
+        else:
+            self._payload.pop('_applied_deferred', None)
+        if self.enabled:
+            self._touch()
+
     def _deferred_marker_present(self, event_id: str) -> bool:
         markers = self._payload.get('_applied_deferred', [])
         return isinstance(markers, list) and event_id in markers
@@ -1052,6 +1092,10 @@ class LearningSync:
                     self._materialized_counts = {}
                     self._materialized_overrides = {}
                     self._bootstrap.pop('last_materialized', None)
+                    if self._bootstrap_recovered and self.pending_path.exists():
+                        self._recover_candidate(
+                            self.pending_path,
+                            'pending state was retained after malformed bootstrap recovery')
                     self.pending_path.unlink(missing_ok=True)
                     self._bootstrap['legacy_migrated'] = False
                     self._legacy_capture_needed = False
@@ -1062,6 +1106,7 @@ class LearningSync:
                     'managed_library_consent': bool(managed_library_consent),
                 }
                 self._save_bootstrap()
+                self._prune_deferred_markers()
                 if previous_collection == collection_id and \
                         self._bootstrap.get('legacy_migrated') is True:
                     self._capture_local_only_changes()
@@ -1083,7 +1128,14 @@ class LearningSync:
             if not isinstance(sync, dict) or not self.enabled:
                 return self.status
             sync['managed_library_consent'] = bool(consent)
-            self._save_bootstrap()
+            try:
+                self._save_bootstrap()
+            except OSError as error:
+                self._diagnose(
+                    'Local sync settings could not be saved: {}'.format(error))
+                self.status = SyncStatus(
+                    'waiting', 'Local sync settings could not be saved; retrying.',
+                    time.time(), list(self.status.diagnostics))
             return self.status
 
     def disable(self) -> SyncStatus:
@@ -1092,7 +1144,15 @@ class LearningSync:
             sync = self._bootstrap.setdefault('sync', {})
             assert isinstance(sync, dict)
             sync['enabled'] = False
-            self._save_bootstrap()
+            try:
+                self._save_bootstrap()
+            except OSError as error:
+                self._diagnose(
+                    'Local sync settings could not be saved: {}'.format(error))
+                self.status = SyncStatus(
+                    'waiting', 'Local sync settings could not be saved; retrying.',
+                    time.time(), list(self.status.diagnostics))
+                return self.status
             self.status = SyncStatus()
             return self.status
 

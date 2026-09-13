@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING
 
 from retype.extras.space import isspaceorempty
 from retype.extras.hashing import generate_file_md5
-from retype.services.sync import MAX_MANAGED_BOOK_BYTES
+from retype.services.sync import MAX_MANAGED_BOOK_BYTES, _is_epub_file
 
 logger = logging.getLogger(__name__)
 
@@ -114,7 +114,9 @@ class LibraryController(object):
             if isinstance(checksum, str) and
             _MANAGED_BOOK_FILENAME.fullmatch(checksum + '.epub') and
             isinstance(record, dict) and isinstance(record.get('size'), int) and
-            isinstance(record.get('mtime_ns'), int)
+            isinstance(record.get('mtime_ns'), int) and
+            isinstance(record.get('ctime_ns'), int) and
+            isinstance(record.get('inode'), int)
         }
 
     def _save_managed_index(self, index):
@@ -151,16 +153,27 @@ class LibraryController(object):
                             logger.warning('Ignoring oversized managed EPUB: %s',
                                            entry.path)
                             continue
-                        if _file_sha256(entry.path) != checksum:
-                            logger.warning('Ignoring managed EPUB with a hash mismatch: %s',
-                                           entry.path)
-                            continue
                         record = index.get(checksum)
-                        if not isinstance(record, dict) or \
-                                record.get('size') != stat.st_size or \
-                                record.get('mtime_ns') != stat.st_mtime_ns:
+                        unchanged = isinstance(record, dict) and \
+                            record.get('size') == stat.st_size and \
+                            record.get('mtime_ns') == stat.st_mtime_ns and \
+                            record.get('ctime_ns') == stat.st_ctime_ns and \
+                            record.get('inode') == stat.st_ino
+                        if not unchanged:
+                            if _file_sha256(entry.path) != checksum:
+                                logger.warning('Ignoring managed EPUB with a hash mismatch: %s',
+                                               entry.path)
+                                continue
+                            if not _is_epub_file(entry.path):
+                                logger.warning('Ignoring invalid managed EPUB: %s',
+                                               entry.path)
+                                continue
                             index[checksum] = {
-                                'size': stat.st_size, 'mtime_ns': stat.st_mtime_ns}
+                                'size': stat.st_size,
+                                'mtime_ns': stat.st_mtime_ns,
+                                'ctime_ns': stat.st_ctime_ns,
+                                'inode': stat.st_ino,
+                            }
                             index_changed = True
                     except OSError as error:
                         logger.warning('Unable to verify managed EPUB %s: %s',
@@ -191,11 +204,22 @@ class LibraryController(object):
         existing = {book.checksum for book in self.books.values()}
         next_id = max(self._library_items, default=-1) + 1
         added = []
-        for checksum in managed_books:
-            if checksum in existing:
+        for checksum, metadata in managed_books.items():
+            if checksum in existing or not _MANAGED_BOOK_FILENAME.fullmatch(
+                    checksum + '.epub'):
+                continue
+            if not isinstance(metadata, dict) or metadata.get('digest') != checksum:
                 continue
             path = os.path.join(self.managed_library_path, checksum + '.epub')
-            if not os.path.isfile(path):
+            try:
+                stat = os.stat(path)
+                if stat.st_size > MAX_MANAGED_BOOK_BYTES or \
+                        stat.st_size != metadata.get('size') or \
+                        _file_sha256(path) != checksum or not _is_epub_file(path):
+                    logger.warning('Ignoring invalid managed EPUB: %s', path)
+                    continue
+            except OSError as error:
+                logger.warning('Unable to verify managed EPUB %s: %s', path, error)
                 continue
             item = LibraryItem(next_id, path, checksum)
             self._library_items[next_id] = item

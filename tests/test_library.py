@@ -1,5 +1,6 @@
 import sys
 from hashlib import sha256
+import zipfile
 from pathlib import Path
 from unittest.mock import patch, ANY
 from PyQt5.Qt import QApplication
@@ -46,17 +47,20 @@ def test_oversized_managed_books_are_not_indexed(tmp_path):
 def test_managed_books_are_indexed_from_content_addressed_filenames(tmp_path):
     managed = tmp_path / 'managed-books'
     managed.mkdir()
-    content = b'local book'
-    checksum = sha256(content).hexdigest()
-    path = managed / (checksum + '.epub')
-    path.write_bytes(content)
+    path = managed / 'book.epub'
+    with zipfile.ZipFile(path, 'w') as archive:
+        archive.writestr('mimetype', 'application/epub+zip', compress_type=zipfile.ZIP_STORED)
+        archive.writestr('content.txt', 'local book')
+    checksum = sha256(path.read_bytes()).hexdigest()
+    managed_path = managed / (checksum + '.epub')
+    path.rename(managed_path)
     (managed / ('a' * 64 + '.epub')).write_bytes(b'altered')
     (managed / 'not-a-managed-book.epub').write_bytes(b'ignored')
 
     library = LibraryController('', [], str(managed))
 
     assert [(item.path, item.checksum) for item in library._library_items.values()] == [
-        (str(path), checksum)]
+        (str(managed_path), checksum)]
 
 
 @patch('builtins.open')
