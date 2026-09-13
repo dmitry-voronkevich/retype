@@ -403,20 +403,33 @@ class MainController(QObject):
         worker = _ManagedLibraryLoadWorker(self.library.managedBookLoadData())
         self._managed_library_worker = worker
         worker.completed.connect(
-            lambda books, generation=generation:
-                self._managedLibraryLoadCompleted(books, generation))
+            lambda books, worker=worker, generation=generation:
+                self._managedLibraryLoadCompleted(books, generation, worker))
+        worker.finished.connect(
+            lambda worker=worker, generation=generation:
+                self._managedLibraryLoadFinished(worker, generation))
         worker.finished.connect(worker.deleteLater)
         worker.start()
 
-    def _managedLibraryLoadCompleted(self, books, generation=None):
-        # type: (MainController, dict[int, BookWrapper], int | None) -> None
+    def _managedLibraryLoadCompleted(self, books, generation=None, worker=None):
+        # type: (MainController, dict[int, BookWrapper], int | None,
+        #         _ManagedLibraryLoadWorker | None) -> None
+        if worker is not None and worker is not self._managed_library_worker:
+            return
         if generation is not None and generation != self._managed_library_generation:
-            if self.learning_sync.managed_library_consent:
-                QTimer.singleShot(0, self._startManagedLibraryLoad)
             return
         self._managed_library_worker = None
         installed = self.library.installManagedBooks(books)
         self.views[View.shelf_view].addBooks(installed)
+
+    def _managedLibraryLoadFinished(self, worker, generation):
+        # type: (MainController, _ManagedLibraryLoadWorker, int) -> None
+        if worker is not self._managed_library_worker:
+            return
+        self._managed_library_worker = None
+        if generation != self._managed_library_generation and \
+                self.learning_sync.managed_library_consent:
+            QTimer.singleShot(0, self._startManagedLibraryLoad)
 
     def _repopulateLibrary(self, user_dir, library_paths):
         # type: (MainController, str, list[str]) -> None
