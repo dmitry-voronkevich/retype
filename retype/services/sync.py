@@ -35,6 +35,7 @@ BOOTSTRAP_SCHEMA = 'retype-local-sync-bootstrap'
 SYNC_VERSION = 1
 MAX_REPLICA_BYTES = 5 * 1024 * 1024
 MAX_DEFERRED_BYTES = MAX_REPLICA_BYTES
+MAX_DEFERRED_PARTS = 1024
 MAX_MANAGED_BOOK_BYTES = 100 * 1024 * 1024
 MAX_MANAGED_LIBRARY_BYTES = 1024 * 1024 * 1024
 MAX_BACKUPS = 5
@@ -830,7 +831,7 @@ class LearningSync:
 
     def _read_deferred_generation(self, generation: str, count: int) -> list[tuple[str, str, str, tuple[object, ...]]]:
         if not isinstance(generation, str) or not generation or not _is_int(count) or \
-                count < 1 or count > MAX_DEFERRED_BYTES:
+                count < 1 or count > MAX_DEFERRED_PARTS:
             raise ValidationError('deferred sync generation is malformed')
         new_paths = [self._deferred_part_path(generation, index)
                      for index in range(count)]
@@ -861,7 +862,8 @@ class LearningSync:
                 index = data.get('index')
                 count = data.get('count')
                 if not isinstance(generation, str) or not _is_int(index) or \
-                        not _is_int(count) or index < 0 or count < 1 or index >= count:
+                        not _is_int(count) or index < 0 or count < 1 or \
+                        count > MAX_DEFERRED_PARTS or index >= count:
                     continue
                 groups.setdefault(generation, {})[index] = (count, data)
             except ValidationError:
@@ -977,6 +979,8 @@ class LearningSync:
             else:
                 chunks[-1] = candidate
         count = len(chunks)
+        if count > MAX_DEFERRED_PARTS:
+            raise SyncError('deferred sync mutations exceed the part limit')
         if any(len(_json_bytes({'generation': generation, 'index': index,
                                 'count': count, 'events': chunk})) >
                MAX_DEFERRED_BYTES for index, chunk in enumerate(chunks)):
@@ -1729,7 +1733,9 @@ class LearningSync:
             try:
                 existing = validate_envelope(_read_json(target), self.collection_id)
             except ValidationError as error:
-                self._recover_candidate(target, str(error))
+                if not self._recover_candidate(target, str(error)):
+                    raise SyncError(
+                        'malformed replica could not be preserved for recovery') from error
         if existing is not None:
             if existing['replica_id'] != self.replica_id:
                 raise SyncError('replica file ownership is invalid')

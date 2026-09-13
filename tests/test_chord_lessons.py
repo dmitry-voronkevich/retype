@@ -40,6 +40,19 @@ def test_merged_progress_does_not_notify_sync_callback(tmp_path):
     assert changes == []
 
 
+def test_failed_progress_save_notifies_sync_callback(tmp_path):
+    path = tmp_path / MASTERY_PROGRESS_FILENAME
+    path.mkdir()
+    changes = []
+    storage = ChordMasteryStorage(
+        str(tmp_path),
+        lambda progress, overrides: changes.append((progress, overrides)))
+    progress = ChordMasteryProgress(storage)
+
+    assert progress.record(_result()).successful_uses == 1
+    assert changes == [({'the': 1}, {})]
+
+
 def test_missing_data_starts_empty_and_partial_data_is_preserved(tmp_path):
     progress = _progress(tmp_path)
     assert progress.progress_for('the').successful_uses == 0

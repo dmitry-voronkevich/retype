@@ -10,9 +10,9 @@ import zipfile
 import pytest
 
 from retype.services.sync import (
-    HLC, LearningSync, SyncError, _copy_atomic, apply_learning_settings,
-    atomic_write_json, learning_settings_from_config, merge_replicas,
-    validate_envelope,
+    HLC, LearningSync, SyncError, ValidationError, _copy_atomic,
+    apply_learning_settings, atomic_write_json, learning_settings_from_config,
+    merge_replicas, validate_envelope,
 )
 
 
@@ -437,6 +437,27 @@ def test_corrupt_deferred_pointer_recovers_complete_parts(tmp_path):
     restarted = LearningSync(local, legacy)
     assert restarted.has_deferred_changes
     assert restarted.sync_now().chord_counts == {'word': 1}
+
+
+def test_deferred_generation_rejects_excessive_part_count(tmp_path):
+    sync, _ = _enable(tmp_path, 'one', tmp_path / 'folder', config=_config())
+
+    with pytest.raises(ValidationError):
+        sync._read_deferred_generation('generation', 5 * 1024 * 1024)
+
+
+def test_malformed_replica_is_not_overwritten_when_recovery_fails(tmp_path):
+    root = tmp_path / 'folder'
+    sync, _ = _enable(tmp_path, 'one', root, config=_config())
+    target = root / 'replicas' / (sync.replica_id + '.json')
+    target.parent.mkdir(parents=True)
+    target.write_text('{malformed', encoding='utf-8')
+
+    with patch.object(sync, '_recover_candidate', return_value=False):
+        with pytest.raises(SyncError):
+            sync._publish(root / 'replicas')
+
+    assert target.read_text(encoding='utf-8') == '{malformed'
 
 
 def test_switching_collections_preserves_deferred_state_for_recovery(tmp_path):
