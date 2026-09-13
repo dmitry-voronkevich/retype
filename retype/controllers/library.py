@@ -14,7 +14,8 @@ from typing import TYPE_CHECKING
 
 from retype.extras.space import isspaceorempty
 from retype.extras.hashing import generate_file_md5
-from retype.services.sync import MAX_MANAGED_BOOK_BYTES, _is_epub_file
+from retype.services.sync import (MAX_MANAGED_BOOK_BYTES, _is_epub_file,
+                                  _is_loadable_epub_file)
 
 logger = logging.getLogger(__name__)
 
@@ -212,14 +213,21 @@ class LibraryController(object):
                 if _MANAGED_BOOK_FILENAME.fullmatch(item.checksum + '.epub')]
 
     def installManagedBooks(self, books):
-        # type: (LibraryController, dict[int, BookWrapper]) -> None
+        # type: (LibraryController, dict[int, BookWrapper]) -> list[BookWrapper]
         if self.books is None:
             self.books = {}
+        existing = {book.checksum for book in self.books.values()}
+        installed = []
         for idn, book in books.items():
-            if book.valid:
-                self.books[idn] = book
-            else:
+            if not book.valid:
                 self._library_items.pop(idn, None)
+            elif book.checksum in existing:
+                self._library_items.pop(idn, None)
+            else:
+                self.books[idn] = book
+                existing.add(book.checksum)
+                installed.append(book)
+        return installed
 
     def addManagedBooks(self, managed_books, validated_checksums=None,
                         loaded_books=None):
@@ -243,16 +251,21 @@ class LibraryController(object):
                     logger.warning('Ignoring invalid managed EPUB: %s', path)
                     continue
                 if checksum not in (validated_checksums or ()) and \
-                        (_file_sha256(path) != checksum or not _is_epub_file(path)):
+                        (_file_sha256(path) != checksum or
+                         not _is_loadable_epub_file(path)):
                     logger.warning('Ignoring invalid managed EPUB: %s', path)
                     continue
             except OSError as error:
                 logger.warning('Unable to verify managed EPUB %s: %s', path, error)
                 continue
             item = LibraryItem(next_id, path, checksum)
-            self._library_items[next_id] = item
             loaded_book = (loaded_books or {}).get(checksum)
-            book = BookWrapper(item, self.load(item), loaded_book)
+            book = BookWrapper(item, self.load(item), loaded_book,
+                               report_errors=False)
+            if not book.valid:
+                logger.warning('Ignoring invalid managed EPUB: %s', path)
+                continue
+            self._library_items[next_id] = item
             self.books[next_id] = book
             added.append(book)
             existing.add(checksum)

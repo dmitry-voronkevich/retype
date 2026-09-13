@@ -579,6 +579,7 @@ class LearningSync:
         # next scan/publish instead.
         self._deferred_lock = threading.Lock()
         self._deferred: list[tuple[str, str, str, tuple[object, ...]]] = []
+        self._finalizing_counts_baseline: dict[str, int] | None = None
         self._bootstrap_recovered = False
         self.status = SyncStatus()
         self._bootstrap = self._load_bootstrap()
@@ -774,13 +775,23 @@ class LearningSync:
             if not isinstance(event_collection, str) or not isinstance(event_id, str) or \
                     not _valid_uuid(event_id) or not isinstance(kind, str) or \
                     kind not in ('book', 'chords', 'settings') or \
-                    not isinstance(args, list) or len(args) != 2:
+                    not isinstance(args, list) or len(args) not in (2, 3) or \
+                    (len(args) == 3 and kind != 'chords'):
                 raise ValidationError('deferred sync mutations are malformed')
             if kind == 'book' and (not isinstance(args[0], str) or
                                    not isinstance(args[1], dict)):
                 raise ValidationError('deferred book mutation is malformed')
             if kind in ('chords', 'settings') and \
                     (not isinstance(args[0], dict) or not isinstance(args[1], dict)):
+                raise ValidationError('deferred sync mutation is malformed')
+            if kind == 'chords' and len(args) == 3:
+                baseline = args[2]
+                if not isinstance(baseline, dict) or any(
+                        not isinstance(key, str) or not key or
+                        not _is_int(value) or value < 0
+                        for key, value in baseline.items()):
+                    raise ValidationError('deferred chord baseline is malformed')
+            elif len(args) != 2:
                 raise ValidationError('deferred sync mutation is malformed')
             loaded.append((event_collection, event_id, kind, tuple(args)))
         return loaded
@@ -1019,8 +1030,17 @@ class LearningSync:
         self.status.diagnostics = self.status.diagnostics[-20:]
 
     def _defer(self, kind: str, *args: object) -> bool:
-        event = (self.collection_id or '', str(uuid4()), kind, args)
+        event_args = args
         with self._deferred_lock:
+            if kind == 'chords' and self._finalizing_counts_baseline is not None:
+                baseline = dict(self._finalizing_counts_baseline)
+                progress = args[0] if args and isinstance(args[0], dict) else {}
+                for key, total in progress.items():
+                    if isinstance(key, str) and key and _is_int(total) and total >= 0:
+                        self._finalizing_counts_baseline[key] = max(
+                            self._finalizing_counts_baseline.get(key, 0), total)
+                event_args = args + (baseline,)
+            event = (self.collection_id or '', str(uuid4()), kind, event_args)
             self._deferred.append(event)
             try:
                 self._persist_deferred_locked()
@@ -1077,7 +1097,10 @@ class LearningSync:
                 if kind == 'book':
                     self.record_book(str(args[0]), args[1], _deferred_id=event_id)  # type: ignore[arg-type]
                 elif kind == 'chords':
-                    self.record_chords(args[0], args[1], _deferred_id=event_id)  # type: ignore[arg-type]
+                    baseline = args[2] if len(args) == 3 else None
+                    self.record_chords(
+                        args[0], args[1], _deferred_id=event_id,
+                        _deferred_baseline=baseline)  # type: ignore[arg-type]
                 elif kind == 'settings':
                     self.record_settings(args[0], args[1], _deferred_id=event_id)  # type: ignore[arg-type]
             with self._deferred_lock:
@@ -1100,6 +1123,15 @@ class LearningSync:
         except OSError:
             pass
         self._diagnose('{}: {}'.format(path.name, reason))
+
+    def _recover_deferred_state(self, reason: str) -> None:
+        paths = []
+        if self.deferred_path.exists():
+            paths.append(self.deferred_path)
+        if self.deferred_parts_dir.is_dir():
+            paths.extend(sorted(self.deferred_parts_dir.glob('*.json')))
+        for path in paths:
+            self._recover_candidate(path, reason)
 
     def configure(self, sync_root: str | Path,
                   managed_library_consent: bool = False) -> SyncStatus:
@@ -1139,10 +1171,14 @@ class LearningSync:
                     self._materialized_counts = {}
                     self._materialized_overrides = {}
                     self._bootstrap.pop('last_materialized', None)
-                    if self._bootstrap_recovered and self.pending_path.exists():
-                        self._recover_candidate(
-                            self.pending_path,
-                            'pending state was retained after malformed bootstrap recovery')
+                    if self._bootstrap_recovered:
+                        if self.pending_path.exists():
+                            self._recover_candidate(
+                                self.pending_path,
+                                'pending state was retained after malformed bootstrap recovery')
+                        if self.deferred_path.exists() or self.deferred_parts_dir.is_dir():
+                            self._recover_deferred_state(
+                                'deferred state was retained after malformed bootstrap recovery')
                     self.pending_path.unlink(missing_ok=True)
                     self._bootstrap['legacy_migrated'] = False
                     self._legacy_capture_needed = False
@@ -1414,7 +1450,8 @@ class LearningSync:
 
     def record_chords(self, progress: Mapping[str, int],
                       overrides: Mapping[str, bool],
-                      _deferred_id: str | None = None) -> None:
+                      _deferred_id: str | None = None,
+                      _deferred_baseline: Mapping[str, int] | None = None) -> None:
         if not self._lock.acquire(blocking=False):
             self._defer('chords', dict(progress), dict(overrides))
             return
@@ -1432,7 +1469,9 @@ class LearningSync:
             for key, total in progress.items():
                 if not isinstance(key, str) or not key or not _is_int(total) or total < 0:
                     continue
-                old_total = self._materialized_counts.get(key, 0)
+                old_total = (_deferred_baseline.get(key, 0)
+                             if _deferred_baseline is not None else
+                             self._materialized_counts.get(key, 0))
                 delta = total - old_total
                 if delta > 0:
                     contributions[key] = int(contributions.get(key, 0)) + delta
@@ -1513,6 +1552,7 @@ class LearningSync:
     def sync_now(self) -> SyncResult:
         """Publish the local replica then merge all valid visible replicas."""
         with self._lock:
+            self._finalizing_counts_baseline = None
             try:
                 self._apply_deferred()
                 if not self.enabled:
@@ -1567,7 +1607,25 @@ class LearningSync:
                     result.managed_books_ready = self._materialize_managed_books(
                         root, result)
                     result.managed_books_materialized = bool(result.managed_books_ready)
-                self._materialized_counts = dict(result.chord_counts)
+                with self._deferred_lock:
+                    baseline = dict(self._materialized_counts)
+                    self._finalizing_counts_baseline = dict(baseline)
+                    pending_chords = [
+                        args[0] for collection_id, _, kind, args in self._deferred
+                        if collection_id == (self.collection_id or '') and
+                        kind == 'chords' and args and isinstance(args[0], dict)]
+                    for progress in pending_chords:
+                        for key, total in progress.items():
+                            if isinstance(key, str) and key and _is_int(total) and total >= 0:
+                                self._finalizing_counts_baseline[key] = max(
+                                    self._finalizing_counts_baseline.get(key, 0), total)
+                    self._materialized_counts = dict(result.chord_counts)
+                    if pending_chords:
+                        pending_keys = {
+                            key for progress in pending_chords for key in progress
+                            if isinstance(key, str) and key}
+                        for key in pending_keys:
+                            self._materialized_counts[key] = baseline.get(key, 0)
                 self._materialized_overrides = dict(result.chord_overrides)
                 self._remember_materialized(result)
                 result.status.diagnostics = list(self.status.diagnostics)

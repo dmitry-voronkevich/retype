@@ -398,9 +398,8 @@ class MainController(QObject):
     def _managedLibraryLoadCompleted(self, books):
         # type: (MainController, dict[int, BookWrapper]) -> None
         self._managed_library_worker = None
-        self.library.installManagedBooks(books)
-        self.views[View.shelf_view].addBooks(
-            [book for book in books.values() if book.valid])
+        installed = self.library.installManagedBooks(books)
+        self.views[View.shelf_view].addBooks(installed)
 
     def _repopulateLibrary(self, user_dir, library_paths):
         # type: (MainController, str, list[str]) -> None
