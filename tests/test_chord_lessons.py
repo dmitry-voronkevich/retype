@@ -29,6 +29,17 @@ def test_progress_persists_only_validated_successes(tmp_path):
     assert restored.progress_for('the').successful_uses == 1
 
 
+def test_merged_progress_does_not_notify_sync_callback(tmp_path):
+    changes = []
+    storage = ChordMasteryStorage(str(tmp_path),
+                                  lambda progress, overrides: changes.append(
+                                      (progress, overrides)))
+    progress = ChordMasteryProgress(storage)
+
+    assert progress.apply_merged({'the': 3}, {'the': False})
+    assert changes == []
+
+
 def test_missing_data_starts_empty_and_partial_data_is_preserved(tmp_path):
     progress = _progress(tmp_path)
     assert progress.progress_for('the').successful_uses == 0

@@ -88,8 +88,8 @@ class ChordMasteryStorage:
                                'entry %r while preserving it on disk', key)
         return progress
 
-    def save(self, progress, overrides=None):
-        # type: (Mapping[str, int], Mapping[str, bool] | None) -> bool
+    def save(self, progress, overrides=None, notify=True):
+        # type: (Mapping[str, int], Mapping[str, bool] | None, bool) -> bool
         if not self.path or not self.writable:
             return False
         merged = dict(self._raw_progress)
@@ -115,7 +115,7 @@ class ChordMasteryStorage:
             return False
         self._raw_progress = merged
         self._raw_overrides = merged_overrides
-        if callable(self.on_change):
+        if notify and callable(self.on_change):
             self.on_change(dict(merged), dict(merged_overrides))
         return True
 
@@ -227,7 +227,7 @@ class ChordMasteryProgress:
             key: value for key, value in overrides.items()
             if isinstance(key, str) and key and isinstance(value, bool)
         }
-        saved = self.storage.save(merged_uses, merged_overrides)
+        saved = self.storage.save(merged_uses, merged_overrides, notify=False)
         self._uses = merged_uses
         self._manual_overrides = merged_overrides
         return saved

@@ -397,6 +397,81 @@ def test_deferred_mutations_survive_restart(tmp_path):
     assert not (local / 'deferred-sync-mutations.json').exists()
 
 
+def test_corrupt_deferred_pointer_recovers_complete_parts(tmp_path):
+    root = tmp_path / 'folder'
+    local = tmp_path / 'one-local'
+    legacy = tmp_path / 'one-legacy'
+    _legacy(legacy, config=_config())
+    first = LearningSync(local, legacy)
+    assert first.configure(root).state == 'ready'
+    first.sync_now()
+    locked = Event()
+    release = Event()
+
+    def hold_sync_lock():
+        with first._lock:
+            locked.set()
+            release.wait()
+
+    worker = Thread(target=hold_sync_lock)
+    worker.start()
+    assert locked.wait(1)
+    first.record_chords({'word': 1}, {})
+    release.set()
+    worker.join(1)
+    (local / 'deferred-sync-mutations.json').write_text(
+        '{not json', encoding='utf-8')
+
+    restarted = LearningSync(local, legacy)
+    assert restarted.has_deferred_changes
+    assert restarted.sync_now().chord_counts == {'word': 1}
+
+
+def test_switching_collections_preserves_deferred_state_for_recovery(tmp_path):
+    root = tmp_path / 'folder'
+    local = tmp_path / 'one-local'
+    legacy = tmp_path / 'one-legacy'
+    _legacy(legacy, config=_config())
+    first = LearningSync(local, legacy)
+    assert first.configure(root).state == 'ready'
+    first.sync_now()
+    locked = Event()
+    release = Event()
+
+    def hold_sync_lock():
+        with first._lock:
+            locked.set()
+            release.wait()
+
+    worker = Thread(target=hold_sync_lock)
+    worker.start()
+    assert locked.wait(1)
+    first.record_chords({'word': 1}, {})
+    release.set()
+    worker.join(1)
+
+    assert first.configure(tmp_path / 'other-folder').state == 'ready'
+    assert list((local / 'recovery' / 'sync').glob('*.rejected'))
+
+
+def test_invalid_materialized_count_is_ignored(tmp_path):
+    root = tmp_path / 'folder'
+    local = tmp_path / 'one-local'
+    legacy = tmp_path / 'one-legacy'
+    _legacy(legacy, config=_config())
+    first = LearningSync(local, legacy)
+    assert first.configure(root).state == 'ready'
+    first.sync_now()
+    bootstrap = json.loads((local / 'local-bootstrap.json').read_text())
+    bootstrap['last_materialized']['chord_counts'] = {'word': 'invalid'}
+    (local / 'local-bootstrap.json').write_text(
+        json.dumps(bootstrap), encoding='utf-8')
+
+    restarted = LearningSync(local, legacy)
+    restarted.record_chords({'word': 1}, {})
+    assert restarted.sync_now().chord_counts == {'word': 1}
+
+
 def test_deferred_chord_callback_during_final_materialization_is_retained(tmp_path):
     root = tmp_path / 'folder'
     sender, _ = _enable(
@@ -583,6 +658,8 @@ def test_managed_books_need_consent_are_content_addressed_and_never_auto_importe
     corrupt.write_bytes(b'not an epub')
     with pytest.raises(SyncError, match='corrupt'):
         sync.import_book(corrupt)
+    with pytest.raises(SyncError, match='metadata'):
+        sync.import_book(source, title='x' * 513)
 
 
 def test_merged_managed_library_limit_preserves_oversized_metadata(tmp_path):

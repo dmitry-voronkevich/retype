@@ -104,6 +104,24 @@ def _is_int(value: object) -> bool:
     return isinstance(value, int) and not isinstance(value, bool)
 
 
+def _valid_count_map(value: object) -> dict[str, int]:
+    if not isinstance(value, dict):
+        return {}
+    return {
+        key: count for key, count in value.items()
+        if isinstance(key, str) and key and _is_int(count) and count >= 0
+    }
+
+
+def _valid_override_map(value: object) -> dict[str, bool]:
+    if not isinstance(value, dict):
+        return {}
+    return {
+        key: mastered for key, mastered in value.items()
+        if isinstance(key, str) and key and isinstance(mastered, bool)
+    }
+
+
 def _json_bytes(data: object) -> bytes:
     try:
         return json.dumps(data, sort_keys=True, separators=(',', ':'),
@@ -597,10 +615,8 @@ class LearningSync:
             if isinstance(baseline, dict) else None
         baseline_overrides = baseline.get('chord_overrides') \
             if isinstance(baseline, dict) else None
-        self._materialized_counts = dict(baseline_counts) \
-            if isinstance(baseline_counts, dict) else {}
-        self._materialized_overrides = dict(baseline_overrides) \
-            if isinstance(baseline_overrides, dict) else {}
+        self._materialized_counts = _valid_count_map(baseline_counts)
+        self._materialized_overrides = _valid_override_map(baseline_overrides)
         self._load_published()
         self._load_pending()
         self._initialize_materialized_count_baseline()
@@ -864,34 +880,54 @@ class LearningSync:
         pointer_exists = self.deferred_path.exists()
         if not pointer_exists and not self.deferred_parts_dir.exists():
             return
+        pointer_data = None
+        pointer_generation = None
+        pointer_usable = False
+        if pointer_exists:
+            try:
+                pointer_data = _read_json(self.deferred_path, MAX_DEFERRED_BYTES)
+                if not isinstance(pointer_data, dict):
+                    raise ValidationError('deferred sync pointer is malformed')
+                pointer_generation = pointer_data.get('generation')
+                if pointer_generation is not None and not isinstance(pointer_generation, str):
+                    raise ValidationError('deferred sync generation is malformed')
+                if 'count' in pointer_data and not _is_int(pointer_data.get('count')):
+                    raise ValidationError('deferred sync generation is malformed')
+                pointer_usable = True
+            except (OSError, SyncError, ValidationError) as error:
+                self._recover_candidate(
+                    self.deferred_path,
+                    'deferred sync pointer could not be read: {}'.format(error))
+
         try:
-            data = _read_json(self.deferred_path, MAX_DEFERRED_BYTES) \
-                if pointer_exists else None
-            legacy = isinstance(data, dict) and 'count' not in data
             candidates = self._complete_deferred_generations()
-            generation = data.get('generation') if isinstance(data, dict) else None
-            if generation is not None and not isinstance(generation, str):
-                raise ValidationError('deferred sync generation is malformed')
-            if isinstance(data, dict) and _is_int(data.get('count')):
-                count = data['count']
-                try:
-                    candidates.append((generation or '',
-                                      self._read_deferred_generation(
-                                          generation, count)))
-                except ValidationError:
-                    pass
-            elif data is not None:
-                candidates.append((generation or '', self._read_deferred_events(
-                    data, self.collection_id, legacy)))
-                if generation is not None:
-                    for path in sorted(self.deferred_parts_dir.glob('*.json')):
-                        part = _read_json(path, MAX_DEFERRED_BYTES)
-                        if not isinstance(part, dict) or \
-                                part.get('generation') != generation or \
-                                'count' in part:
-                            continue
-                        candidates[-1][1].extend(self._read_deferred_events(
-                            part, self.collection_id))
+            legacy = pointer_usable and isinstance(pointer_data, dict) and \
+                'count' not in pointer_data
+            if pointer_usable and isinstance(pointer_data, dict):
+                if _is_int(pointer_data.get('count')):
+                    try:
+                        candidates.append((pointer_generation or '',
+                                          self._read_deferred_generation(
+                                              pointer_generation,
+                                              pointer_data['count'])))
+                    except ValidationError:
+                        pass
+                else:
+                    try:
+                        candidates.append((pointer_generation or '',
+                                          self._read_deferred_events(
+                                              pointer_data, self.collection_id, legacy)))
+                        if pointer_generation is not None:
+                            for path in sorted(self.deferred_parts_dir.glob('*.json')):
+                                part = _read_json(path, MAX_DEFERRED_BYTES)
+                                if not isinstance(part, dict) or \
+                                        part.get('generation') != pointer_generation or \
+                                        'count' in part:
+                                    continue
+                                candidates[-1][1].extend(self._read_deferred_events(
+                                    part, self.collection_id))
+                    except ValidationError:
+                        pass
             if not candidates:
                 raise ValidationError('deferred sync mutations are incomplete')
             selected_generation, loaded = max(
@@ -900,7 +936,8 @@ class LearningSync:
                                   item[0]))
             with self._deferred_lock:
                 self._deferred = loaded
-            if not pointer_exists or legacy or selected_generation != generation:
+            if not pointer_usable or not pointer_exists or legacy or \
+                    selected_generation != pointer_generation:
                 try:
                     with self._deferred_lock:
                         self._persist_deferred_locked()
@@ -908,13 +945,8 @@ class LearningSync:
                     self._diagnose(
                         'Deferred sync mutations could not be rewritten: {}'.format(error))
         except (OSError, SyncError, ValidationError) as error:
-            if pointer_exists:
-                self._recover_candidate(
-                    self.deferred_path,
-                    'deferred sync mutations could not be read: {}'.format(error))
-            else:
-                self._diagnose(
-                    'Deferred sync mutations could not be recovered: {}'.format(error))
+            self._diagnose(
+                'Deferred sync mutations could not be recovered: {}'.format(error))
 
     def _persist_deferred_locked(self) -> None:
         if not self._deferred:
@@ -1163,14 +1195,13 @@ class LearningSync:
                     }, self.recovery_dir / 'manifest')
                 previous_collection = self.collection_id
                 if previous_collection != collection_id:
-                    if self._bootstrap_recovered:
-                        if self.pending_path.exists():
-                            self._recover_candidate(
-                                self.pending_path,
-                                'pending state was retained after malformed bootstrap recovery')
-                        if self.deferred_path.exists() or self.deferred_parts_dir.is_dir():
-                            self._recover_deferred_state(
-                                'deferred state was retained after malformed bootstrap recovery')
+                    if self.pending_path.exists():
+                        self._recover_candidate(
+                            self.pending_path,
+                            'pending state was retained while switching sync collections')
+                    if self.deferred_path.exists() or self.deferred_parts_dir.is_dir():
+                        self._recover_deferred_state(
+                            'deferred state was retained while switching sync collections')
                     with self._deferred_lock:
                         self._deferred.clear()
                         self._persist_deferred_locked()
@@ -1297,15 +1328,13 @@ class LearningSync:
     def _capture_local_only_changes(self) -> None:
         """Queue changes made while sync was disabled without re-counting it."""
         baseline = self._last_materialized()
-        baseline_counts = baseline.get('chord_counts', {})
-        baseline_overrides = baseline.get('chord_overrides', {})
+        baseline_counts = _valid_count_map(baseline.get('chord_counts', {}))
+        baseline_overrides = _valid_override_map(baseline.get('chord_overrides', {}))
         baseline_settings = baseline.get('settings', {})
-        if isinstance(baseline_counts, dict):
-            self._materialized_counts = {
-                **baseline_counts, **self._materialized_counts}
-        if isinstance(baseline_overrides, dict):
-            self._materialized_overrides = {
-                **baseline_overrides, **self._materialized_overrides}
+        self._materialized_counts = {
+            **baseline_counts, **self._materialized_counts}
+        self._materialized_overrides = {
+            **baseline_overrides, **self._materialized_overrides}
 
         chord_path = self.legacy_dir / 'chord-mastery.json'
         try:
@@ -1860,6 +1889,8 @@ class LearningSync:
                     'title': title if isinstance(title, str) and title else path.stem,
                     'size': size,
                 }
+                if not _validate_book_metadata(digest, metadata):
+                    raise SyncError('the managed EPUB metadata is invalid')
                 destination = root / 'books' / 'sha256' / (digest + '.epub')
                 manifest = root / 'books' / 'sha256' / (digest + '.json')
                 if destination.exists() and (destination.stat().st_size != size or
