@@ -1268,77 +1268,99 @@ class LearningSync:
         """Explicitly copy one user-selected EPUB into the managed library."""
         path = Path(source)
         with self._lock:
-            if not self.enabled:
-                raise SyncError('turn on sync before importing a managed book')
-            if not self.managed_library_consent:
-                raise SyncError('managed-library consent is required before copying books')
-            if path.suffix.lower() != '.epub' or not path.is_file():
-                raise SyncError('select a readable EPUB file')
+            created_paths = []
+            digest = None
+            managed = None
+            missing = object()
+            previous_metadata = missing
             try:
-                # Import lazily to keep this pure protocol module independent
-                # of resource-handler initialisation order.
-                from retype.resource_handler import getLibraryPath
-                bundled = Path(getLibraryPath()).resolve()
-                if os.path.commonpath((str(path.resolve()), str(bundled))) == str(bundled):
-                    raise SyncError('bundled EPUBs are already available and are never uploaded')
-            except ValueError:
-                # Different Windows volumes cannot share a common path.
-                pass
-            try:
-                is_epub_archive = zipfile.is_zipfile(path)
+                if not self.enabled:
+                    raise SyncError('turn on sync before importing a managed book')
+                if not self.managed_library_consent:
+                    raise SyncError('managed-library consent is required before copying books')
+                if path.suffix.lower() != '.epub' or not path.is_file():
+                    raise SyncError('select a readable EPUB file')
+                try:
+                    from retype.resource_handler import getLibraryPath
+                    bundled = Path(getLibraryPath()).resolve()
+                    if os.path.commonpath((str(path.resolve()), str(bundled))) == str(bundled):
+                        raise SyncError('bundled EPUBs are already available and are never uploaded')
+                except ValueError:
+                    pass
+                try:
+                    is_epub_archive = zipfile.is_zipfile(path)
+                except OSError as error:
+                    raise SyncError('the selected EPUB cannot be read: {}'.format(error)) from error
+                if not is_epub_archive:
+                    raise SyncError('the selected EPUB is corrupt or unsupported')
+                size = path.stat().st_size
+                if size <= 0 or size > MAX_MANAGED_BOOK_BYTES:
+                    raise SyncError('a managed EPUB must be at most 100 MiB')
+                root = self.sync_root
+                if root is None or not root.is_dir():
+                    raise SyncError('the selected sync folder is unavailable')
+                digest = _file_sha256(path)
+                managed = self._payload.setdefault('managed_books', {})
+                assert isinstance(managed, dict)
+                previous_metadata = managed.get(digest, missing)
+                visible = merge_replicas([self._envelope()]).managed_books
+                replicas_dir = root / 'replicas'
+                if replicas_dir.is_dir() and self.collection_id is not None:
+                    visible.update(merge_replicas(
+                        self._scan_replicas(replicas_dir, self.collection_id)).managed_books)
+                all_books = dict(visible)
+                all_books.update({key: value for key, value in managed.items()
+                                  if isinstance(key, str) and isinstance(value, dict)})
+                existing_total = sum(int(meta['size']) for key, meta in all_books.items()
+                                     if key != digest and _validate_book_metadata(key, meta))
+                if existing_total + size > MAX_MANAGED_LIBRARY_BYTES:
+                    raise SyncError('managed library limit is 1 GiB')
+                metadata = {
+                    'schema': 1,
+                    'digest': digest,
+                    'original_filename': path.name,
+                    'title': title if isinstance(title, str) and title else path.stem,
+                    'size': size,
+                }
+                destination = root / 'books' / 'sha256' / (digest + '.epub')
+                manifest = root / 'books' / 'sha256' / (digest + '.json')
+                if destination.exists() and (destination.stat().st_size != size or
+                                             _file_sha256(destination) != digest):
+                    self._recover_candidate(destination, 'existing managed book does not match digest')
+                    raise SyncError('the selected folder contains a rejected book with this digest')
+                if not destination.exists():
+                    created_paths.append(destination)
+                    _copy_atomic(path, destination)
+                if not manifest.exists():
+                    created_paths.append(manifest)
+                atomic_write_json(manifest, metadata, self.recovery_dir / 'books')
+                local_copy = self.managed_library_dir / (digest + '.epub')
+                if not local_copy.exists():
+                    created_paths.append(local_copy)
+                    _copy_atomic(path, local_copy)
+                previous_editions = [item for key, item in managed.items()
+                                     if key != digest and isinstance(item, dict) and
+                                     item.get('original_filename') == path.name]
+                managed[digest] = metadata
+                self._touch()
+                if previous_editions:
+                    self._diagnose('Imported {} as a separate edition; progress is not '
+                                   'mapped between changed EPUB bytes.'.format(path.name))
+                return metadata
+            except SyncError:
+                raise
             except OSError as error:
-                raise SyncError('the selected EPUB cannot be read: {}'.format(error)) from error
-            if not is_epub_archive:
-                raise SyncError('the selected EPUB is corrupt or unsupported')
-            size = path.stat().st_size
-            if size <= 0 or size > MAX_MANAGED_BOOK_BYTES:
-                raise SyncError('a managed EPUB must be at most 100 MiB')
-            root = self.sync_root
-            if root is None or not root.is_dir():
-                raise SyncError('the selected sync folder is unavailable')
-            digest = _file_sha256(path)
-            managed = self._payload.setdefault('managed_books', {})
-            assert isinstance(managed, dict)
-            visible = merge_replicas([self._envelope()]).managed_books
-            replicas_dir = root / 'replicas'
-            if replicas_dir.is_dir() and self.collection_id is not None:
-                visible.update(merge_replicas(
-                    self._scan_replicas(replicas_dir, self.collection_id)).managed_books)
-            all_books = dict(visible)
-            all_books.update({key: value for key, value in managed.items()
-                              if isinstance(key, str) and isinstance(value, dict)})
-            existing_total = sum(int(meta['size']) for key, meta in all_books.items()
-                                 if key != digest and _validate_book_metadata(key, meta))
-            if existing_total + size > MAX_MANAGED_LIBRARY_BYTES:
-                raise SyncError('managed library limit is 1 GiB')
-            metadata = {
-                'schema': 1,
-                'digest': digest,
-                'original_filename': path.name,
-                'title': title if isinstance(title, str) and title else path.stem,
-                'size': size,
-            }
-            destination = root / 'books' / 'sha256' / (digest + '.epub')
-            manifest = root / 'books' / 'sha256' / (digest + '.json')
-            if destination.exists() and (destination.stat().st_size != size or
-                                         _file_sha256(destination) != digest):
-                self._recover_candidate(destination, 'existing managed book does not match digest')
-                raise SyncError('the selected folder contains a rejected book with this digest')
-            if not destination.exists():
-                _copy_atomic(path, destination)
-            atomic_write_json(manifest, metadata, self.recovery_dir / 'books')
-            local_copy = self.managed_library_dir / (digest + '.epub')
-            if not local_copy.exists():
-                _copy_atomic(path, local_copy)
-            previous_editions = [item for key, item in managed.items()
-                                 if key != digest and isinstance(item, dict) and
-                                 item.get('original_filename') == path.name]
-            managed[digest] = metadata
-            self._touch()
-            if previous_editions:
-                self._diagnose('Imported {} as a separate edition; progress is not '
-                               'mapped between changed EPUB bytes.'.format(path.name))
-            return metadata
+                for created in reversed(created_paths):
+                    try:
+                        created.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+                if managed is not None and digest is not None:
+                    if previous_metadata is missing:
+                        managed.pop(digest, None)
+                    else:
+                        managed[digest] = previous_metadata
+                raise SyncError('managed EPUB import failed: {}'.format(error)) from error
 
     def diagnostics_text(self) -> str:
         with self._lock:

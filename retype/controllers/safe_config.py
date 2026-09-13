@@ -73,19 +73,25 @@ class _SafeConfig:
             else root_path
         if not isinstance(legacy_user_dir, str) or not legacy_user_dir:
             legacy_user_dir = root_path
+        migration_ready = True
         if os.path.abspath(legacy_user_dir) == os.path.abspath(root_path):
             migrated['user_dir'] = self.default_user_dir
             try:
                 os.makedirs(self.default_user_dir, exist_ok=True)
-                for filename in ('save.json', 'chord-mastery.json'):
+                for filename in legacy_files:
                     source = os.path.join(root_path, filename)
                     destination = os.path.join(self.default_user_dir, filename)
-                    if os.path.exists(source) and not os.path.exists(destination):
+                    if not os.path.exists(source):
+                        raise OSError('legacy learning file disappeared: {}'.format(
+                            filename))
+                    if not os.path.exists(destination):
                         shutil.copy2(source, destination)
             except OSError as error:
+                migration_ready = False
                 logger.warning('Could not copy legacy local learning data: %s',
                                error)
-        self._save(self.base_config_abs_path, migrated)
+        if migration_ready:
+            self._save(self.base_config_abs_path, migrated)
 
     def load(self, path):
         # type: (_SafeConfig, str) -> Config

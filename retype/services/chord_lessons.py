@@ -216,6 +216,22 @@ class ChordMasteryProgress:
         keys = set(self._uses) | set(self._manual_overrides)
         return {key: self.progress_for(key) for key in keys}
 
+    def apply_merged(self, uses, overrides):
+        # type: (ChordMasteryProgress, Mapping[str, int], Mapping[str, bool]) -> bool
+        merged_uses = dict(self._uses)
+        for key, count in uses.items():
+            if isinstance(key, str) and key and isinstance(count, int) and \
+                    not isinstance(count, bool) and count >= 0:
+                merged_uses[key] = max(merged_uses.get(key, 0), count)
+        merged_overrides = {
+            key: value for key, value in overrides.items()
+            if isinstance(key, str) and key and isinstance(value, bool)
+        }
+        saved = self.storage.save(merged_uses, merged_overrides)
+        self._uses = merged_uses
+        self._manual_overrides = merged_overrides
+        return saved
+
 
 @dataclass(frozen=True)
 class ChordLesson:

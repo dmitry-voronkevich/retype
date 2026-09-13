@@ -3,6 +3,7 @@ import json
 import logging
 import re
 import traceback
+from hashlib import sha256
 from copy import deepcopy
 from lxml.html import fromstring, builder, tostring, xhtml_to_html
 from lxml.etree import _Element
@@ -17,6 +18,14 @@ from retype.extras.hashing import generate_file_md5
 logger = logging.getLogger(__name__)
 
 _MANAGED_BOOK_FILENAME = re.compile(r'^[0-9a-f]{64}\.epub$')
+
+
+def _file_sha256(path):
+    digest = sha256()
+    with open(path, 'rb') as file:
+        for chunk in iter(lambda: file.read(1024 * 1024), b''):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _save_position_key(data):
@@ -101,6 +110,15 @@ class LibraryController(object):
                             entry.name):
                         continue
                     checksum = entry.name[:-len('.epub')]
+                    try:
+                        if _file_sha256(entry.path) != checksum:
+                            logger.warning('Ignoring managed EPUB with a hash mismatch: %s',
+                                           entry.path)
+                            continue
+                    except OSError as error:
+                        logger.warning('Unable to verify managed EPUB %s: %s',
+                                       entry.path, error)
+                        continue
                     if checksum in existing:
                         continue
                     library_items[next_id] = LibraryItem(

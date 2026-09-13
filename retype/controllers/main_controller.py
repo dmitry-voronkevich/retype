@@ -572,15 +572,16 @@ class MainController(QObject):
                 added = self.library.addManagedBooks(result.managed_books)
                 if added:
                     self.views[View.shelf_view].addBooks(added)
-            if hasattr(self, 'views') and View.book_view in self.views:
-                self.chord_progress = ChordMasteryProgress(
-                    ChordMasteryStorage(self.config['user_dir'], self._recordSyncChords))
-                self.views[View.book_view].setChordProgress(self.chord_progress)
-                dialog = getattr(self, 'customisation_dialog', None)
-                if dialog is not None:
-                    dialog.chordProgress = self.chord_progress
-                    if hasattr(dialog, 'chord_mastery'):
-                        dialog.chord_mastery.setProgress(self.chord_progress)
+            if result.status.state == 'synced':
+                self.chord_progress.apply_merged(
+                    result.chord_counts, result.chord_overrides)
+                if hasattr(self, 'views') and View.book_view in self.views:
+                    self.views[View.book_view].setChordProgress(self.chord_progress)
+                    dialog = getattr(self, 'customisation_dialog', None)
+                    if dialog is not None:
+                        dialog.chordProgress = self.chord_progress
+                        if hasattr(dialog, 'chord_mastery'):
+                            dialog.chord_mastery.setProgress(self.chord_progress)
                 if active_checksum in (result.save if result.save else {}):
                     book = next((item for item in self.library.books.values()
                                  if item.checksum == active_checksum), None) \

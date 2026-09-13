@@ -1,4 +1,5 @@
 import sys
+from hashlib import sha256
 from pathlib import Path
 from unittest.mock import patch, ANY
 from PyQt5.Qt import QApplication
@@ -32,9 +33,11 @@ def _setup():
 def test_managed_books_are_indexed_from_content_addressed_filenames(tmp_path):
     managed = tmp_path / 'managed-books'
     managed.mkdir()
-    checksum = 'a' * 64
+    content = b'local book'
+    checksum = sha256(content).hexdigest()
     path = managed / (checksum + '.epub')
-    path.write_bytes(b'local book')
+    path.write_bytes(content)
+    (managed / ('a' * 64 + '.epub')).write_bytes(b'altered')
     (managed / 'not-a-managed-book.epub').write_bytes(b'ignored')
 
     library = LibraryController('', [], str(managed))
