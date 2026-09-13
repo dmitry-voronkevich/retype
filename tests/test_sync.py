@@ -523,6 +523,51 @@ def test_deferred_mutations_survive_restart(tmp_path):
     assert not (local / 'deferred-sync-mutations.json').exists()
 
 
+def test_newer_malformed_deferred_generation_is_quarantined_before_cleanup(tmp_path):
+    sync, _ = _enable(tmp_path, 'one', tmp_path / 'folder', config=_config())
+    sync.sync_now()
+    parts = sync.deferred_parts_dir
+    parts.mkdir(parents=True)
+    older = '00000000000000000001-old'
+    newer = '00000000000000000002-new'
+    event_id = '00000000-0000-0000-0000-000000000001'
+    atomic_write_json(parts / (older + '-00000000.json'), {
+        'generation': older,
+        'index': 0,
+        'count': 1,
+        'events': [[sync.collection_id, event_id, 'chords',
+                    [{'word': 1}, {}]]],
+    })
+    atomic_write_json(parts / (newer + '-00000000.json'), {
+        'generation': newer,
+        'index': 0,
+        'count': 1,
+        'events': [[sync.collection_id, event_id, 'chords',
+                    [{'word': 'invalid'}, {}]]],
+    })
+    atomic_write_json(sync.deferred_path, {'generation': newer, 'count': 1})
+
+    restarted = LearningSync(tmp_path / 'one-local', tmp_path / 'one-legacy')
+    result = restarted.sync_now()
+
+    assert result.chord_counts == {'word': 1}
+    assert not (parts / (newer + '-00000000.json')).exists()
+    assert list((restarted.recovery_dir).glob(
+        newer + '-00000000.json.*.rejected'))
+
+
+def test_deeply_nested_provider_json_is_reported_as_invalid(tmp_path):
+    sync, _ = _enable(tmp_path, 'one', tmp_path / 'folder', config=_config())
+    sync.sync_now()
+    invalid = tmp_path / 'folder' / 'replicas' / 'deep.json'
+    invalid.write_text('[' * 2000 + ']' * 2000, encoding='utf-8')
+
+    result = sync.sync_now()
+
+    assert result.status.state == 'synced'
+    assert any('deep.json' in item for item in result.status.diagnostics)
+
+
 def test_corrupt_deferred_pointer_recovers_complete_parts(tmp_path):
     root = tmp_path / 'folder'
     local = tmp_path / 'one-local'

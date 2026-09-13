@@ -214,7 +214,7 @@ def _read_json(path: Path, maximum: int = MAX_REPLICA_BYTES) -> object:
             return json.load(file)
     except ValidationError:
         raise
-    except (OSError, ValueError, TypeError) as error:
+    except (OSError, ValueError, TypeError, RecursionError) as error:
         raise ValidationError(str(error)) from error
 
 
@@ -674,6 +674,7 @@ class LearningSync:
         # next scan/publish instead.
         self._deferred_lock = threading.Lock()
         self._deferred: list[tuple[str, str, str, tuple[object, ...]]] = []
+        self._deferred_recovery_pending: set[Path] = set()
         self._finalizing_counts_baseline: dict[str, int] | None = None
         self._bootstrap_recovered = False
         self.status = SyncStatus()
@@ -979,30 +980,52 @@ class LearningSync:
             loaded.extend(self._read_deferred_events(data, self.collection_id))
         return loaded
 
-    def _complete_deferred_generations(self) -> list[tuple[str, list[tuple[str, str, str, tuple[object, ...]]]]]:
-        groups: dict[str, dict[int, tuple[int, object]]] = {}
+    def _complete_deferred_generations(self) -> tuple[
+            list[tuple[str, list[tuple[str, str, str, tuple[object, ...]]]]],
+            set[Path]]:
+        groups: dict[str, dict[int, tuple[int, object, Path]]] = {}
+        generation_paths: dict[str, set[Path]] = {}
+        invalid_generations: set[str] = set()
+        invalid_paths: set[Path] = set()
         if not self.deferred_parts_dir.is_dir():
-            return []
+            return [], set()
         for path in sorted(self.deferred_parts_dir.glob('*.json')):
             try:
                 data = _read_json(path, MAX_DEFERRED_BYTES)
                 if not isinstance(data, dict):
+                    if re.fullmatch(r'[A-Za-z0-9_-]{1,128}-\d{8}\.json',
+                                    path.name):
+                        invalid_paths.add(path)
                     continue
                 generation = data.get('generation')
                 index = data.get('index')
                 count = data.get('count')
+                if isinstance(generation, str):
+                    generation_paths.setdefault(generation, set()).add(path)
+                if generation is None and index is None and count is None:
+                    continue
                 if not isinstance(generation, str) or not _is_int(index) or \
                         not _is_int(count) or index < 0 or count < 1 or \
                         count > MAX_DEFERRED_PARTS or index >= count:
+                    if isinstance(generation, str):
+                        invalid_generations.add(generation)
+                    else:
+                        invalid_paths.add(path)
                     continue
-                groups.setdefault(generation, {})[index] = (count, data)
+                groups.setdefault(generation, {})[index] = (count, data, path)
             except ValidationError:
-                continue
+                if re.fullmatch(r'[A-Za-z0-9_-]{1,128}-\d{8}\.json',
+                                path.name):
+                    invalid_paths.add(path)
+        for generation in invalid_generations:
+            invalid_paths.update(generation_paths.get(generation, set()))
         complete = []
         for generation, parts in groups.items():
-            counts = {count for count, _ in parts.values()}
+            group_paths = {part[2] for part in parts.values()}
+            counts = {part[0] for part in parts.values()}
             count = next(iter(counts)) if len(counts) == 1 else 0
             if count < 1 or len(parts) != count or set(parts) != set(range(count)):
+                invalid_paths.update(group_paths)
                 continue
             try:
                 events = []
@@ -1011,8 +1034,13 @@ class LearningSync:
                         parts[index][1], self.collection_id))
                 complete.append((generation, events))
             except ValidationError:
-                continue
-        return complete
+                invalid_paths.update(group_paths)
+        unrecovered = set()
+        for path in sorted(invalid_paths):
+            if not self._recover_candidate(
+                    path, 'deferred sync generation is malformed'):
+                unrecovered.add(path)
+        return complete, unrecovered
 
     def _load_deferred(self) -> None:
         pointer_exists = self.deferred_path.exists()
@@ -1038,7 +1066,8 @@ class LearningSync:
                     'deferred sync pointer could not be read: {}'.format(error))
 
         try:
-            candidates = self._complete_deferred_generations()
+            candidates, unrecovered = self._complete_deferred_generations()
+            self._deferred_recovery_pending.update(unrecovered)
             legacy = pointer_usable and isinstance(pointer_data, dict) and \
                 'count' not in pointer_data
             if pointer_usable and isinstance(pointer_data, dict):
@@ -1091,8 +1120,10 @@ class LearningSync:
             self.deferred_path.unlink(missing_ok=True)
             if self.deferred_parts_dir.exists():
                 for path in self.deferred_parts_dir.glob('*.json'):
-                    path.unlink(missing_ok=True)
-                self.deferred_parts_dir.rmdir()
+                    if path not in self._deferred_recovery_pending:
+                        path.unlink(missing_ok=True)
+                if not any(self.deferred_parts_dir.glob('*.json')):
+                    self.deferred_parts_dir.rmdir()
             return
 
         generation = '{:020d}-{}'.format(time.time_ns(), uuid4().hex)
@@ -1129,7 +1160,7 @@ class LearningSync:
             {'generation': generation, 'count': count},
             self.recovery_dir / 'deferred')
         for path in self.deferred_parts_dir.glob('*.json'):
-            if path not in current_parts:
+            if path not in current_parts and path not in self._deferred_recovery_pending:
                 path.unlink(missing_ok=True)
 
     def _now(self) -> HLC:
