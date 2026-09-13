@@ -1439,7 +1439,27 @@ class LearningSync:
             return
         for key, count in counts.items():
             if isinstance(key, str) and key and _is_int(count) and count >= 0:
-                self._materialized_counts.setdefault(key, count)
+                self._materialized_counts[key] = max(
+                    self._materialized_counts.get(key, 0), count)
+
+    def deferred_settings(self) -> dict[str, object]:
+        pending: dict[str, object] = {}
+        collection = self.collection_id or ''
+        with self._deferred_lock:
+            events = list(self._deferred)
+        for event_collection, _, kind, args in events:
+            if event_collection != collection or kind != 'settings' or len(args) < 2:
+                continue
+            current = args[0]
+            previous = args[1]
+            if not isinstance(current, Mapping) or not isinstance(previous, Mapping):
+                continue
+            values = learning_settings_from_config(current)
+            before = learning_settings_from_config(previous)
+            for key, value in values.items():
+                if value != before.get(key):
+                    pending[key] = deepcopy(value)
+        return pending
 
     def record_book(self, identity: str, data: Mapping[str, object],
                     _deferred_id: str | None = None) -> None:
@@ -1770,8 +1790,13 @@ class LearningSync:
                 chord_current = {}
                 chord_valid = not chord_path.exists()
                 self._diagnose('Existing local chord progress was left untouched: {}'.format(error))
-            chord_data = dict(chord_current) if isinstance(chord_current, dict) else {}
-            if chord_path.exists() and chord_data.get('version') not in (1, 2):
+            if not isinstance(chord_current, dict):
+                chord_data = {}
+                chord_valid = False
+            else:
+                chord_data = dict(chord_current)
+            if isinstance(chord_current, dict) and chord_path.exists() and \
+                    chord_data.get('version') not in (1, 2):
                 chord_valid = False
                 self._diagnose('Existing local chord progress has an unsupported format and was left untouched.')
             raw_progress = chord_data.get('progress', {})

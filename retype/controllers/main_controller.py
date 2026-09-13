@@ -663,8 +663,10 @@ class MainController(QObject):
                                       'checksum', None)
             if book_view is not None:
                 book_view.maybeSave()
-            if result.settings:
-                updated = apply_learning_settings(self.config.raw, result.settings)
+            settings = dict(result.settings)
+            settings.update(self.learning_sync.deferred_settings())
+            if settings:
+                updated = apply_learning_settings(self.config.raw, settings)
                 if updated != self.config.raw:
                     self.config.populate(updated)
                     self.config.save()

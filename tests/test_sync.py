@@ -537,6 +537,50 @@ def test_post_scan_deferred_settings_are_included_in_result(tmp_path):
     assert result.settings['auto_newline'] is False
 
 
+def test_restart_uses_published_count_as_materialized_baseline(tmp_path):
+    root = tmp_path / 'folder'
+    local = tmp_path / 'one-local'
+    legacy = tmp_path / 'one-legacy'
+    _legacy(legacy, config=_config(),
+            chords={'version': 2, 'progress': {'word': 5}})
+    sync = LearningSync(local, legacy)
+    assert sync.configure(root).state == 'ready'
+    sync.sync_now()
+
+    bootstrap_path = local / 'local-bootstrap.json'
+    bootstrap = json.loads(bootstrap_path.read_text())
+    bootstrap['last_materialized']['chord_counts'] = {'word': 3}
+    bootstrap_path.write_text(json.dumps(bootstrap), encoding='utf-8')
+
+    restarted = LearningSync(local, legacy)
+    restarted.record_chords({'word': 6}, {})
+
+    assert restarted.sync_now().chord_counts == {'word': 6}
+
+
+def test_deferred_settings_are_available_for_live_result_application(tmp_path):
+    sync, _ = _enable(tmp_path, 'one', tmp_path / 'folder', config=_config())
+    sync.sync_now()
+    locked = Event()
+    release = Event()
+
+    def hold_sync_lock():
+        with sync._lock:
+            locked.set()
+            release.wait()
+
+    worker = Thread(target=hold_sync_lock)
+    worker.start()
+    assert locked.wait(1)
+    changed = _config()
+    changed['auto_newline'] = False
+    sync.record_settings(changed, _config())
+    release.set()
+    worker.join(1)
+
+    assert sync.deferred_settings() == {'auto_newline': False}
+
+
 def test_restart_restores_published_replica_without_fork_recovery(tmp_path):
     root = tmp_path / 'folder'
     local = tmp_path / 'one-local'
