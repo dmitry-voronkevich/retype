@@ -608,6 +608,7 @@ class LearningSync:
         self.bootstrap_path = self.local_root / 'local-bootstrap.json'
         self.pending_path = self.local_root / 'pending-sync-replica.json'
         self.published_path = self.local_root / 'last-published-sync-replica.json'
+        self.materialized_recovery_path = self.local_root / 'last-materialized-sync-state.json'
         self.deferred_path = self.local_root / 'deferred-sync-mutations.json'
         self.deferred_parts_dir = self.local_root / 'deferred-sync-mutations.parts'
         self.recovery_dir = self.local_root / 'recovery' / 'sync'
@@ -623,6 +624,7 @@ class LearningSync:
         self._bootstrap_recovered = False
         self.status = SyncStatus()
         self._bootstrap = self._load_bootstrap()
+        self._load_materialized_recovery()
         self._payload: dict[str, object] = _empty_payload()
         self._sequence = 0
         self._predecessor: str | None = None
@@ -723,6 +725,27 @@ class LearningSync:
     def _save_bootstrap(self) -> None:
         atomic_write_json(self.bootstrap_path, self._bootstrap,
                           self.recovery_dir / 'bootstrap')
+
+    def _load_materialized_recovery(self) -> None:
+        if not self.materialized_recovery_path.exists():
+            return
+        try:
+            data = _read_json(self.materialized_recovery_path)
+            if not isinstance(data, dict) or not all(
+                    isinstance(data.get(key), dict) for key in (
+                        'chord_counts', 'chord_overrides',
+                        'chord_override_registers', 'settings')):
+                raise ValidationError('materialized sync state is malformed')
+            settings = data['settings']
+            if any(key not in VALID_SETTINGS or
+                   not _validate_settings_value(key, value)
+                   for key, value in settings.items()):
+                raise ValidationError('materialized sync settings are malformed')
+            self._bootstrap['last_materialized'] = data
+        except ValidationError as error:
+            self._recover_candidate(
+                self.materialized_recovery_path,
+                'materialized sync state could not be read: {}'.format(error))
 
     def _install_published(self, data: Mapping[str, object]) -> None:
         self._payload = deepcopy(data['payload'])  # type: ignore[arg-type]
@@ -1061,13 +1084,13 @@ class LearningSync:
         self._dirty = True
         if self.enabled:
             try:
-                self._bootstrap['local_chord_counts'] = dict(self._local_chord_counts)
-                self._save_bootstrap()
                 envelope = self._envelope()
                 if len(_json_bytes(envelope)) > MAX_REPLICA_BYTES:
                     raise OSError('local learning state exceeds the 5 MiB replica limit')
                 atomic_write_json(self.pending_path, envelope,
                                   self.recovery_dir / 'pending')
+                self._bootstrap['local_chord_counts'] = dict(self._local_chord_counts)
+                self._save_bootstrap()
             except OSError as error:
                 self._diagnose(
                     'Local pending sync state could not be written: {}'.format(error))
@@ -1077,37 +1100,47 @@ class LearningSync:
                 raise
 
     def _touch_or_defer(self, kind: str, *args: object,
-                        deferred_id: str | None = None) -> None:
+                        deferred_id: str | None = None,
+                        deferred_baseline: Mapping[str, int] | None = None) -> bool:
         try:
             self._touch()
+            return True
         except OSError:
             if deferred_id is not None:
                 raise
-            if self._defer(kind, *args):
-                return
+            if self._defer(kind, *args, deferred_baseline=deferred_baseline):
+                return False
             try:
                 self._bootstrap['legacy_migrated'] = False
                 self._save_bootstrap()
             except OSError as error:
                 self._diagnose(
                     'Local sync recovery state could not be written: {}'.format(error))
+            return False
 
     def _diagnose(self, message: str) -> None:
         logger.warning('Learning sync: %s', message)
         self.status.diagnostics.append(message)
         self.status.diagnostics = self.status.diagnostics[-20:]
 
-    def _defer(self, kind: str, *args: object) -> bool:
+    def _defer(self, kind: str, *args: object,
+               deferred_baseline: Mapping[str, int] | None = None) -> bool:
         event_args = args
         with self._deferred_lock:
-            if kind == 'chords' and self._finalizing_counts_baseline is not None:
-                baseline = dict(self._finalizing_counts_baseline)
+            if kind == 'chords':
+                baseline = dict(deferred_baseline) if deferred_baseline is not None else None
+                if baseline is None and self._finalizing_counts_baseline is not None:
+                    baseline = dict(self._finalizing_counts_baseline)
                 progress = args[0] if args and isinstance(args[0], dict) else {}
-                for key, total in progress.items():
-                    if isinstance(key, str) and key and _is_int(total) and total >= 0:
-                        self._finalizing_counts_baseline[key] = max(
-                            self._finalizing_counts_baseline.get(key, 0), total)
-                event_args = args + (baseline,)
+                if self._finalizing_counts_baseline is not None:
+                    for key, total in progress.items():
+                        if isinstance(key, str) and key and _is_int(total) and total >= 0:
+                            if baseline is not None and total < baseline.get(key, 0):
+                                baseline[key] = max(0, total - 1)
+                            self._finalizing_counts_baseline[key] = max(
+                                self._finalizing_counts_baseline.get(key, 0), total)
+                if baseline is not None:
+                    event_args = args + (baseline,)
             event = (self.collection_id or '', str(uuid4()), kind, event_args)
             self._deferred.append(event)
             try:
@@ -1560,6 +1593,17 @@ class LearningSync:
             contributions = chords.setdefault('counts', {})
             registers = chords.setdefault('overrides', {})
             assert isinstance(contributions, dict) and isinstance(registers, dict)
+            before_contributions = dict(contributions)
+            before_registers = deepcopy(registers)
+            before_materialized_counts = dict(self._materialized_counts)
+            before_local_chord_counts = dict(self._local_chord_counts)
+            before_materialized_overrides = dict(self._materialized_overrides)
+            before_bootstrap_local_counts = self._bootstrap.get('local_chord_counts')
+            callback_baseline = {
+                key: max(self._materialized_counts.get(key, 0),
+                         self._local_chord_counts.get(key, 0))
+                for key in progress
+                if isinstance(key, str) and key}
             changed = False
             for key, total in progress.items():
                 if not isinstance(key, str) or not key or not _is_int(total) or total < 0:
@@ -1600,8 +1644,20 @@ class LearningSync:
                 self._mark_deferred_applied(_deferred_id)
                 changed = True
             if changed:
-                self._touch_or_defer('chords', dict(progress), dict(overrides),
-                                      deferred_id=_deferred_id)
+                saved = self._touch_or_defer(
+                    'chords', dict(progress), dict(overrides),
+                    deferred_id=_deferred_id,
+                    deferred_baseline=callback_baseline)
+                if not saved and _deferred_id is None:
+                    chords['counts'] = before_contributions
+                    chords['overrides'] = before_registers
+                    self._materialized_counts = before_materialized_counts
+                    self._local_chord_counts = before_local_chord_counts
+                    self._materialized_overrides = before_materialized_overrides
+                    if before_bootstrap_local_counts is None:
+                        self._bootstrap.pop('local_chord_counts', None)
+                    else:
+                        self._bootstrap['local_chord_counts'] = before_bootstrap_local_counts
         finally:
             self._lock.release()
 
@@ -1682,12 +1738,14 @@ class LearningSync:
                 replicas = self._scan_replicas(replicas_dir, collection)
                 result = merge_replicas(replicas)
                 self._retain_materialized_chord_state(result)
+                self._retain_materialized_settings(result)
                 while self.has_deferred_changes:
                     self._apply_deferred()
                     self._publish(replicas_dir)
                     replicas = self._scan_replicas(replicas_dir, collection)
                     result = merge_replicas(replicas)
                     self._retain_materialized_chord_state(result)
+                    self._retain_materialized_settings(result)
                 result.status = SyncStatus('synced',
                     'Local changes are saved in the selected sync folder.',
                     time.time(), list(self.status.diagnostics))
@@ -1706,6 +1764,7 @@ class LearningSync:
                     replicas = self._scan_replicas(replicas_dir, collection)
                     result = merge_replicas(replicas)
                     self._retain_materialized_chord_state(result)
+                    self._retain_materialized_settings(result)
                     result.status = SyncStatus('synced',
                         'Local changes are saved in the selected sync folder.',
                         time.time(), list(self.status.diagnostics))
@@ -1729,6 +1788,7 @@ class LearningSync:
                                 self._finalizing_counts_baseline[key] = max(
                                     self._finalizing_counts_baseline.get(key, 0), total)
                     self._retain_materialized_chord_state(result)
+                    self._retain_materialized_settings(result)
                 if legacy_materialized:
                     self._remember_materialized(result)
                 result.status.diagnostics = list(self.status.diagnostics)
@@ -1810,6 +1870,17 @@ class LearningSync:
                 self._recover_candidate(path, str(error))
         return replicas
 
+    def _retain_materialized_settings(self, result: SyncResult) -> None:
+        baseline = self._last_materialized().get('settings')
+        if not isinstance(baseline, dict):
+            return
+        retained = {
+            key: deepcopy(value) for key, value in baseline.items()
+            if key in VALID_SETTINGS and _validate_settings_value(key, value)
+        }
+        retained.update(result.settings)
+        result.settings = retained
+
     def _retain_materialized_chord_state(self, result: SyncResult) -> None:
         counts = dict(self._materialized_counts)
         for key, count in result.chord_counts.items():
@@ -1844,13 +1915,29 @@ class LearningSync:
         self._save_bootstrap()
 
     def _remember_materialized(self, result: SyncResult) -> None:
-        self._bootstrap['last_materialized'] = {
+        settings = dict(result.settings)
+        previous = self._last_materialized().get('settings')
+        if isinstance(previous, dict):
+            for key, value in previous.items():
+                if key not in settings and key in VALID_SETTINGS and \
+                        _validate_settings_value(key, value):
+                    settings[key] = deepcopy(value)
+        result.settings = settings
+        state = {
             'chord_counts': dict(result.chord_counts),
             'chord_overrides': dict(result.chord_overrides),
             'chord_override_registers': deepcopy(result.chord_override_registers),
-            'settings': deepcopy(result.settings),
+            'settings': deepcopy(settings),
         }
-        self._save_bootstrap()
+        atomic_write_json(self.materialized_recovery_path, state,
+                          self.recovery_dir / 'materialized')
+        self._bootstrap['last_materialized'] = state
+        try:
+            self._save_bootstrap()
+        except OSError:
+            raise
+        else:
+            self.materialized_recovery_path.unlink(missing_ok=True)
 
     def _materialize_legacy_state(self, result: SyncResult) -> bool:
         """Keep existing local consumers working from a merged cache.
