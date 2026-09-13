@@ -1800,6 +1800,7 @@ class LearningSync:
                 success = success and save_valid
                 self._diagnose('Existing local progress was left untouched: {}'.format(error))
             if save_path.exists() and not isinstance(current, dict):
+                save_valid = False
                 success = False
             materialized = dict(current) if isinstance(current, dict) else {}
             for identity, data in result.save.items():

@@ -140,6 +140,18 @@ def test_initial_legacy_chord_count_is_used_as_callback_baseline(tmp_path):
     assert sync.sync_now().chord_counts == {'word': 4}
 
 
+def test_invalid_legacy_save_object_is_preserved(tmp_path):
+    sync, legacy = _enable(tmp_path, 'one', tmp_path / 'folder', config=_config())
+    original = '["unsupported"]'
+    (legacy / 'save.json').write_text(original, encoding='utf-8')
+    sync.record_book(BOOK_A, {
+        'persistent_pos': 8, 'chapter_pos': 1, 'progress': 20})
+
+    sync.sync_now()
+
+    assert (legacy / 'save.json').read_text(encoding='utf-8') == original
+
+
 def test_migration_keeps_legacy_files_and_materializes_syncable_state(tmp_path):
     original_save = {BOOK_A: {
         'persistent_pos': 8, 'chapter_pos': 1, 'progress': 20,
