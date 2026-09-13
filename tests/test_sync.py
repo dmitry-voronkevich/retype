@@ -11,8 +11,8 @@ import pytest
 
 from retype.services.sync import (
     HLC, LearningSync, SyncError, ValidationError, _copy_atomic,
-    apply_learning_settings, atomic_write_json, learning_settings_from_config,
-    merge_replicas, validate_envelope,
+    _is_epub_file, apply_learning_settings, atomic_write_json,
+    learning_settings_from_config, merge_replicas, validate_envelope,
 )
 
 
@@ -558,6 +558,27 @@ def test_deferred_generation_rejects_excessive_part_count(tmp_path):
 
     with pytest.raises(ValidationError):
         sync._read_deferred_generation('generation', 5 * 1024 * 1024)
+
+
+def test_deferred_events_reject_malformed_learning_payload(tmp_path):
+    sync, _ = _enable(tmp_path, 'one', tmp_path / 'folder', config=_config())
+    event = [
+        sync.collection_id,
+        '00000000-0000-0000-0000-000000000001',
+        'chords',
+        [{'word': 'not-a-count'}, {}],
+    ]
+
+    with pytest.raises(ValidationError, match='deferred chord mutation'):
+        sync._read_deferred_events({'events': [event]}, sync.collection_id)
+
+
+def test_unsupported_epub_archive_is_rejected_without_escaping(tmp_path):
+    path = tmp_path / 'unsupported.epub'
+    _epub(path)
+
+    with patch('zipfile.ZipFile.read', side_effect=RuntimeError('encrypted')):
+        assert not _is_epub_file(path)
 
 
 def test_malformed_replica_is_not_overwritten_when_recovery_fails(tmp_path):

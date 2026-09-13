@@ -132,6 +132,36 @@ def _valid_override_map(value: object) -> dict[str, bool]:
     }
 
 
+def _valid_count_map_strict(value: object) -> bool:
+    return isinstance(value, dict) and all(
+        isinstance(key, str) and key and _is_int(count) and count >= 0
+        for key, count in value.items())
+
+
+def _valid_override_map_strict(value: object) -> bool:
+    return isinstance(value, dict) and all(
+        isinstance(key, str) and key and isinstance(mastered, bool)
+        for key, mastered in value.items())
+
+
+def _valid_settings_config(value: object) -> bool:
+    if not isinstance(value, dict):
+        return False
+    for name in VALID_SETTINGS:
+        if name == 'steno.kdict':
+            if 'steno' not in value:
+                continue
+            steno = value['steno']
+            if not isinstance(steno, dict):
+                return False
+            if 'kdict' in steno and not _validate_settings_value(
+                    name, steno['kdict']):
+                return False
+        elif name in value and not _validate_settings_value(name, value[name]):
+            return False
+    return True
+
+
 def _valid_override_register_map(value: object) -> dict[str, dict[str, object]]:
     if not isinstance(value, dict):
         return {}
@@ -902,17 +932,20 @@ class LearningSync:
                     (len(args) == 3 and kind != 'chords'):
                 raise ValidationError('deferred sync mutations are malformed')
             if kind == 'book' and (not isinstance(args[0], str) or
-                                   not isinstance(args[1], dict)):
+                                   not _BOOK_IDENTITY.fullmatch(args[0]) or
+                                   _validate_save(args[1]) is None):
                 raise ValidationError('deferred book mutation is malformed')
-            if kind in ('chords', 'settings') and \
-                    (not isinstance(args[0], dict) or not isinstance(args[1], dict)):
-                raise ValidationError('deferred sync mutation is malformed')
+            if kind == 'chords' and (
+                    not _valid_count_map_strict(args[0]) or
+                    not _valid_override_map_strict(args[1])):
+                raise ValidationError('deferred chord mutation is malformed')
+            if kind == 'settings' and (
+                    not _valid_settings_config(args[0]) or
+                    not _valid_settings_config(args[1])):
+                raise ValidationError('deferred settings mutation is malformed')
             if kind == 'chords' and len(args) == 3:
                 baseline = args[2]
-                if not isinstance(baseline, dict) or any(
-                        not isinstance(key, str) or not key or
-                        not _is_int(value) or value < 0
-                        for key, value in baseline.items()):
+                if not _valid_count_map_strict(baseline):
                     raise ValidationError('deferred chord baseline is malformed')
             elif len(args) != 2:
                 raise ValidationError('deferred sync mutation is malformed')
@@ -2402,7 +2435,8 @@ def _is_epub_file(path: Path) -> bool:
             info = archive.getinfo('mimetype')
             return info.compress_type == zipfile.ZIP_STORED and \
                 archive.read(info) == b'application/epub+zip'
-    except (KeyError, OSError, zipfile.BadZipFile):
+    except (KeyError, OSError, RuntimeError, NotImplementedError,
+            zipfile.BadZipFile):
         return False
 
 
