@@ -1,6 +1,7 @@
 import os
 import json
 import logging
+import re
 import traceback
 from copy import deepcopy
 from lxml.html import fromstring, builder, tostring, xhtml_to_html
@@ -14,6 +15,8 @@ from retype.extras.space import isspaceorempty
 from retype.extras.hashing import generate_file_md5
 
 logger = logging.getLogger(__name__)
+
+_MANAGED_BOOK_FILENAME = re.compile(r'^[0-9a-f]{64}\.epub$')
 
 
 def _save_position_key(data):
@@ -36,6 +39,7 @@ class LibraryController(object):
         self.managed_library_path = managed_library_path
         self.on_save = on_save
         self._library_items = self.indexLibrary(self.library_paths)
+        self.indexManagedLibrary(self._library_items)
         self.books = None  # type: dict[int, BookWrapper] | None
         self.save_file_contents = None  # type: Save | None
 
@@ -82,6 +86,29 @@ class LibraryController(object):
                         library_items[idn] = LibraryItem(idn, path, checksum)
                         idn += 1
         return library_items
+
+    def indexManagedLibrary(self, library_items):
+        # type: (LibraryController, dict[int, LibraryItem]) -> None
+        if not self.managed_library_path:
+            return
+        try:
+            with os.scandir(self.managed_library_path) as entries:
+                managed_entries = sorted(entries, key=lambda entry: entry.name)
+                existing = {item.checksum for item in library_items.values()}
+                next_id = max(library_items, default=-1) + 1
+                for entry in managed_entries:
+                    if not entry.is_file() or not _MANAGED_BOOK_FILENAME.fullmatch(
+                            entry.name):
+                        continue
+                    checksum = entry.name[:-len('.epub')]
+                    if checksum in existing:
+                        continue
+                    library_items[next_id] = LibraryItem(
+                        next_id, entry.path, checksum)
+                    existing.add(checksum)
+                    next_id += 1
+        except OSError:
+            return
 
     def instantiateBooks(self):
         # type: (LibraryController) -> None

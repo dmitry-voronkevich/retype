@@ -1,4 +1,5 @@
 import sys
+from pathlib import Path
 from unittest.mock import patch, ANY
 from PyQt5.Qt import QApplication
 
@@ -26,6 +27,20 @@ def _setup():
     data = {"test": "data"}
     save = {"dummykey": {"test": "data"}}
     return library, book, data, save
+
+
+def test_managed_books_are_indexed_from_content_addressed_filenames(tmp_path):
+    managed = tmp_path / 'managed-books'
+    managed.mkdir()
+    checksum = 'a' * 64
+    path = managed / (checksum + '.epub')
+    path.write_bytes(b'local book')
+    (managed / 'not-a-managed-book.epub').write_bytes(b'ignored')
+
+    library = LibraryController('', [], str(managed))
+
+    assert [(item.path, item.checksum) for item in library._library_items.values()] == [
+        (str(path), checksum)]
 
 
 @patch('builtins.open')
