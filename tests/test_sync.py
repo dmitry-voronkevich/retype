@@ -505,6 +505,39 @@ def test_invalid_materialized_count_is_ignored(tmp_path):
     assert restarted.sync_now().chord_counts == {'word': 1}
 
 
+def test_missing_replica_does_not_lower_chord_count_baseline(tmp_path):
+    root = tmp_path / 'folder'
+    sender, _ = _enable(
+        tmp_path, 'sender', root,
+        chords={'version': 2, 'progress': {'word': 5}}, config=_config())
+    sender.sync_now()
+    receiver, _ = _enable(tmp_path, 'receiver', root, config=_config())
+    assert receiver.sync_now().chord_counts == {'word': 5}
+
+    (root / 'replicas' / (sender.replica_id + '.json')).unlink()
+    assert receiver.sync_now().chord_counts == {'word': 5}
+    receiver.record_chords({'word': 6}, {})
+
+    assert receiver.sync_now().chord_counts == {'word': 6}
+
+
+def test_missing_replica_preserves_materialized_manual_override(tmp_path):
+    root = tmp_path / 'folder'
+    sender, _ = _enable(
+        tmp_path, 'sender', root,
+        chords={'version': 2, 'progress': {}, 'manual_overrides': {'word': True}},
+        config=_config())
+    sender.sync_now()
+    receiver, legacy = _enable(tmp_path, 'receiver', root, config=_config())
+    assert receiver.sync_now().chord_overrides == {'word': True}
+
+    (root / 'replicas' / (sender.replica_id + '.json')).unlink()
+    assert receiver.sync_now().chord_overrides == {'word': True}
+    restarted = LearningSync(tmp_path / 'receiver-local', legacy)
+
+    assert restarted.sync_now().chord_overrides == {'word': True}
+
+
 def test_deferred_chord_callback_during_final_materialization_is_retained(tmp_path):
     root = tmp_path / 'folder'
     sender, _ = _enable(

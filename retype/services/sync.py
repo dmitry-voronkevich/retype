@@ -90,6 +90,7 @@ class SyncResult:
     save: dict[str, dict[str, object]] = field(default_factory=dict)
     chord_counts: dict[str, int] = field(default_factory=dict)
     chord_overrides: dict[str, bool] = field(default_factory=dict)
+    chord_override_registers: dict[str, dict[str, object]] = field(default_factory=dict)
     settings: dict[str, object] = field(default_factory=dict)
     settings_revisions: dict[str, int] = field(default_factory=dict)
     managed_books: dict[str, dict[str, object]] = field(default_factory=dict)
@@ -121,6 +122,17 @@ def _valid_override_map(value: object) -> dict[str, bool]:
     return {
         key: mastered for key, mastered in value.items()
         if isinstance(key, str) and key and isinstance(mastered, bool)
+    }
+
+
+def _valid_override_register_map(value: object) -> dict[str, dict[str, object]]:
+    if not isinstance(value, dict):
+        return {}
+    return {
+        key: dict(register) for key, register in value.items()
+        if isinstance(key, str) and key and isinstance(register, dict) and
+        (register.get('value') is None or isinstance(register.get('value'), bool)) and
+        _register_stamp(register) is not None
     }
 
 
@@ -569,10 +581,15 @@ def merge_replicas(replicas: list[Mapping[str, object]]) -> SyncResult:
         key: value for key, (_, _, value) in chord_registers.items()
         if isinstance(value, bool)
     }
+    override_registers = {
+        key: {'value': value, 'hlc': stamp.to_data(), 'replica_id': author}
+        for key, (stamp, author, value) in chord_registers.items()
+    }
     settings = {key: deepcopy(value) for key, (_, _, value)
                 in setting_registers.items()}
     return SyncResult(status=SyncStatus(), save=save,
                       chord_counts=chord_counts, chord_overrides=overrides,
+                      chord_override_registers=override_registers,
                       settings=settings, managed_books=managed,
                       book_resumes=book_resumes)
 
@@ -618,8 +635,12 @@ class LearningSync:
             if isinstance(baseline, dict) else None
         baseline_overrides = baseline.get('chord_overrides') \
             if isinstance(baseline, dict) else None
+        baseline_override_registers = baseline.get('chord_override_registers') \
+            if isinstance(baseline, dict) else None
         self._materialized_counts = _valid_count_map(baseline_counts)
         self._materialized_overrides = _valid_override_map(baseline_overrides)
+        self._materialized_override_registers = _valid_override_register_map(
+            baseline_override_registers)
         self._local_chord_counts = _valid_count_map(
             self._bootstrap.get('local_chord_counts'))
         self._load_published()
@@ -1229,6 +1250,7 @@ class LearningSync:
                     self._predecessor = None
                     self._materialized_counts = {}
                     self._materialized_overrides = {}
+                    self._materialized_override_registers = {}
                     self._local_chord_counts = {}
                     self._bootstrap.pop('last_materialized', None)
                     self._bootstrap.pop('local_chord_counts', None)
@@ -1659,11 +1681,13 @@ class LearningSync:
                 self._publish(replicas_dir)
                 replicas = self._scan_replicas(replicas_dir, collection)
                 result = merge_replicas(replicas)
+                self._retain_materialized_chord_state(result)
                 while self.has_deferred_changes:
                     self._apply_deferred()
                     self._publish(replicas_dir)
                     replicas = self._scan_replicas(replicas_dir, collection)
                     result = merge_replicas(replicas)
+                    self._retain_materialized_chord_state(result)
                 result.status = SyncStatus('synced',
                     'Local changes are saved in the selected sync folder.',
                     time.time(), list(self.status.diagnostics))
@@ -1681,6 +1705,7 @@ class LearningSync:
                     self._publish(replicas_dir)
                     replicas = self._scan_replicas(replicas_dir, collection)
                     result = merge_replicas(replicas)
+                    self._retain_materialized_chord_state(result)
                     result.status = SyncStatus('synced',
                         'Local changes are saved in the selected sync folder.',
                         time.time(), list(self.status.diagnostics))
@@ -1703,8 +1728,7 @@ class LearningSync:
                             if isinstance(key, str) and key and _is_int(total) and total >= 0:
                                 self._finalizing_counts_baseline[key] = max(
                                     self._finalizing_counts_baseline.get(key, 0), total)
-                    self._materialized_counts = dict(result.chord_counts)
-                self._materialized_overrides = dict(result.chord_overrides)
+                    self._retain_materialized_chord_state(result)
                 if legacy_materialized:
                     self._remember_materialized(result)
                 result.status.diagnostics = list(self.status.diagnostics)
@@ -1786,6 +1810,34 @@ class LearningSync:
                 self._recover_candidate(path, str(error))
         return replicas
 
+    def _retain_materialized_chord_state(self, result: SyncResult) -> None:
+        counts = dict(self._materialized_counts)
+        for key, count in result.chord_counts.items():
+            counts[key] = max(counts.get(key, 0), count)
+        self._materialized_counts = counts
+        result.chord_counts = dict(counts)
+
+        registers = dict(self._materialized_override_registers)
+        for key, register in result.chord_override_registers.items():
+            current_stamp = _register_stamp(register)
+            previous = registers.get(key)
+            previous_stamp = _register_stamp(previous)
+            if current_stamp is not None and (
+                    previous_stamp is None or current_stamp > previous_stamp):
+                registers[key] = deepcopy(register)
+        self._materialized_override_registers = registers
+        overrides = {
+            key: register['value'] for key, register in registers.items()
+            if isinstance(register.get('value'), bool)
+        }
+        overrides.update({
+            key: value for key, value in self._materialized_overrides.items()
+            if key not in registers
+        })
+        self._materialized_overrides = overrides
+        result.chord_override_registers = deepcopy(registers)
+        result.chord_overrides = dict(overrides)
+
     def _remember_local_chord_baseline(self, result: SyncResult) -> None:
         self._local_chord_counts = dict(result.chord_counts)
         self._bootstrap['local_chord_counts'] = dict(self._local_chord_counts)
@@ -1795,6 +1847,7 @@ class LearningSync:
         self._bootstrap['last_materialized'] = {
             'chord_counts': dict(result.chord_counts),
             'chord_overrides': dict(result.chord_overrides),
+            'chord_override_registers': deepcopy(result.chord_override_registers),
             'settings': deepcopy(result.settings),
         }
         self._save_bootstrap()
