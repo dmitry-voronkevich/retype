@@ -112,6 +112,9 @@ class LibraryController(object):
                 for f in files:
                     if f.lower().endswith(".epub"):
                         path = os.path.join(root, f)
+                        if managed_root is not None and _is_within(
+                                path, managed_root):
+                            continue
                         checksum = self.checksum(path)
                         if not checksum or checksum in book_checksum_list:
                             continue
@@ -222,7 +225,7 @@ class LibraryController(object):
             if self.managed_library_path else None
         managed_ids = [idn for idn, item in self._library_items.items()
                        if managed_root is not None and
-                       _is_within(os.path.dirname(item.path), managed_root)]
+                       _is_within(item.path, managed_root)]
         for idn in managed_ids:
             self._library_items.pop(idn, None)
             if self.books is not None:
@@ -348,11 +351,13 @@ class LibraryController(object):
         assert self.save_file_contents is not None
         changed = set()
         for key, data in merged_save.items():
+            valid_data = _validate_save(data)
+            if valid_data is None:
+                continue
             current = self.save_file_contents.get(key)
-            if _save_position_key(current) is None or \
-                    (_save_position_key(data) is not None and
-                     _save_position_key(current) < _save_position_key(data)):
-                self.save_file_contents[key] = deepcopy(data)
+            current_key = _save_position_key(current)
+            if current_key is None or current_key < _save_position_key(valid_data):
+                self.save_file_contents[key] = valid_data
                 changed.add(key)
         if self.books is None:
             return changed

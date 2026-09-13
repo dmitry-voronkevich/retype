@@ -63,6 +63,42 @@ def test_managed_books_are_indexed_from_content_addressed_filenames(tmp_path):
         (str(managed_path), checksum)]
 
 
+def test_symlinked_managed_books_respect_consent_on_index_and_revoke(tmp_path):
+    managed = tmp_path / 'managed-books'
+    managed.mkdir()
+    target = managed / 'source.epub'
+    with zipfile.ZipFile(target, 'w') as archive:
+        archive.writestr('mimetype', 'application/epub+zip', compress_type=zipfile.ZIP_STORED)
+    checksum = sha256(target.read_bytes()).hexdigest()
+    managed_path = managed / (checksum + '.epub')
+    target.rename(managed_path)
+    library_dir = tmp_path / 'library'
+    library_dir.mkdir()
+    (library_dir / 'alias.epub').symlink_to(managed_path)
+
+    library = LibraryController('', [str(library_dir)], str(managed),
+                                managed_library_consent=True)
+    assert [item.checksum for item in library._library_items.values()] == [checksum]
+
+    library.setManagedLibraryConsent(False)
+    assert library._library_items == {}
+
+
+def test_apply_merged_save_rejects_unsupported_entries():
+    library = LibraryController('', [])
+    malformed = {'chapter_pos': 0, 'persistent_pos': 0, 'progress': float('nan')}
+    library.save_file_contents = {'known': malformed}
+
+    changed = library.applyMergedSave({
+        'known': malformed,
+        'new': {'chapter_pos': 1, 'persistent_pos': 2, 'progress': 20},
+    })
+
+    assert changed == {'new'}
+    assert library.save_file_contents['known'] is malformed
+    assert library.save_file_contents['new']['progress'] == 20.0
+
+
 @patch('builtins.open')
 @patch('json.dump')
 class TestLibraryControllerSaveFunction:

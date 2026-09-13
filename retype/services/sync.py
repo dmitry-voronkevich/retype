@@ -1174,6 +1174,9 @@ class LearningSync:
                 raise
             if self._defer(kind, *args, deferred_baseline=deferred_baseline):
                 return False
+            if self._last_materialized():
+                self._legacy_capture_needed = True
+                return False
             try:
                 self._bootstrap['legacy_migrated'] = False
                 self._save_bootstrap()

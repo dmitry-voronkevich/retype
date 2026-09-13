@@ -301,6 +301,29 @@ def test_pending_chord_use_is_not_counted_again_on_reenable(tmp_path):
     assert sync.sync_now().chord_counts == {'word': 4}
 
 
+def test_failed_local_capture_does_not_reimport_global_chord_total(tmp_path):
+    root = tmp_path / 'folder'
+    sender, _ = _enable(
+        tmp_path, 'sender', root,
+        chords={'version': 2, 'progress': {'word': 5}}, config=_config())
+    sender.sync_now()
+    receiver, legacy = _enable(
+        tmp_path, 'receiver', root,
+        chords={'version': 2, 'progress': {'word': 3}}, config=_config())
+    assert receiver.sync_now().chord_counts == {'word': 8}
+
+    local_chords = json.loads((legacy / 'chord-mastery.json').read_text())
+    local_chords['progress']['word'] = 9
+    legacy.joinpath('chord-mastery.json').write_text(
+        json.dumps(local_chords), encoding='utf-8')
+    receiver._pending_touch_durable = False
+    with patch.object(receiver, '_touch', side_effect=OSError('disk full')), \
+            patch.object(receiver, '_defer', return_value=False):
+        receiver.record_chords({'word': 9}, {})
+
+    assert receiver.sync_now().chord_counts == {'word': 9}
+
+
 def test_reenable_does_not_restamp_unchanged_remote_settings(tmp_path):
     root = tmp_path / 'folder'
     first, first_legacy = _enable(tmp_path, 'first', root, config=_config())
