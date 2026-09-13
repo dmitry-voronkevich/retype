@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from qt import QObject, Qt, QPushButton, pyqtSignal
 
 from retype.controllers.safe_config import SafeConfig
+import retype.controllers.safe_config as safe_config_module
 from retype.constants import default_config
 from retype.services.chord_detection import ValidatedChord
 from retype.services.chord_lessons import ChordMasteryProgress, ChordMasteryStorage
@@ -32,6 +33,26 @@ def _check_state(section, row):
 
 
 class TestCustomisation:
+    def test_default_data_dir_and_learning_files_migrate_without_config(
+            self, tmp_path, monkeypatch):
+        legacy = tmp_path / 'legacy-root'
+        destination = tmp_path / 'application-data'
+        legacy.mkdir()
+        save = {'a' * 32: {
+            'persistent_pos': 1, 'chapter_pos': 0, 'progress': 2}}
+        chords = {'version': 2, 'progress': {'word': 3}}
+        (legacy / 'save.json').write_text(json.dumps(save))
+        (legacy / 'chord-mastery.json').write_text(json.dumps(chords))
+        monkeypatch.setattr(safe_config_module, 'root_path', str(legacy))
+        monkeypatch.setitem(default_config, 'user_dir', str(destination))
+
+        config = SafeConfig()
+
+        assert destination.is_dir()
+        assert json.loads((destination / 'save.json').read_text()) == save
+        assert json.loads((destination / 'chord-mastery.json').read_text()) == chords
+        assert config['user_dir'] == str(destination)
+
     def test_custom_user_dir_updates_local_bootstrap_not_selected_config_twice(self, tmp_path):
         bootstrap = tmp_path / 'application-data'
         selected = tmp_path / 'selected-learning-data'

@@ -335,6 +335,23 @@ class CustomisationDialog(QDialog):
         if hasattr(self, 'sync_settings'):
             self.sync_settings.setStatus(status)
 
+    def applyExternalConfig(self, config):
+        # type: (CustomisationDialog, Config) -> None
+        previous = self.config
+        edited = deepcopy(self.config_edited)
+        self.config = deepcopy(config)
+        for key, value in self.config.items():
+            if edited.get(key) == previous.get(key):
+                edited[key] = deepcopy(value)
+        self.config_edited = edited
+        for key in ('sdict', 'rdict', 'auto_newline',
+                    'adaptive_chord_lessons', 'adaptive_chord_lesson_limit',
+                    'steno'):
+            selector = self.selectors.get(key)
+            if selector is not None:
+                selector.set_(self.config_edited[key])
+        self._updateDirtyState()
+
     def _initUI(self):
         # type: (CustomisationDialog) -> None
         self.selectors = {}  # type: dict[str, Selector]

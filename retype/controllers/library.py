@@ -2,6 +2,7 @@ import os
 import json
 import logging
 import traceback
+from copy import deepcopy
 from lxml.html import fromstring, builder, tostring, xhtml_to_html
 from lxml.etree import _Element
 from ebooklib import epub
@@ -13,6 +14,17 @@ from retype.extras.space import isspaceorempty
 from retype.extras.hashing import generate_file_md5
 
 logger = logging.getLogger(__name__)
+
+
+def _save_position_key(data):
+    # type: (object) -> tuple[float, int, int] | None
+    if not isinstance(data, dict):
+        return None
+    try:
+        return (float(data['progress']), int(data['chapter_pos']),
+                int(data['persistent_pos']))
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return None
 
 
 class LibraryController(object):
@@ -99,6 +111,26 @@ class LibraryController(object):
         book_view.setBook(book, save_data)
         switchView.emit(2)
         book_view.display.centreAroundCursor()
+
+    def applyMergedSave(self, merged_save):
+        # type: (LibraryController, Save) -> None
+        if self.save_file_contents is None:
+            self.loadSaveFile()
+        assert self.save_file_contents is not None
+        for key, data in merged_save.items():
+            current = self.save_file_contents.get(key)
+            if _save_position_key(current) is None or \
+                    (_save_position_key(data) is not None and
+                     _save_position_key(current) < _save_position_key(data)):
+                self.save_file_contents[key] = deepcopy(data)
+        if self.books is None:
+            return
+        for book in self.books.values():
+            data = self.save_file_contents.get(book.checksum)
+            if isinstance(data, dict):
+                book.save_data = data
+                if isinstance(data.get('progress'), (int, float)):
+                    book.progress = data['progress']
 
     def save(self, book, data):
         # type: (LibraryController, BookWrapper, SaveData) -> bool

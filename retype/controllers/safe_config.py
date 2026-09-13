@@ -29,6 +29,12 @@ class _SafeConfig:
             self.defaults['library_paths'] = list(library_paths)
         self.base_config_abs_path = os.path.join(
             self.default_user_dir, self.config_rel_path)
+        if not self._explicit_default_user_dir:
+            try:
+                os.makedirs(self.default_user_dir, exist_ok=True)
+            except OSError as error:
+                logger.warning('Could not create application data directory: %s',
+                               error)
         self._migrateLegacyBundleData()
         self.config = self.raw = self.load(self.base_config_abs_path)
         self.safe_dict = SafeDict(
@@ -53,14 +59,18 @@ class _SafeConfig:
         if self._explicit_default_user_dir or os.path.exists(self.base_config_abs_path):
             return
         legacy_path = os.path.join(root_path, self.config_rel_path)
-        if os.path.abspath(legacy_path) == os.path.abspath(
-                self.base_config_abs_path) or not os.path.exists(legacy_path):
+        legacy = self._load(legacy_path) if os.path.exists(legacy_path) else None
+        legacy_files = tuple(filename for filename in
+                             ('save.json', 'chord-mastery.json')
+                             if os.path.exists(os.path.join(root_path, filename)))
+        if (os.path.abspath(legacy_path) == os.path.abspath(
+                self.base_config_abs_path) or
+                (not isinstance(legacy, dict) and not legacy_files)):
             return
-        legacy = self._load(legacy_path)
-        if not isinstance(legacy, dict):
-            return
-        migrated = deepcopy(legacy)
-        legacy_user_dir = migrated.get('user_dir')
+        migrated = deepcopy(legacy) if isinstance(legacy, dict) \
+            else deepcopy(self.defaults)
+        legacy_user_dir = migrated.get('user_dir') if isinstance(legacy, dict) \
+            else root_path
         if not isinstance(legacy_user_dir, str) or not legacy_user_dir:
             legacy_user_dir = root_path
         if os.path.abspath(legacy_user_dir) == os.path.abspath(root_path):

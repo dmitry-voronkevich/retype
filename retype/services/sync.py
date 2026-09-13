@@ -20,6 +20,7 @@ import tempfile
 import threading
 import time
 import zipfile
+from math import isfinite
 from typing import Mapping
 from uuid import UUID, uuid4
 
@@ -91,6 +92,7 @@ class SyncResult:
     # mapping key as an attribute.  V1 opens the furthest position, while this
     # retained LWW value makes a later "recent position" recovery UX possible.
     book_resumes: dict[str, dict[str, object]] = field(default_factory=dict)
+    managed_books_materialized: bool = False
 
 
 def _is_int(value: object) -> bool:
@@ -234,10 +236,16 @@ def _validate_save(data: object) -> dict[str, object] | None:
             chapter < 0 or not isinstance(progress, (int, float)) or
             isinstance(progress, bool) or progress < 0 or progress > 100):
         return None
+    try:
+        progress_value = float(progress)
+    except (OverflowError, ValueError):
+        return None
+    if not isfinite(progress_value):
+        return None
     out: dict[str, object] = {
         'persistent_pos': persistent,
         'chapter_pos': chapter,
-        'progress': float(progress),
+        'progress': progress_value,
     }
     friendly = _safe_basename(data.get('friendly_name'))
     if friendly is not None:
@@ -796,10 +804,12 @@ class LearningSync:
         baseline_counts = baseline.get('chord_counts', {})
         baseline_overrides = baseline.get('chord_overrides', {})
         baseline_settings = baseline.get('settings', {})
-        self._materialized_counts = dict(baseline_counts) if isinstance(
-            baseline_counts, dict) else {}
-        self._materialized_overrides = dict(baseline_overrides) if isinstance(
-            baseline_overrides, dict) else {}
+        if isinstance(baseline_counts, dict):
+            self._materialized_counts = {
+                **baseline_counts, **self._materialized_counts}
+        if isinstance(baseline_overrides, dict):
+            self._materialized_overrides = {
+                **baseline_overrides, **self._materialized_overrides}
 
         chord_path = self.legacy_dir / 'chord-mastery.json'
         try:
@@ -1039,7 +1049,8 @@ class LearningSync:
                 self._materialized_overrides = dict(result.chord_overrides)
                 self._remember_materialized(result)
                 self._materialize_legacy_state(result)
-                self._materialize_managed_books(root, result)
+                result.managed_books_materialized = self._materialize_managed_books(
+                    root, result)
                 result.status.diagnostics = list(self.status.diagnostics)
                 if result.status.diagnostics:
                     result.status.message = (
@@ -1167,11 +1178,12 @@ class LearningSync:
         except OSError as error:
             self._diagnose('Merged learning data could not be materialized locally: {}'.format(error))
 
-    def _materialize_managed_books(self, root: Path, result: SyncResult) -> None:
+    def _materialize_managed_books(self, root: Path, result: SyncResult) -> bool:
         total = sum(int(meta['size']) for meta in result.managed_books.values())
         if total > MAX_MANAGED_LIBRARY_BYTES:
             self._diagnose('Managed library exceeds the configured 1 GiB limit.')
-            return
+            return False
+        materialized = False
         for digest, metadata in result.managed_books.items():
             source = root / 'books' / 'sha256' / (digest + '.epub')
             destination = self.managed_library_dir / (digest + '.epub')
@@ -1186,9 +1198,11 @@ class LearningSync:
                 if not destination.exists() or destination.stat().st_size != metadata['size'] or \
                         _file_sha256(destination) != digest:
                     _copy_atomic(source, destination)
+                    materialized = True
             except OSError as error:
                 self._diagnose('Managed book {} is unavailable: {}'.format(
                     metadata['original_filename'], error))
+        return materialized
 
     def import_book(self, source: str | Path, title: str | None = None) -> dict[str, object]:
         """Explicitly copy one user-selected EPUB into the managed library."""

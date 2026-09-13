@@ -512,18 +512,46 @@ class MainController(QObject):
         if self.learning_sync.enabled:
             QTimer.singleShot(1000, self.requestSync)
 
+    def _applySyncedSettingsToLiveViews(self):
+        # type: (MainController) -> None
+        book_view = self.views.get(View.book_view)
+        if book_view is not None:
+            book_view.setSdict(self.config['sdict'])
+            book_view.setRdict(self.config['rdict'])
+            book_view.setAdaptiveChordLessons(
+                self.config['adaptive_chord_lessons'])
+            book_view.setAdaptiveChordLessonLimit(
+                self.config['adaptive_chord_lesson_limit'])
+        if View.steno_view in self.views:
+            self.views[View.steno_view].setKdict(self.config['steno']['kdict'])
+        highlighting = self.console.highlighting_service
+        if highlighting:
+            highlighting.setAutoNewline(self.config['auto_newline'])
+        dialog = getattr(self, 'customisation_dialog', None)
+        if dialog is not None and hasattr(dialog, 'applyExternalConfig'):
+            dialog.applyExternalConfig(self.config.raw)
+
     def _syncCompleted(self, result):
         # type: (MainController, object) -> None
         if isinstance(result, SyncResult):
+            book_view = self.views.get(View.book_view) \
+                if hasattr(self, 'views') else None
+            active_checksum = getattr(getattr(book_view, 'book', None),
+                                      'checksum', None)
+            if book_view is not None:
+                book_view.maybeSave()
             if result.settings:
                 updated = apply_learning_settings(self.config.raw, result.settings)
                 if updated != self.config.raw:
                     self.config.populate(updated)
                     self.config.save()
+                    self._applySyncedSettingsToLiveViews()
             if result.save and hasattr(self, 'library'):
-                self.library.save_file_contents = dict(result.save)
-            if (result.chord_counts or result.chord_overrides) and \
-                    hasattr(self, 'views') and View.book_view in self.views:
+                self.library.applyMergedSave(result.save)
+            if result.managed_books_materialized and hasattr(self, 'library'):
+                self._repopulateLibrary(self.config['user_dir'],
+                                         self.config['library_paths'])
+            if hasattr(self, 'views') and View.book_view in self.views:
                 self.chord_progress = ChordMasteryProgress(
                     ChordMasteryStorage(self.config['user_dir'], self._recordSyncChords))
                 self.views[View.book_view].setChordProgress(self.chord_progress)
@@ -532,6 +560,12 @@ class MainController(QObject):
                     dialog.chordProgress = self.chord_progress
                     if hasattr(dialog, 'chord_mastery'):
                         dialog.chord_mastery.setProgress(self.chord_progress)
+                if active_checksum in (result.save if result.save else {}):
+                    book = next((item for item in self.library.books.values()
+                                 if item.checksum == active_checksum), None) \
+                        if self.library.books else None
+                    if book is not None:
+                        self.views[View.book_view].setBook(book, book.save_data)
         self._updateSyncPresentation()
         self._sync_worker = None
         if self._sync_pending or self.learning_sync.has_deferred_changes:

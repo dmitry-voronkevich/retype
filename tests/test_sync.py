@@ -153,6 +153,22 @@ def test_typing_callback_queues_without_waiting_for_a_folder_scan(tmp_path):
     assert sync.sync_now().chord_counts == {'word': 1}
 
 
+def test_pending_chord_use_is_not_counted_again_on_reenable(tmp_path):
+    root = tmp_path / 'folder'
+    sync, legacy = _enable(
+        tmp_path, 'one', root,
+        chords={'version': 2, 'progress': {'word': 3}}, config=_config())
+    sync.sync_now()
+    sync.record_chords({'word': 4}, {})
+    local_chords = json.loads((legacy / 'chord-mastery.json').read_text())
+    local_chords['progress']['word'] = 4
+    legacy.joinpath('chord-mastery.json').write_text(
+        json.dumps(local_chords), encoding='utf-8')
+    sync.disable()
+    assert sync.configure(root).state == 'ready'
+    assert sync.sync_now().chord_counts == {'word': 4}
+
+
 def test_disable_without_delete_queues_only_new_local_chord_uses_on_reenable(tmp_path):
     root = tmp_path / 'folder'
     first, _ = _enable(
@@ -311,6 +327,41 @@ def test_managed_books_need_consent_are_content_addressed_and_never_auto_importe
     corrupt.write_bytes(b'not an epub')
     with pytest.raises(SyncError, match='corrupt'):
         sync.import_book(corrupt)
+
+
+def test_merged_managed_library_limit_preserves_oversized_metadata(tmp_path):
+    root = tmp_path / 'folder'
+    first, _ = _enable(tmp_path, 'first', root, config=_config())
+    second, _ = _enable(tmp_path, 'second', root, config=_config())
+    first.set_managed_library_consent(True)
+    second.set_managed_library_consent(True)
+    first_book = tmp_path / 'first.epub'
+    second_book = tmp_path / 'second.epub'
+    _epub(first_book, b'first')
+    _epub(second_book, b'second')
+    first_size = first_book.stat().st_size
+    second_size = second_book.stat().st_size
+
+    with patch('retype.services.sync.MAX_MANAGED_LIBRARY_BYTES',
+               first_size + second_size - 1):
+        first_metadata = first.import_book(first_book)
+        second_metadata = second.import_book(second_book)
+        assert first.sync_now().status.state == 'synced'
+        result = second.sync_now()
+        third_book = tmp_path / 'third.epub'
+        _epub(third_book, b'third')
+        with pytest.raises(SyncError, match='managed library limit'):
+            second.import_book(third_book)
+
+    assert result.status.state == 'synced'
+    assert first_metadata['digest'] in result.managed_books
+    assert second_metadata['digest'] in result.managed_books
+    assert any('exceeds the configured 1 GiB limit' in item
+               for item in result.status.diagnostics)
+    assert (second.managed_library_dir /
+            (second_metadata['digest'] + '.epub')).exists()
+    assert (root / 'books' / 'sha256' /
+            (second_metadata['digest'] + '.epub')).exists()
 
 
 def test_managed_book_hash_mismatch_is_diagnosed_without_indexing_bad_bytes(tmp_path):
