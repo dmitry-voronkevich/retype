@@ -648,6 +648,7 @@ class LearningSync:
         self._predecessor: str | None = None
         self._clock = HLC(0, 0)
         self._dirty = False
+        self._pending_touch_durable = False
         self._legacy_capture_needed = False
         self._settings_revisions: dict[str, int] = {}
         baseline = self._bootstrap.get('last_materialized')
@@ -847,6 +848,22 @@ class LearningSync:
                 data = validate_envelope(data, collection)
                 if data['replica_id'] == self.replica_id and \
                         int(data['sequence']) >= self._sequence:
+                    previous_chords = self._payload.get('chords', {})
+                    pending_chords = data['payload'].get('chords', {}) \
+                        if isinstance(data.get('payload'), dict) else {}
+                    previous_counts = previous_chords.get('counts', {}) \
+                        if isinstance(previous_chords, dict) else {}
+                    pending_counts = pending_chords.get('counts', {}) \
+                        if isinstance(pending_chords, dict) else {}
+                    if isinstance(previous_counts, dict) and \
+                            isinstance(pending_counts, dict):
+                        published_counts = _valid_count_map(previous_counts)
+                        for key, count in _valid_count_map(pending_counts).items():
+                            delta = count - published_counts.get(key, 0)
+                            if delta > 0:
+                                self._local_chord_counts[key] = max(
+                                    self._local_chord_counts.get(key, 0),
+                                    self._local_chord_counts.get(key, 0) + delta)
                     self._payload = deepcopy(data['payload'])  # type: ignore[arg-type]
                     self._sequence = int(data['sequence'])
                     self._predecessor = data.get('predecessor_digest')  # type: ignore[assignment]
@@ -1115,6 +1132,7 @@ class LearningSync:
         }
 
     def _touch(self) -> None:
+        self._pending_touch_durable = False
         self._now()
         self._sequence += 1
         self._dirty = True
@@ -1125,6 +1143,7 @@ class LearningSync:
                     raise OSError('local learning state exceeds the 5 MiB replica limit')
                 atomic_write_json(self.pending_path, envelope,
                                   self.recovery_dir / 'pending')
+                self._pending_touch_durable = True
                 self._bootstrap['local_chord_counts'] = dict(self._local_chord_counts)
                 self._save_bootstrap()
             except OSError as error:
@@ -1142,6 +1161,8 @@ class LearningSync:
             self._touch()
             return True
         except OSError:
+            if self._pending_touch_durable:
+                return True
             if deferred_id is not None:
                 raise
             if self._defer(kind, *args, deferred_baseline=deferred_baseline):

@@ -272,7 +272,10 @@ class LibraryController(object):
                 continue
             item = LibraryItem(next_id, path, checksum)
             loaded_book = (loaded_books or {}).get(checksum)
-            book = BookWrapper(item, self.load(item), loaded_book,
+            save_data = self.load(item)
+            if _save_position_key(save_data) is None:
+                save_data = None
+            book = BookWrapper(item, save_data, loaded_book,
                                report_errors=False)
             if not book.valid:
                 logger.warning('Ignoring invalid managed EPUB: %s', path)
