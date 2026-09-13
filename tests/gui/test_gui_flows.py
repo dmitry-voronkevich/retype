@@ -74,6 +74,25 @@ def test_opens_customisation_dialog_without_blocking(controller, qtbot):
     assert not dialog.isVisible()
 
 
+def test_learning_sync_is_opt_in_and_disables_without_deleting_folder(
+        controller, qtbot, tmp_path):
+    folder = tmp_path / 'sync-folder'
+    status = controller.enableSync(str(folder))
+    assert status.state == 'ready'
+    qtbot.waitUntil(
+        lambda: controller.learning_sync.status.state == 'synced', timeout=5000)
+
+    panel = controller.customisation_dialog.sync_settings
+    assert panel.sync_button.isEnabled()
+    assert (folder / 'retype-sync.json').exists()
+    assert list((folder / 'replicas').glob('*.json'))
+
+    controller.disableSync()
+    assert controller.learning_sync.enabled is False
+    assert (folder / 'retype-sync.json').exists()
+    assert panel.disable_button.isEnabled() is False
+
+
 def test_customisation_dialog_refreshes_mastery_on_reopen(
         controller, qtbot):
     book_view = controller.views[View.book_view]

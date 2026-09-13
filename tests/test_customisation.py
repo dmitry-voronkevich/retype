@@ -1,5 +1,6 @@
 import json
 from copy import deepcopy
+from types import SimpleNamespace
 
 from qt import QObject, Qt, QPushButton, pyqtSignal
 
@@ -31,6 +32,21 @@ def _check_state(section, row):
 
 
 class TestCustomisation:
+    def test_custom_user_dir_updates_local_bootstrap_not_selected_config_twice(self, tmp_path):
+        bootstrap = tmp_path / 'application-data'
+        selected = tmp_path / 'selected-learning-data'
+        bootstrap.mkdir()
+        seed = deepcopy(default_config)
+        seed['user_dir'] = str(selected)
+        (bootstrap / 'config.json').write_text(json.dumps(seed), encoding='utf-8')
+
+        config = SafeConfig(str(bootstrap))
+        config.save()
+
+        assert (selected / 'config.json').exists()
+        saved_bootstrap = json.loads((bootstrap / 'config.json').read_text())
+        assert saved_bootstrap['user_dir'] == str(selected)
+
     def test_chord_json_setting_is_removed(self, tmp_path):
         dialog = _setup()
         assert 'chords_path' not in default_config
@@ -41,6 +57,36 @@ class TestCustomisation:
         legacy['chords_path'] = '/old/backup.json'
         (tmp_path / 'config.json').write_text(json.dumps(legacy))
         assert 'chords_path' not in SafeConfig(str(tmp_path)).raw
+
+    def test_learning_sync_panel_explains_scope_and_keeps_book_import_opt_in(self):
+        class SyncActions:
+            def __init__(self):
+                self.learning_sync = SimpleNamespace(
+                    enabled=True, managed_library_consent=False)
+                self.status = SimpleNamespace(
+                    message='Waiting for the selected sync folder.')
+                self.consent = None
+
+            def sync_status(self):
+                return self.status
+
+            def setManagedLibraryConsent(self, value):
+                self.consent = value
+                self.learning_sync.managed_library_consent = value
+
+        actions = SyncActions()
+        dialog = CustomisationDialog(
+            default_config, FakeWindow(), *[None]*3, syncActions=actions)
+        panel = dialog.sync_settings
+
+        assert panel.status.label.text() == 'Waiting for the selected sync folder.'
+        assert panel.import_button.isEnabled() is False
+        assert 'iCloud Drive' in panel.layout().itemAt(0).widget().label.text()
+        assert 'device chord dictionaries stay local' in \
+            panel.layout().itemAt(1).widget().label.text()
+        panel.consent.setChecked(True)
+        assert actions.consent is True
+        assert panel.import_button.isEnabled() is True
 
     def test_auto_newline_default_value(self):
         dialog = _setup()

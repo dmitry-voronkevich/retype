@@ -1,8 +1,9 @@
 import os
 import logging
+from copy import deepcopy
 from enum import Enum
 from qt import (QApplication, QObject, pyqtSignal, QUrl, QDesktopServices,
-                QMessageBox)
+                QMessageBox, QThread, QTimer)
 
 from typing import TYPE_CHECKING
 
@@ -16,8 +17,9 @@ from retype.services.icon_set import Icons
 from retype.services.platform import platform_policy
 from retype.services import (ChordMasteryProgress, ChordMasteryStorage,
                              DeviceSnapshotReader, DeviceStartupLoader,
-                             snapshot_to_chords)
-from retype.resource_handler import getIconsPath
+                             LearningSync, SyncError, SyncResult,
+                             apply_learning_settings, snapshot_to_chords)
+from retype.resource_handler import getApplicationDataPath, getIconsPath
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +29,19 @@ class View(Enum):
     book_view = 2
     typespeed_view = 3
     steno_view = 4
+
+
+class _SyncWorker(QThread):
+    completed = pyqtSignal(object)
+
+    def __init__(self, sync):
+        # type: (_SyncWorker, LearningSync) -> None
+        QThread.__init__(self)
+        self.sync = sync
+
+    def run(self):
+        # type: (_SyncWorker) -> None
+        self.completed.emit(self.sync.sync_now())
 
 
 class MainController(QObject):
@@ -43,6 +58,18 @@ class MainController(QObject):
         # type: (MainController, str | None, list[str] | None, DeviceSnapshotReader | None, callable | None) -> None
         super().__init__()
         self.config = SafeConfig(config_dir, library_paths)
+        # Tests and embedders that pass a config root get an equally isolated
+        # bootstrap root; installed apps always use per-user application data.
+        bootstrap_root = config_dir or getApplicationDataPath()
+        self.learning_sync = LearningSync(bootstrap_root,
+                                          self.config['user_dir'])
+        self._sync_worker = None  # type: _SyncWorker | None
+        self._sync_pending = False
+        initial_sync = self.learning_sync.sync_now()
+        if initial_sync.settings:
+            self.config.populate(apply_learning_settings(self.config.raw,
+                                                         initial_sync.settings))
+            self.config.save()
         if device_reader_factory is not None:
             self._device_reader_factory = device_reader_factory
         elif callable(device_reader):
@@ -53,7 +80,7 @@ class MainController(QObject):
             self._device_reader_factory = DeviceSnapshotReader
         self._device_loader = None  # type: DeviceStartupLoader | None
         self.chord_progress = ChordMasteryProgress(
-            ChordMasteryStorage(self.config['user_dir']))
+            ChordMasteryStorage(self.config['user_dir'], self._recordSyncChords))
         # Keep view state local to a controller. This also makes multiple
         # isolated GUI runs in one QApplication deterministic.
         self.views = {}
@@ -82,6 +109,7 @@ class MainController(QObject):
         self.aboutDialogRequested.connect(self.showAboutDialog)
 
         self._window.closing.connect(self._stopDeviceChordLoad)
+        self._window.closing.connect(self._syncOnClosing)
 
         self._initLibrary()
         self._initMenuBar()
@@ -210,7 +238,8 @@ class MainController(QObject):
             lambda: self.views[View.book_view].font_size,
             self._window,
             getLoadedChords=lambda: self.views[View.book_view].loaded_chords,
-            chordProgress=self.chord_progress)
+            chordProgress=self.chord_progress,
+            syncActions=self)
         self.customisation_dialog.loadChordsNowRequested.connect(
             self.loadChordsNow)
         self.customisation_dialog.saveChordMasteryRequested.connect(
@@ -299,8 +328,9 @@ class MainController(QObject):
 
     def _initLibrary(self):
         # type: (MainController) -> None
-        self.library = LibraryController(self.config['user_dir'],
-                                         self.config['library_paths'])
+        self.library = LibraryController(
+            self.config['user_dir'], self.config['library_paths'],
+            str(self.learning_sync.managed_library_dir), self._recordSyncBook)
 
     def _populateLibrary(self):
         # type: (MainController) -> None
@@ -311,7 +341,9 @@ class MainController(QObject):
 
     def _repopulateLibrary(self, user_dir, library_paths):
         # type: (MainController, str, list[str]) -> None
-        self.library.__init__(user_dir, library_paths)  # type: ignore[misc]
+        self.library.__init__(  # type: ignore[misc]
+            user_dir, library_paths, str(self.learning_sync.managed_library_dir),
+            self._recordSyncBook)
         shelf_view = self.views[View.shelf_view]
         self.library.instantiateBooks()
         shelf_view.repopulate()
@@ -348,6 +380,7 @@ class MainController(QObject):
 
     def saveConfig(self, config_dict):
         # type: (MainController, NestedDict) -> None
+        previous_config = deepcopy(self.config.raw)
         self.config.populate(config_dict)
         self.config.save()
         config = self.config
@@ -377,7 +410,7 @@ class MainController(QObject):
         if self.chord_progress.storage.path != os.path.join(
                 config['user_dir'], 'chord-mastery.json'):
             self.chord_progress = ChordMasteryProgress(
-                ChordMasteryStorage(config['user_dir']))
+                ChordMasteryStorage(config['user_dir'], self._recordSyncChords))
             book_view.setChordProgress(self.chord_progress)
             dialog = getattr(self, 'customisation_dialog', None)
             if dialog is not None:
@@ -396,6 +429,9 @@ class MainController(QObject):
 
         # Update library’s user_dir
         self.library.user_dir = config['user_dir']
+        self.learning_sync.set_legacy_dir(config['user_dir'])
+        self.learning_sync.record_settings(config.raw, previous_config)
+        self._scheduleSync()
 
         # Update book display font
         if not config['bookview']['save_font_size_on_quit']:
@@ -405,6 +441,118 @@ class MainController(QObject):
 
         # Update console font
         self.console.font_family = config['console_font']
+
+    def _recordSyncBook(self, identity, data):
+        # type: (MainController, str, dict) -> None
+        self.learning_sync.record_book(identity, data)
+        self._scheduleSync()
+
+    def _recordSyncChords(self, progress, overrides):
+        # type: (MainController, dict[str, int], dict[str, bool]) -> None
+        self.learning_sync.record_chords(progress, overrides)
+        self._scheduleSync()
+
+    def sync_status(self):
+        # type: (MainController) -> object
+        return self.learning_sync.status
+
+    def enableSync(self, folder, managed_library_consent=False):
+        # type: (MainController, str, bool) -> object
+        status = self.learning_sync.configure(folder, managed_library_consent)
+        if status.state == 'ready':
+            # A first-run config can still be in memory rather than on disk.
+            self.learning_sync.record_settings(self.config.raw, {})
+            self.requestSync()
+        self._updateSyncPresentation()
+        return status
+
+    def setManagedLibraryConsent(self, consent):
+        # type: (MainController, bool) -> object
+        status = self.learning_sync.set_managed_library_consent(consent)
+        self._updateSyncPresentation()
+        return status
+
+    def disableSync(self):
+        # type: (MainController) -> object
+        status = self.learning_sync.disable()
+        self._updateSyncPresentation()
+        return status
+
+    def importManagedBook(self, path):
+        # type: (MainController, str) -> object
+        try:
+            metadata = self.learning_sync.import_book(path)
+        except SyncError as error:
+            self.learning_sync.status.message = str(error)
+            self._updateSyncPresentation()
+            return None
+        self._repopulateLibrary(self.config['user_dir'], self.config['library_paths'])
+        self.requestSync()
+        self._updateSyncPresentation()
+        return metadata
+
+    def requestSync(self):
+        # type: (MainController) -> None
+        """Run provider-folder I/O outside the Qt/typing event path."""
+        if not self.learning_sync.enabled:
+            return
+        if self._sync_worker is not None and self._sync_worker.isRunning():
+            self._sync_pending = True
+            return
+        self.learning_sync.status.message = 'Checking the selected sync folder…'
+        worker = _SyncWorker(self.learning_sync)
+        self._sync_worker = worker
+        worker.completed.connect(self._syncCompleted)
+        worker.finished.connect(worker.deleteLater)
+        worker.start()
+        self._updateSyncPresentation()
+
+    def _scheduleSync(self):
+        # type: (MainController) -> None
+        if self.learning_sync.enabled:
+            QTimer.singleShot(1000, self.requestSync)
+
+    def _syncCompleted(self, result):
+        # type: (MainController, object) -> None
+        if isinstance(result, SyncResult):
+            if result.settings:
+                updated = apply_learning_settings(self.config.raw, result.settings)
+                if updated != self.config.raw:
+                    self.config.populate(updated)
+                    self.config.save()
+            if result.save and hasattr(self, 'library'):
+                self.library.save_file_contents = dict(result.save)
+            if (result.chord_counts or result.chord_overrides) and \
+                    hasattr(self, 'views') and View.book_view in self.views:
+                self.chord_progress = ChordMasteryProgress(
+                    ChordMasteryStorage(self.config['user_dir'], self._recordSyncChords))
+                self.views[View.book_view].setChordProgress(self.chord_progress)
+                dialog = getattr(self, 'customisation_dialog', None)
+                if dialog is not None:
+                    dialog.chordProgress = self.chord_progress
+                    if hasattr(dialog, 'chord_mastery'):
+                        dialog.chord_mastery.setProgress(self.chord_progress)
+        self._updateSyncPresentation()
+        self._sync_worker = None
+        if self._sync_pending or self.learning_sync.has_deferred_changes:
+            self._sync_pending = False
+            self.requestSync()
+
+    def _updateSyncPresentation(self):
+        # type: (MainController) -> None
+        dialog = getattr(self, 'customisation_dialog', None)
+        if dialog is not None and hasattr(dialog, 'setSyncState'):
+            dialog.setSyncState(self.learning_sync.status)
+
+    def _syncOnClosing(self):
+        # type: (MainController) -> None
+        worker = self._sync_worker
+        if worker is not None and worker.isRunning():
+            worker.wait(1500)
+        if self.learning_sync.enabled and (worker is None or not worker.isRunning()):
+            # This is a local-folder write attempt, not a claim that a cloud
+            # provider has uploaded it to any other device.
+            self.learning_sync.sync_now()
 
     def saveChordMastery(self, overrides):
         # type: (MainController, dict[str, bool]) -> None
