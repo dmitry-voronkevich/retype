@@ -57,7 +57,7 @@ class ChordMasteryStorage:
         try:
             with open(self.path, 'r', encoding='utf-8') as file:
                 data = json.load(file)
-        except (OSError, ValueError, TypeError) as error:
+        except (OSError, ValueError, TypeError, RecursionError) as error:
             self.writable = False
             logger.warning('Chord mastery progress is unreadable; preserving '
                            'it without overwriting: %s', error)

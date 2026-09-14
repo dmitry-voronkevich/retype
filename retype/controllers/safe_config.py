@@ -2,6 +2,7 @@ import os
 import json
 import logging
 import shutil
+import tempfile
 import traceback
 from copy import deepcopy
 from pathlib import Path
@@ -124,7 +125,7 @@ Attempting to load config from: {}".format(user_dir, custom_path))
                 with open(path, 'r') as f:
                     config = json.load(f)  # type: Config
                     return config
-            except (OSError, ValueError, TypeError) as e:
+            except (OSError, ValueError, TypeError, RecursionError) as e:
                 s = 'Unable to read config file.'
                 logger.error(f"{s}\n{e}", exc_info=True)
                 msg = QMessageBox(QMessageBox.Icon.Warning, 'retype', s)
@@ -146,6 +147,16 @@ Attempting to load config from: {}".format(user_dir, custom_path))
         # type: (_SafeConfig) -> bool
         user_dir = self.raw['user_dir']
         path = os.path.join(user_dir, self.config_rel_path)
+        previous_config = None
+        previous_config_exists = (not self.isPathDefaultUserDir(user_dir) and
+                                  os.path.exists(path))
+        if previous_config_exists:
+            try:
+                with open(path, 'rb') as file:
+                    previous_config = file.read()
+            except OSError as error:
+                logger.error('Unable to read config before saving: %s', error)
+                return False
         if not self._save(path, self.raw):  # Saving failed
             return False
 
@@ -156,7 +167,34 @@ Attempting to load config from: {}".format(user_dir, custom_path))
             dconfig['user_dir'] = user_dir
             # Keep the bootstrap at the application-data root.  The previous
             # code accidentally wrote this second copy to ``path`` again.
-            return self._save(self.base_config_abs_path, dconfig)
+            if self._save(self.base_config_abs_path, dconfig):
+                return True
+            try:
+                if not previous_config_exists:
+                    os.unlink(path)
+                else:
+                    descriptor, temporary = tempfile.mkstemp(
+                        prefix='.config-rollback-', dir=os.path.dirname(path))
+                    try:
+                        with os.fdopen(descriptor, 'wb') as file:
+                            descriptor = None
+                            file.write(previous_config)
+                            file.flush()
+                            os.fsync(file.fileno())
+                        os.replace(temporary, path)
+                        temporary = None
+                    finally:
+                        if descriptor is not None:
+                            os.close(descriptor)
+                        if temporary is not None:
+                            try:
+                                os.unlink(temporary)
+                            except OSError:
+                                pass
+            except OSError as error:
+                logger.error('Unable to roll back config file %s: %s',
+                             path, error)
+            return False
         return True
 
     def _save(self, path, data):
@@ -181,7 +219,7 @@ Attempting to load config from: {}".format(user_dir, custom_path))
         try:
             with open(path, 'r') as f:
                 dconfig = json.load(f)  # type: Config
-        except (OSError, ValueError, TypeError) as e:
+        except (OSError, ValueError, TypeError, RecursionError) as e:
             s = 'Unable to load dconfig file.'
             logger.error(f"{s}\n{e}", exc_info=True)
             msg = QMessageBox(QMessageBox.Icon.Warning, 'retype', s)

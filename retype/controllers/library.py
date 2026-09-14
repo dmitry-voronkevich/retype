@@ -444,7 +444,7 @@ class LibraryController(object):
             try:
                 with open(self.save_abs_path, 'r') as f:
                     save = json.load(f)  # type: Save
-            except (OSError, ValueError, TypeError) as e:
+            except (OSError, ValueError, TypeError, RecursionError) as e:
                 s = 'Unable to read save file.'
                 logger.error(f"{s}\n{e}", exc_info=True)
                 msg = QMessageBox(QMessageBox.Icon.Warning, 'retype', s)
