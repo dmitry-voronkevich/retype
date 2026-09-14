@@ -191,6 +191,8 @@ def _json_bytes(data: object) -> bytes:
                           ensure_ascii=False).encode('utf-8')
     except UnicodeEncodeError as error:
         raise ValidationError('JSON contains invalid Unicode') from error
+    except RecursionError as error:
+        raise ValidationError('JSON is too deeply nested') from error
 
 
 def _digest(data: object) -> str:
@@ -675,6 +677,7 @@ class LearningSync:
         self._deferred_lock = threading.Lock()
         self._deferred: list[tuple[str, str, str, tuple[object, ...]]] = []
         self._deferred_recovery_pending: set[Path] = set()
+        self._deferred_recovery_cleanup: set[Path] = set()
         self._finalizing_counts_baseline: dict[str, int] | None = None
         self._bootstrap_recovered = False
         self.status = SyncStatus()
@@ -1036,10 +1039,14 @@ class LearningSync:
             except ValidationError:
                 invalid_paths.update(group_paths)
         unrecovered = set()
+        recovered = set()
         for path in sorted(invalid_paths):
-            if not self._recover_candidate(
+            if self._recover_candidate(
                     path, 'deferred sync generation is malformed'):
+                recovered.add(path)
+            else:
                 unrecovered.add(path)
+        self._deferred_recovery_cleanup.update(recovered)
         return complete, unrecovered
 
     def _load_deferred(self) -> None:
@@ -1072,13 +1079,15 @@ class LearningSync:
                 'count' not in pointer_data
             if pointer_usable and isinstance(pointer_data, dict):
                 if _is_int(pointer_data.get('count')):
-                    try:
-                        candidates.append((pointer_generation or '',
-                                          self._read_deferred_generation(
-                                              pointer_generation,
-                                              pointer_data['count'])))
-                    except ValidationError:
-                        pass
+                    if not any(generation == pointer_generation
+                               for generation, _ in candidates):
+                        try:
+                            candidates.append((pointer_generation or '',
+                                              self._read_deferred_generation(
+                                                  pointer_generation,
+                                                  pointer_data['count'])))
+                        except ValidationError:
+                            pass
                 else:
                     try:
                         candidates.append((pointer_generation or '',
@@ -1104,7 +1113,8 @@ class LearningSync:
             with self._deferred_lock:
                 self._deferred = loaded
             if not pointer_usable or not pointer_exists or legacy or \
-                    selected_generation != pointer_generation:
+                    selected_generation != pointer_generation or \
+                    self._deferred_recovery_cleanup:
                 try:
                     with self._deferred_lock:
                         self._persist_deferred_locked()
@@ -1124,6 +1134,7 @@ class LearningSync:
                         path.unlink(missing_ok=True)
                 if not any(self.deferred_parts_dir.glob('*.json')):
                     self.deferred_parts_dir.rmdir()
+            self._deferred_recovery_cleanup.clear()
             return
 
         generation = '{:020d}-{}'.format(time.time_ns(), uuid4().hex)
@@ -1162,6 +1173,7 @@ class LearningSync:
         for path in self.deferred_parts_dir.glob('*.json'):
             if path not in current_parts and path not in self._deferred_recovery_pending:
                 path.unlink(missing_ok=True)
+        self._deferred_recovery_cleanup.clear()
 
     def _now(self) -> HLC:
         now = int(time.time() * 1000)

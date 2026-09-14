@@ -11,7 +11,7 @@ import pytest
 
 from retype.services.sync import (
     HLC, LearningSync, SyncError, ValidationError, _copy_atomic,
-    _is_epub_file, apply_learning_settings, atomic_write_json,
+    _is_epub_file, _json_bytes, apply_learning_settings, atomic_write_json,
     learning_settings_from_config, merge_replicas, validate_envelope,
 )
 
@@ -545,7 +545,7 @@ def test_newer_malformed_deferred_generation_is_quarantined_before_cleanup(tmp_p
         'events': [[sync.collection_id, event_id, 'chords',
                     [{'word': 'invalid'}, {}]]],
     })
-    atomic_write_json(sync.deferred_path, {'generation': newer, 'count': 1})
+    atomic_write_json(sync.deferred_path, {'generation': older, 'count': 1})
 
     restarted = LearningSync(tmp_path / 'one-local', tmp_path / 'one-legacy')
     result = restarted.sync_now()
@@ -566,6 +566,13 @@ def test_deeply_nested_provider_json_is_reported_as_invalid(tmp_path):
 
     assert result.status.state == 'synced'
     assert any('deep.json' in item for item in result.status.diagnostics)
+
+
+def test_deeply_nested_json_serialization_is_reported_as_invalid():
+    with patch('retype.services.sync.json.dumps',
+               side_effect=RecursionError('too deeply nested')):
+        with pytest.raises(ValidationError, match='too deeply nested'):
+            _json_bytes({})
 
 
 def test_corrupt_deferred_pointer_recovers_complete_parts(tmp_path):
