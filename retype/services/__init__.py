@@ -16,6 +16,9 @@ from .chord_lessons import (AdaptiveChordExposure, ChordLesson,
                             ChordProgress, DEFAULT_LESSON_CHORD_LIMIT)
 from .platform import (PlatformPolicy, platform_policy, shortcut_to_text,
                        shortcut_texts)
+from .sync import (LearningSync, SyncError, SyncResult, SyncStatus,
+                   VALID_SETTINGS, MAX_MANAGED_BOOK_BYTES,
+                   MAX_MANAGED_LIBRARY_BYTES, apply_learning_settings)
 
 __all__ = ('AdaptiveChordExposure', 'Autosave', 'Chord', 'ChordLayout',
            'DeviceSnapshot', 'DeviceSnapshotReader', 'DeviceStartupLoader',
@@ -25,6 +28,9 @@ __all__ = ('AdaptiveChordExposure', 'Autosave', 'Chord', 'ChordLayout',
            'LikelyChordBurst', 'MasteryAssessment', 'MAX_BURST_MILLISECONDS',
            'MAX_INTERCHAR_MILLISECONDS', 'MIN_BURST_CHARS',
            'MIN_SUCCESSFUL_USES_FOR_MASTERY', 'is_validated_chord_result',
+           'LearningSync', 'SyncError', 'SyncResult', 'SyncStatus',
+           'VALID_SETTINGS', 'MAX_MANAGED_BOOK_BYTES',
+           'MAX_MANAGED_LIBRARY_BYTES', 'apply_learning_settings',
            'PlatformPolicy', 'build_chords', 'by_device_notation',
            'by_word_notation', 'parse_layout', 'platform_policy',
            'shortcut_texts', 'shortcut_to_text', 'snapshot_to_chords')

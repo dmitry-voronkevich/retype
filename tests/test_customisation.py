@@ -1,9 +1,11 @@
 import json
 from copy import deepcopy
+from types import SimpleNamespace
 
 from qt import QObject, Qt, QPushButton, pyqtSignal
 
 from retype.controllers.safe_config import SafeConfig
+import retype.controllers.safe_config as safe_config_module
 from retype.constants import default_config
 from retype.services.chord_detection import ValidatedChord
 from retype.services.chord_lessons import ChordMasteryProgress, ChordMasteryStorage
@@ -31,6 +33,62 @@ def _check_state(section, row):
 
 
 class TestCustomisation:
+    def test_default_data_dir_and_learning_files_migrate_without_config(
+            self, tmp_path, monkeypatch):
+        legacy = tmp_path / 'legacy-root'
+        destination = tmp_path / 'application-data'
+        legacy.mkdir()
+        save = {'a' * 32: {
+            'persistent_pos': 1, 'chapter_pos': 0, 'progress': 2}}
+        chords = {'version': 2, 'progress': {'word': 3}}
+        (legacy / 'save.json').write_text(json.dumps(save))
+        (legacy / 'chord-mastery.json').write_text(json.dumps(chords))
+        monkeypatch.setattr(safe_config_module, 'root_path', str(legacy))
+        monkeypatch.setitem(default_config, 'user_dir', str(destination))
+
+        config = SafeConfig()
+
+        assert destination.is_dir()
+        assert json.loads((destination / 'save.json').read_text()) == save
+        assert json.loads((destination / 'chord-mastery.json').read_text()) == chords
+        assert config['user_dir'] == str(destination)
+
+    def test_unsupported_destination_learning_file_is_preserved(
+            self, tmp_path, monkeypatch):
+        legacy = tmp_path / 'legacy-root'
+        destination = tmp_path / 'application-data'
+        legacy.mkdir()
+        destination.mkdir()
+        source = {'version': 2, 'progress': {'word': 3}}
+        unsupported = {
+            'version': 99, 'progress': {'word': 8},
+            'future_field': {'keep': True},
+        }
+        (legacy / 'chord-mastery.json').write_text(json.dumps(source))
+        target = destination / 'chord-mastery.json'
+        target.write_text(json.dumps(unsupported))
+        monkeypatch.setattr(safe_config_module, 'root_path', str(legacy))
+        monkeypatch.setitem(default_config, 'user_dir', str(destination))
+
+        SafeConfig()
+
+        assert json.loads(target.read_text()) == unsupported
+
+    def test_custom_user_dir_updates_local_bootstrap_not_selected_config_twice(self, tmp_path):
+        bootstrap = tmp_path / 'application-data'
+        selected = tmp_path / 'selected-learning-data'
+        bootstrap.mkdir()
+        seed = deepcopy(default_config)
+        seed['user_dir'] = str(selected)
+        (bootstrap / 'config.json').write_text(json.dumps(seed), encoding='utf-8')
+
+        config = SafeConfig(str(bootstrap))
+        config.save()
+
+        assert (selected / 'config.json').exists()
+        saved_bootstrap = json.loads((bootstrap / 'config.json').read_text(encoding='utf-8'))
+        assert saved_bootstrap['user_dir'] == str(selected)
+
     def test_chord_json_setting_is_removed(self, tmp_path):
         dialog = _setup()
         assert 'chords_path' not in default_config
@@ -41,6 +99,36 @@ class TestCustomisation:
         legacy['chords_path'] = '/old/backup.json'
         (tmp_path / 'config.json').write_text(json.dumps(legacy))
         assert 'chords_path' not in SafeConfig(str(tmp_path)).raw
+
+    def test_learning_sync_panel_explains_scope_and_keeps_book_import_opt_in(self):
+        class SyncActions:
+            def __init__(self):
+                self.learning_sync = SimpleNamespace(
+                    enabled=True, managed_library_consent=False)
+                self.status = SimpleNamespace(
+                    message='Waiting for the selected sync folder.')
+                self.consent = None
+
+            def sync_status(self):
+                return self.status
+
+            def setManagedLibraryConsent(self, value):
+                self.consent = value
+                self.learning_sync.managed_library_consent = value
+
+        actions = SyncActions()
+        dialog = CustomisationDialog(
+            default_config, FakeWindow(), *[None]*3, syncActions=actions)
+        panel = dialog.sync_settings
+
+        assert panel.status.label.text() == 'Waiting for the selected sync folder.'
+        assert panel.import_button.isEnabled() is False
+        assert 'iCloud Drive' in panel.layout().itemAt(0).widget().label.text()
+        assert 'device chord dictionaries stay local' in \
+            panel.layout().itemAt(1).widget().label.text()
+        panel.consent.setChecked(True)
+        assert actions.consent is True
+        assert panel.import_button.isEnabled() is True
 
     def test_auto_newline_default_value(self):
         dialog = _setup()
