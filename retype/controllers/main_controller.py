@@ -1,9 +1,10 @@
 import os
 import logging
+import time
+from copy import deepcopy
 from enum import Enum
 from qt import (QApplication, QObject, pyqtSignal, QUrl, QDesktopServices,
-                QMessageBox)
-
+                QMessageBox, QThread, QTimer)
 from typing import TYPE_CHECKING
 
 from retype.ui import (MainWin, ShelfView, BookView, CustomisationDialog,
@@ -11,13 +12,16 @@ from retype.ui import (MainWin, ShelfView, BookView, CustomisationDialog,
 from retype.games.typespeed import TypespeedView
 from retype.games.steno import StenoView
 from retype.controllers import SafeConfig, MenuController, LibraryController
+from retype.controllers.library import (BookWrapper, is_valid_managed_book,
+                                          _save_position_key)
 from retype.console import Console
 from retype.services.icon_set import Icons
 from retype.services.platform import platform_policy
 from retype.services import (ChordMasteryProgress, ChordMasteryStorage,
                              DeviceSnapshotReader, DeviceStartupLoader,
-                             snapshot_to_chords)
-from retype.resource_handler import getIconsPath
+                             LearningSync, SyncError, SyncResult, SyncStatus,
+                             apply_learning_settings, snapshot_to_chords)
+from retype.resource_handler import getApplicationDataPath, getIconsPath
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +31,65 @@ class View(Enum):
     book_view = 2
     typespeed_view = 3
     steno_view = 4
+
+
+class _SyncWorker(QThread):
+    completed = pyqtSignal(object)
+
+    def __init__(self, sync):
+        # type: (_SyncWorker, LearningSync) -> None
+        QThread.__init__(self)
+        self.sync = sync
+
+    def run(self):
+        # type: (_SyncWorker) -> None
+        self.completed.emit(self.sync.sync_now())
+
+
+class _ManagedLibraryLoadWorker(QThread):
+    completed = pyqtSignal(object)
+
+    def __init__(self, load_data):
+        # type: (_ManagedLibraryLoadWorker, list[tuple[object, object]]) -> None
+        QThread.__init__(self)
+        self.load_data = load_data
+
+    def run(self):
+        books = {}
+        for item, save_data in self.load_data:
+            if not is_valid_managed_book(item.path, item.checksum):
+                continue
+            if save_data is not None and _save_position_key(save_data) is None:
+                save_data = None
+            book = BookWrapper(item, save_data, report_errors=False)
+            books[item.idn] = book
+        self.completed.emit(books)
+
+
+class _ManagedBookImportWorker(QThread):
+    completed = pyqtSignal(object)
+    failed = pyqtSignal(str)
+
+    def __init__(self, sync, path):
+        # type: (_ManagedBookImportWorker, LearningSync, str) -> None
+        QThread.__init__(self)
+        self.sync = sync
+        self.path = path
+
+    def run(self):
+        # type: (_ManagedBookImportWorker) -> None
+        try:
+            metadata = self.sync.import_book(self.path)
+            loaded_book = self.sync.take_loaded_managed_book(
+                str(metadata['digest']))
+            if loaded_book is None:
+                raise SyncError('managed EPUB could not be loaded')
+            self.completed.emit((metadata, loaded_book))
+        except SyncError as error:
+            self.failed.emit(str(error))
+        except Exception as error:
+            logger.exception("Managed EPUB import failed")
+            self.failed.emit('managed EPUB import failed: {}'.format(error))
 
 
 class MainController(QObject):
@@ -43,6 +106,23 @@ class MainController(QObject):
         # type: (MainController, str | None, list[str] | None, DeviceSnapshotReader | None, callable | None) -> None
         super().__init__()
         self.config = SafeConfig(config_dir, library_paths)
+        # Tests and embedders that pass a config root get an equally isolated
+        # bootstrap root; installed apps always use per-user application data.
+        bootstrap_root = config_dir or getApplicationDataPath()
+        self.learning_sync = LearningSync(bootstrap_root,
+                                          self.config['user_dir'])
+        self.learning_sync.enable_sync_application_guard()
+        self._sync_worker = None  # type: _SyncWorker | None
+        self._sync_generation = 0
+        self._managed_book_worker = None  # type: _ManagedBookImportWorker | None
+        self._managed_library_worker = None  # type: _ManagedLibraryLoadWorker | None
+        self._managed_library_generation = 0
+        self._sync_pending = False
+        self._sync_retry_timer = QTimer(self)
+        self._sync_retry_timer.setSingleShot(True)
+        self._sync_retry_timer.timeout.connect(self._retrySync)
+        self._sync_retry_delay = 1000
+        self._sync_closing = False
         if device_reader_factory is not None:
             self._device_reader_factory = device_reader_factory
         elif callable(device_reader):
@@ -53,7 +133,7 @@ class MainController(QObject):
             self._device_reader_factory = DeviceSnapshotReader
         self._device_loader = None  # type: DeviceStartupLoader | None
         self.chord_progress = ChordMasteryProgress(
-            ChordMasteryStorage(self.config['user_dir']))
+            ChordMasteryStorage(self.config['user_dir'], self._recordSyncChords))
         # Keep view state local to a controller. This also makes multiple
         # isolated GUI runs in one QApplication deterministic.
         self.views = {}
@@ -82,6 +162,7 @@ class MainController(QObject):
         self.aboutDialogRequested.connect(self.showAboutDialog)
 
         self._window.closing.connect(self._stopDeviceChordLoad)
+        self._window.closing.connect(self._syncOnClosing)
 
         self._initLibrary()
         self._initMenuBar()
@@ -91,6 +172,7 @@ class MainController(QObject):
         self._populateLibrary()
         self._verifyUserDir()
         self._startDeviceChordLoad()
+        self.requestSync()
 
     def _setDeviceStatus(self, message, loading=False):
         # type: (MainController, str, bool) -> None
@@ -206,11 +288,13 @@ class MainController(QObject):
 
         self.customisation_dialog = CustomisationDialog(
             self.config.raw, self._window,
-            self.saveConfigRequested, self.prevViewRequested,
+            self.saveConfig, self.prevViewRequested,
             lambda: self.views[View.book_view].font_size,
             self._window,
             getLoadedChords=lambda: self.views[View.book_view].loaded_chords,
-            chordProgress=self.chord_progress)
+            chordProgress=self.chord_progress,
+            syncActions=self,
+            dataDirectoryStatus=self.data_directory_status)
         self.customisation_dialog.loadChordsNowRequested.connect(
             self.loadChordsNow)
         self.customisation_dialog.saveChordMasteryRequested.connect(
@@ -299,22 +383,71 @@ class MainController(QObject):
 
     def _initLibrary(self):
         # type: (MainController) -> None
-        self.library = LibraryController(self.config['user_dir'],
-                                         self.config['library_paths'])
+        self.library = LibraryController(
+            self.config['user_dir'], self.config['library_paths'],
+            str(self.learning_sync.managed_library_dir), self._recordSyncBook,
+            self.learning_sync.managed_library_consent)
 
     def _populateLibrary(self):
         # type: (MainController) -> None
-        """Instantiate all the book wrappers and shelf items"""
         shelf_view = self.views[View.shelf_view]  # type: ShelfView
-        self.library.instantiateBooks()
+        self.library.instantiateBooks(include_managed=False)
         shelf_view._populate()
+        self._startManagedLibraryLoad()
+
+    def _startManagedLibraryLoad(self):
+        # type: (MainController) -> None
+        if not self.learning_sync.managed_library_consent:
+            return
+        if self._managed_library_worker is not None and \
+                self._managed_library_worker.isRunning():
+            return
+        self._managed_library_generation += 1
+        generation = self._managed_library_generation
+        worker = _ManagedLibraryLoadWorker(self.library.managedBookLoadData())
+        self._managed_library_worker = worker
+        worker.completed.connect(
+            lambda books, worker=worker, generation=generation:
+                self._managedLibraryLoadCompleted(books, generation, worker))
+        worker.finished.connect(
+            lambda worker=worker, generation=generation:
+                self._managedLibraryLoadFinished(worker, generation))
+        worker.finished.connect(worker.deleteLater)
+        worker.start()
+
+    def _managedLibraryLoadCompleted(self, books, generation=None, worker=None):
+        # type: (MainController, dict[int, BookWrapper], int | None,
+        #         _ManagedLibraryLoadWorker | None) -> None
+        if worker is not None and worker is not self._managed_library_worker:
+            return
+        if generation is not None and generation != self._managed_library_generation:
+            return
+        self._managed_library_worker = None
+        installed = self.library.installManagedBooks(books)
+        self.views[View.shelf_view].addBooks(installed)
+
+    def _managedLibraryLoadFinished(self, worker, generation):
+        # type: (MainController, _ManagedLibraryLoadWorker, int) -> None
+        if worker is not self._managed_library_worker:
+            return
+        self._managed_library_worker = None
+        if generation != self._managed_library_generation and \
+                self.learning_sync.managed_library_consent:
+            QTimer.singleShot(0, self._startManagedLibraryLoad)
 
     def _repopulateLibrary(self, user_dir, library_paths):
         # type: (MainController, str, list[str]) -> None
-        self.library.__init__(user_dir, library_paths)  # type: ignore[misc]
+        self._managed_library_generation += 1
+        managed_worker = self._managed_library_worker
+        if managed_worker is not None and managed_worker.isRunning():
+            managed_worker.wait()
+        self.library.__init__(  # type: ignore[misc]
+            user_dir, library_paths, str(self.learning_sync.managed_library_dir),
+            self._recordSyncBook, self.learning_sync.managed_library_consent)
         shelf_view = self.views[View.shelf_view]
-        self.library.instantiateBooks()
+        self.library.instantiateBooks(include_managed=False)
         shelf_view.repopulate()
+        self._startManagedLibraryLoad()
 
     def loadBook(self, book_id=0):
         # type: (MainController, int) -> None
@@ -331,14 +464,27 @@ class MainController(QObject):
                                   self.aboutDialogRequested,
                                   self.config['auto_newline'])
 
+    def data_directory_status(self):
+        # type: (MainController) -> str
+        return self.config.data_directory_status(str(self.learning_sync.local_root))
+
     def _verifyUserDir(self):
         # type: (MainController) -> None
         user_dir = self.config['user_dir']
         if not os.path.exists(user_dir):
+            reason = ('retype could not create the per-user data folder; check '
+                      'permissions and available storage.'
+                      if self.config.isPathDefaultUserDir(user_dir) else
+                      'the saved User dir setting points to a folder that is '
+                      'missing or temporarily unavailable (for example, a '
+                      'disconnected volume). retype does not create custom '
+                      'folders automatically.')
             msg = QMessageBox(
-                QMessageBox.Icon.Warning, 'retype', f'User dir \'{user_dir}\'\
- cannot be found.\nretype will not be able to save and load progress and\
- configuration.')
+                QMessageBox.Icon.Warning, 'retype',
+                'Data folder \'{}\' cannot be found because {}\n'
+                'Existing data is not removed or moved, but progress and '
+                'settings cannot be saved until the folder is available.'
+                .format(user_dir, reason))
             msg.addButton(QMessageBox.StandardButton.Ignore)
             change_btn = msg.addButton(
                 'Change', QMessageBox.ButtonRole.ActionRole)
@@ -347,9 +493,12 @@ class MainController(QObject):
                 self.showCustomisationDialog()
 
     def saveConfig(self, config_dict):
-        # type: (MainController, NestedDict) -> None
+        # type: (MainController, NestedDict) -> bool
+        previous_config = deepcopy(self.config.raw)
         self.config.populate(config_dict)
-        self.config.save()
+        if not self.config.save():
+            self.config.populate(previous_config)
+            return False
         config = self.config
 
         # Repopulate library if paths changed
@@ -377,7 +526,7 @@ class MainController(QObject):
         if self.chord_progress.storage.path != os.path.join(
                 config['user_dir'], 'chord-mastery.json'):
             self.chord_progress = ChordMasteryProgress(
-                ChordMasteryStorage(config['user_dir']))
+                ChordMasteryStorage(config['user_dir'], self._recordSyncChords))
             book_view.setChordProgress(self.chord_progress)
             dialog = getattr(self, 'customisation_dialog', None)
             if dialog is not None:
@@ -396,6 +545,12 @@ class MainController(QObject):
 
         # Update library’s user_dir
         self.library.user_dir = config['user_dir']
+        self.learning_sync.set_legacy_dir(config['user_dir'])
+        try:
+            self.learning_sync.record_settings(config.raw, previous_config)
+        except OSError as error:
+            self._syncMutationFailed(error)
+        self._scheduleSync()
 
         # Update book display font
         if not config['bookview']['save_font_size_on_quit']:
@@ -405,6 +560,308 @@ class MainController(QObject):
 
         # Update console font
         self.console.font_family = config['console_font']
+        dialog = getattr(self, 'customisation_dialog', None)
+        if dialog is not None and hasattr(dialog, 'refreshDataDirectoryStatus'):
+            dialog.refreshDataDirectoryStatus()
+        return True
+
+    def _syncMutationFailed(self, error):
+        # type: (MainController, OSError) -> None
+        self.learning_sync._diagnose(
+            'Local pending sync state could not be written: {}'.format(error))
+        self.learning_sync.status.message = (
+            'Local sync state could not be saved; retrying.')
+        self._updateSyncPresentation()
+
+    def _recordSyncBook(self, identity, data):
+        # type: (MainController, str, dict) -> None
+        try:
+            self.learning_sync.record_book(identity, data)
+        except OSError as error:
+            self._syncMutationFailed(error)
+        self._scheduleSync()
+
+    def _recordSyncChords(self, progress, overrides):
+        # type: (MainController, dict[str, int], dict[str, bool]) -> None
+        try:
+            self.learning_sync.record_chords(progress, overrides)
+        except OSError as error:
+            self._syncMutationFailed(error)
+        self._scheduleSync()
+
+    def sync_status(self):
+        # type: (MainController) -> object
+        return self.learning_sync.status
+
+    def enableSync(self, folder, managed_library_consent=False):
+        # type: (MainController, str, bool) -> object
+        status = self.learning_sync.configure(folder, managed_library_consent)
+        if status.state == 'ready':
+            # A first-run config can still be in memory rather than on disk.
+            self.learning_sync.record_settings(
+                self.config.raw,
+                apply_learning_settings({}, self.learning_sync.settings_baseline()))
+            self.requestSync()
+        self._updateSyncPresentation()
+        return status
+
+    def setManagedLibraryConsent(self, consent):
+        # type: (MainController, bool) -> object
+        status = self.learning_sync.set_managed_library_consent(consent)
+        effective_consent = self.learning_sync.managed_library_consent
+        self._managed_library_generation += 1
+        if not effective_consent:
+            book_view = self.views.get(View.book_view)
+            active_book = getattr(book_view, 'book', None)
+            managed_root = str(self.learning_sync.managed_library_dir)
+            if active_book is not None and os.path.realpath(
+                    os.path.dirname(active_book.path)) == os.path.realpath(managed_root):
+                book_view.maybeSave()
+                book_view.book = None
+                self.setViewByEnum(View.shelf_view)
+            self.library.setManagedLibraryConsent(False)
+            self.views[View.shelf_view].repopulate()
+        else:
+            self.library.setManagedLibraryConsent(True)
+            self._startManagedLibraryLoad()
+            if consent:
+                self.requestSync()
+        self._updateSyncPresentation()
+        return status
+
+    def disableSync(self):
+        # type: (MainController) -> object
+        self._sync_generation += 1
+        self._sync_pending = False
+        self._sync_retry_timer.stop()
+        status = self.learning_sync.disable()
+        self._updateSyncPresentation()
+        return status
+
+    def importManagedBook(self, path):
+        # type: (MainController, str) -> None
+        worker = self._managed_book_worker
+        if self._sync_closing or (worker is not None and worker.isRunning()):
+            return
+        self.learning_sync.status.message = 'Importing the selected EPUB…'
+        worker = _ManagedBookImportWorker(self.learning_sync, path)
+        self._managed_book_worker = worker
+        worker.completed.connect(self._managedBookImportCompleted)
+        worker.failed.connect(self._managedBookImportFailed)
+        worker.finished.connect(worker.deleteLater)
+        worker.start()
+        self._updateSyncPresentation()
+
+    def _managedBookImportCompleted(self, result):
+        # type: (MainController, tuple[dict[str, object], object]) -> None
+        self._managed_book_worker = None
+        metadata, loaded_book = result
+        added = self.library.addManagedBooks(
+            {metadata['digest']: metadata}, {metadata['digest']},
+            {metadata['digest']: loaded_book})
+        self.views[View.shelf_view].addBooks(added)
+        self.learning_sync.status.message = (
+            'The EPUB was added to the managed library.')
+        self.requestSync()
+        self._updateSyncPresentation()
+
+    def _managedBookImportFailed(self, message):
+        # type: (MainController, str) -> None
+        self._managed_book_worker = None
+        self.learning_sync.status.message = message
+        self._updateSyncPresentation()
+
+    def requestSync(self):
+        # type: (MainController) -> None
+        """Run provider-folder I/O outside the Qt/typing event path."""
+        if self._sync_retry_timer.isActive():
+            self._sync_retry_timer.stop()
+        if not self.learning_sync.enabled or self._sync_closing:
+            return
+        if self._sync_worker is not None and self._sync_worker.isRunning():
+            self._sync_pending = True
+            return
+        self.learning_sync.status.message = 'Checking the selected sync folder…'
+        self._sync_generation += 1
+        generation = self._sync_generation
+        worker = _SyncWorker(self.learning_sync)
+        self._sync_worker = worker
+        worker.completed.connect(
+            lambda result, worker=worker, generation=generation:
+                self._syncCompleted(result, generation, worker))
+        worker.finished.connect(
+            lambda worker=worker, generation=generation:
+                self._syncWorkerFinished(worker, generation))
+        worker.finished.connect(worker.deleteLater)
+        worker.start()
+        self._updateSyncPresentation()
+
+    def _retrySync(self):
+        if self.learning_sync.enabled and not self._sync_closing:
+            self.requestSync()
+
+    def _scheduleSyncRetry(self):
+        if self._sync_closing or not self.learning_sync.enabled:
+            return
+        if not self._sync_retry_timer.isActive():
+            self._sync_retry_timer.start(self._sync_retry_delay)
+            self._sync_retry_delay = min(self._sync_retry_delay * 2, 30000)
+
+    def _scheduleSync(self):
+        # type: (MainController) -> None
+        if self.learning_sync.enabled:
+            QTimer.singleShot(1000, self.requestSync)
+
+    def _applySyncedSettingsToLiveViews(self):
+        # type: (MainController) -> None
+        book_view = self.views.get(View.book_view)
+        if book_view is not None:
+            book_view.setSdict(self.config['sdict'])
+            book_view.setRdict(self.config['rdict'])
+            book_view.setAdaptiveChordLessons(
+                self.config['adaptive_chord_lessons'])
+            book_view.setAdaptiveChordLessonLimit(
+                self.config['adaptive_chord_lesson_limit'])
+        if View.steno_view in self.views:
+            self.views[View.steno_view].setKdict(self.config['steno']['kdict'])
+        highlighting = self.console.highlighting_service
+        if highlighting:
+            highlighting.setAutoNewline(self.config['auto_newline'])
+        dialog = getattr(self, 'customisation_dialog', None)
+        if dialog is not None and hasattr(dialog, 'applyExternalConfig'):
+            dialog.applyExternalConfig(self.config.raw)
+
+    def _syncWorkerFinished(self, worker, generation):
+        # type: (MainController, _SyncWorker, int) -> None
+        if worker is not self._sync_worker or \
+                generation == self._sync_generation:
+            return
+        self._sync_worker = None
+        if self.learning_sync.enabled and not self._sync_closing:
+            self._sync_pending = False
+            self.requestSync()
+
+    def _syncCompleted(self, result, generation=None, worker=None):
+        # type: (MainController, object, int | None, _SyncWorker | None) -> None
+        if worker is not None and worker is not self._sync_worker:
+            return
+        if generation is not None and generation != self._sync_generation:
+            return
+        if not self.learning_sync.enabled or self._sync_closing:
+            return
+        waiting_for_provider = isinstance(result, SyncResult) and \
+            result.status.state == 'waiting'
+        settings_materialization_failed = False
+        chord_materialization_failed = False
+        if isinstance(result, SyncResult):
+            book_view = self.views.get(View.book_view) \
+                if hasattr(self, 'views') else None
+            active_checksum = getattr(getattr(book_view, 'book', None),
+                                      'checksum', None)
+            if book_view is not None:
+                book_view.maybeSave()
+            deferred_settings = self.learning_sync.deferred_settings()
+            settings = (dict(deferred_settings)
+                        if self.learning_sync._legacy_capture_needed else
+                        dict(result.settings))
+            settings.update(deferred_settings)
+            for key in result.settings:
+                if key not in deferred_settings and \
+                        self.learning_sync._settings_revisions.get(key, 0) != \
+                        result.settings_revisions.get(key, 0):
+                    settings.pop(key, None)
+            if settings:
+                previous_config = deepcopy(self.config.raw)
+                updated = apply_learning_settings(self.config.raw, settings)
+                if updated != self.config.raw:
+                    self.config.populate(updated)
+                    if self.config.save():
+                        self._applySyncedSettingsToLiveViews()
+                    else:
+                        settings_materialization_failed = True
+                        self.config.populate(previous_config)
+                        self.learning_sync.rollback_materialized_settings()
+            merged_save_changed = set()
+            if result.save and hasattr(self, 'library'):
+                merged_save_changed = self.library.applyMergedSave(result.save)
+            if active_checksum in merged_save_changed and \
+                    hasattr(self, 'library') and hasattr(self, 'views') and \
+                    View.book_view in self.views:
+                book = next((item for item in self.library.books.values()
+                             if item.checksum == active_checksum), None) \
+                    if self.library.books else None
+                if book is not None:
+                    self.views[View.book_view].setBook(book, book.save_data)
+            if result.managed_books and hasattr(self, 'library') and \
+                    self.learning_sync.managed_library_consent:
+                added = self.library.addManagedBooks(
+                    result.managed_books, result.managed_books_ready,
+                    result.managed_books_loaded)
+                if added:
+                    self.views[View.shelf_view].addBooks(added)
+            if result.chord_materialized or result.status.state == 'synced':
+                overrides = result.chord_overrides
+                if result.chord_revision != self.learning_sync.chord_revision:
+                    overrides = self.chord_progress.manual_overrides()
+                if not self.chord_progress.apply_merged(
+                        result.chord_counts, overrides):
+                    chord_materialization_failed = True
+                else:
+                    if hasattr(self, 'views') and View.book_view in self.views:
+                        self.views[View.book_view].setChordProgress(self.chord_progress)
+                        dialog = getattr(self, 'customisation_dialog', None)
+                        if dialog is not None:
+                            dialog.chordProgress = self.chord_progress
+                            if hasattr(dialog, 'chord_mastery'):
+                                dialog.chord_mastery.setProgress(self.chord_progress)
+                    self.learning_sync.acknowledge_sync_application()
+        if settings_materialization_failed or chord_materialization_failed:
+            message = ('Merged learning settings could not be saved locally; retrying.'
+                       if settings_materialization_failed else
+                       'Merged chord mastery could not be saved locally; retrying.')
+            result.status = SyncStatus(
+                'waiting', message, time.time(), list(result.status.diagnostics))
+            self.learning_sync.status = result.status
+        self._updateSyncPresentation()
+        self._sync_worker = None
+        if waiting_for_provider or settings_materialization_failed or \
+                chord_materialization_failed:
+            self._scheduleSyncRetry()
+            self._sync_pending = False
+        elif self._sync_pending or self.learning_sync.has_deferred_changes:
+            self._sync_pending = False
+            self._sync_retry_delay = 1000
+            self.requestSync()
+        else:
+            self._sync_retry_delay = 1000
+
+    def _updateSyncPresentation(self):
+        # type: (MainController) -> None
+        dialog = getattr(self, 'customisation_dialog', None)
+        if dialog is not None and hasattr(dialog, 'setSyncState'):
+            dialog.setSyncState(self.learning_sync.status)
+
+    def _syncOnClosing(self):
+        # type: (MainController) -> None
+        self._sync_closing = True
+        self._sync_retry_timer.stop()
+        book_view = self.views.get(View.book_view) \
+            if hasattr(self, 'views') else None
+        if book_view is not None:
+            book_view.maybeSave()
+        worker = self._sync_worker
+        if worker is not None and worker.isRunning():
+            worker.wait()
+        import_worker = self._managed_book_worker
+        if import_worker is not None and import_worker.isRunning():
+            import_worker.wait()
+        library_worker = self._managed_library_worker
+        if library_worker is not None and library_worker.isRunning():
+            library_worker.wait()
+        if self.learning_sync.enabled:
+            # This is a local-folder write attempt, not a claim that a cloud
+            # provider has uploaded it to any other device.
+            self.learning_sync.sync_now()
 
     def saveChordMastery(self, overrides):
         # type: (MainController, dict[str, bool]) -> None

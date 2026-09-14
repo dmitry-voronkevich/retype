@@ -3,6 +3,7 @@ import json
 import logging
 import traceback
 from copy import deepcopy
+from datetime import datetime
 from base64 import b64encode
 from qt import (QWidget, QFormLayout, QVBoxLayout, QLabel, QLineEdit,
                 QHBoxLayout, QFrame, QPushButton, QCheckBox,
@@ -96,6 +97,179 @@ def descl(text):
     return WrappedLabel(text)
 
 
+class LearningSyncSettings(QWidget):
+    """Small UI adapter around the provider-neutral sync controller."""
+
+    def __init__(self, actions=None, parent=None):
+        # type: (LearningSyncSettings, object | None, QWidget | None) -> None
+        QWidget.__init__(self, parent)
+        self.actions = actions
+        self._buildUI()
+        self.refresh()
+
+    def _buildUI(self):
+        # type: (LearningSyncSettings) -> None
+        lyt = QFormLayout(self)
+        lyt.addRow(descl(
+            'Keep core learning state in an opt-in folder you choose. On macOS, '
+            'choose a new folder in iCloud Drive if you use iCloud Drive. '
+            'retype does not sign in to iCloud or know whether the provider has '
+            'uploaded a change to another device.'))
+        lyt.addRow(descl(
+            'Progress uses the furthest saved position. Chord mastery word keys '
+            'and only these learning preferences can sync: line splits, '
+            'replacements, automatic newline, chord lesson settings, and the '
+            'stenography map. Paths, geometry, fonts, themes, keymaps, logs, '
+            'session statistics, and device chord dictionaries stay local.'))
+        self.status = WrappedLabel('Sync is off.')
+        self.status.setObjectName('learning-sync-status')
+        lyt.addRow('Status:', self.status)
+
+        self.choose_button = QPushButton('Choose sync folder…')
+        self.choose_button.setObjectName('learning-sync-choose-folder')
+        self.choose_button.clicked.connect(self.chooseFolder)
+        lyt.addRow(self.choose_button)
+
+        self.sync_button = QPushButton('Sync now')
+        self.sync_button.setObjectName('learning-sync-now')
+        self.sync_button.clicked.connect(self.syncNow)
+        lyt.addRow(self.sync_button)
+
+        self.disable_button = QPushButton('Disable sync on this device')
+        self.disable_button.setObjectName('learning-sync-disable')
+        self.disable_button.setToolTip(
+            'Stop using the folder without deleting anything from it')
+        self.disable_button.clicked.connect(self.disable)
+        lyt.addRow(self.disable_button)
+
+        lyt.addRow(hline())
+        lyt.addRow(descl(
+            'Managed EPUB library (optional): no library search path is ever '
+            'uploaded automatically. Importing a book below copies only that '
+            'explicitly selected EPUB into the selected folder. Each book is '
+            'limited to 100 MiB and the managed library to 1 GiB. The folder\'s '
+            'provider/account controls storage encryption and access.'))
+        self.consent = QCheckBox(
+            'I consent to copy explicitly imported EPUBs to this sync folder')
+        self.consent.setObjectName('learning-sync-managed-library-consent')
+        self.consent.toggled.connect(self.setConsent)
+        lyt.addRow(self.consent)
+        self.import_button = QPushButton('Import EPUB into managed library…')
+        self.import_button.setObjectName('learning-sync-import-epub')
+        self.import_button.clicked.connect(self.importBook)
+        lyt.addRow(self.import_button)
+        self.diagnostics_button = QPushButton('Show recovery diagnostics')
+        self.diagnostics_button.setObjectName('learning-sync-diagnostics')
+        self.diagnostics_button.clicked.connect(self.showDiagnostics)
+        lyt.addRow(self.diagnostics_button)
+
+    def _setText(self, text):
+        # type: (LearningSyncSettings, str) -> None
+        self.status.label.setText(text)
+        self.status.doc.setPlainText(text)
+        self.status.updateGeometry()
+
+    def _statusText(self, status):
+        # type: (LearningSyncSettings, object) -> str | None
+        message = getattr(status, 'message', None)
+        checked = getattr(status, 'last_checked', None)
+        if not isinstance(message, str):
+            return None
+        if isinstance(checked, (int, float)):
+            return message + ' Last checked: {}.'.format(
+                datetime.fromtimestamp(checked).strftime('%H:%M:%S'))
+        return message
+
+    def setStatus(self, status):
+        # type: (LearningSyncSettings, object) -> None
+        message = self._statusText(status)
+        if message is not None:
+            self._setText(message)
+        self.refresh()
+
+    def refresh(self):
+        # type: (LearningSyncSettings) -> None
+        enabled = bool(getattr(getattr(self.actions, 'learning_sync', None),
+                               'enabled', False))
+        consent = bool(getattr(getattr(self.actions, 'learning_sync', None),
+                               'managed_library_consent', False))
+        if self.actions is None:
+            self._setText('Sync controls are unavailable in this window.')
+        elif hasattr(self.actions, 'sync_status'):
+            message = self._statusText(self.actions.sync_status())
+            if message is not None:
+                self._setText(message)
+        self.consent.setChecked(consent)
+        self.sync_button.setEnabled(enabled)
+        self.disable_button.setEnabled(enabled)
+        self.import_button.setEnabled(enabled and self.consent.isChecked())
+        self.choose_button.setEnabled(self.actions is not None)
+        self.diagnostics_button.setEnabled(self.actions is not None)
+
+    def setConsent(self, consent):
+        # type: (LearningSyncSettings, bool) -> None
+        if self.actions is not None and hasattr(self.actions, 'setManagedLibraryConsent'):
+            self.actions.setManagedLibraryConsent(consent)
+        enabled = bool(getattr(getattr(self.actions, 'learning_sync', None),
+                               'enabled', False))
+        self.import_button.setEnabled(enabled and consent)
+
+    def chooseFolder(self):
+        # type: (LearningSyncSettings) -> None
+        if self.actions is None or not hasattr(self.actions, 'enableSync'):
+            return
+        folder = QFileDialog.getExistingDirectory(
+            self, 'Choose a retype learning sync folder')
+        if not folder:
+            return
+        message = QMessageBox.question(
+            self, 'Enable learning sync',
+            'retype will copy existing local progress, chord mastery, and '
+            'eligible learning settings into this device\'s sync replica, then '
+            'write that replica to the selected folder. This never moves or '
+            'deletes local data or existing data in the selected folder. '
+            'Library search paths and their EPUBs stay local. An EPUB is copied '
+            'only after managed-library consent and an explicit Import EPUB '
+            'action below. Continue?',
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel)
+        if message != QMessageBox.StandardButton.Yes:
+            return
+        self.actions.enableSync(folder, self.consent.isChecked())
+        self.refresh()
+
+    def syncNow(self):
+        # type: (LearningSyncSettings) -> None
+        if self.actions is not None and hasattr(self.actions, 'requestSync'):
+            self.actions.requestSync()
+        self.refresh()
+
+    def disable(self):
+        # type: (LearningSyncSettings) -> None
+        if self.actions is not None and hasattr(self.actions, 'disableSync'):
+            self.actions.disableSync()
+        self.refresh()
+
+    def importBook(self):
+        # type: (LearningSyncSettings) -> None
+        if self.actions is None or not self.consent.isChecked() or \
+                not hasattr(self.actions, 'importManagedBook'):
+            return
+        filename, _ = QFileDialog.getOpenFileName(
+            self, 'Import EPUB into managed library', '', 'EPUB books (*.epub)')
+        if filename:
+            self.actions.importManagedBook(filename)
+        self.refresh()
+
+    def showDiagnostics(self):
+        # type: (LearningSyncSettings) -> None
+        sync = getattr(self.actions, 'learning_sync', None)
+        if sync is None or not hasattr(sync, 'diagnostics_text'):
+            return
+        QMessageBox.information(self, 'Learning sync diagnostics',
+                                sync.diagnostics_text())
+
+
 class CustomisationDialog(QDialog):
     loadChordsNowRequested = pyqtSignal()
     saveChordMasteryRequested = pyqtSignal(dict)
@@ -107,7 +281,9 @@ class CustomisationDialog(QDialog):
                  getBookViewFontSize,  # type: Callable[[], int]
                  parent=None,  # type: QWidget | None
                  getLoadedChords=None,  # type: Callable[[], dict[str, object]] | None
-                 chordProgress=None  # type: ChordMasteryProgress | None
+                 chordProgress=None,  # type: ChordMasteryProgress | None
+                 syncActions=None,  # type: object | None
+                 dataDirectoryStatus=None  # type: callable | None
                  ):
         # type: (...) -> None
         QDialog.__init__(self, parent, Qt.WindowType.WindowCloseButtonHint)
@@ -125,6 +301,8 @@ class CustomisationDialog(QDialog):
         self.getBookViewFontSize = getBookViewFontSize
         self.getLoadedChords = getLoadedChords or (lambda: {})
         self.chordProgress = chordProgress
+        self.syncActions = syncActions
+        self.dataDirectoryStatus = dataDirectoryStatus
 
         self._initUI()
         self.setModal(True)
@@ -141,6 +319,21 @@ class CustomisationDialog(QDialog):
         QDialog.showEvent(self, event)
         if hasattr(self, 'chord_mastery'):
             self.chord_mastery.refresh()
+        if hasattr(self, 'sync_settings'):
+            self.sync_settings.refresh()
+        self.refreshDataDirectoryStatus()
+
+    def refreshDataDirectoryStatus(self):
+        # type: (CustomisationDialog) -> None
+        if not hasattr(self, 'data_folder_status'):
+            return
+        status = self.dataDirectoryStatus
+        text = status() if callable(status) else (
+            'Data folder in use: {}. It stores local progress, chord mastery, '
+            'and configuration.'.format(self.config['user_dir']))
+        self.data_folder_status.label.setText(text)
+        self.data_folder_status.doc.setPlainText(text)
+        self.data_folder_status.updateGeometry()
 
     def getUserDir(self):
         # type: (CustomisationDialog) -> str
@@ -155,12 +348,35 @@ class CustomisationDialog(QDialog):
         if hasattr(self, 'load_chords_button'):
             self.load_chords_button.setDisabled(loading)
 
+    def setSyncState(self, status):
+        # type: (CustomisationDialog, object) -> None
+        if hasattr(self, 'sync_settings'):
+            self.sync_settings.setStatus(status)
+
+    def applyExternalConfig(self, config):
+        # type: (CustomisationDialog, Config) -> None
+        previous = self.config
+        edited = deepcopy(self.config_edited)
+        self.config = deepcopy(config)
+        for key, value in self.config.items():
+            if edited.get(key) == previous.get(key):
+                edited[key] = deepcopy(value)
+        self.config_edited = edited
+        for key in ('sdict', 'rdict', 'auto_newline',
+                    'adaptive_chord_lessons', 'adaptive_chord_lesson_limit',
+                    'steno'):
+            selector = self.selectors.get(key)
+            if selector is not None:
+                selector.set_(self.config_edited[key])
+        self._updateDirtyState()
+
     def _initUI(self):
         # type: (CustomisationDialog) -> None
         self.selectors = {}  # type: dict[str, Selector]
 
         catw = CategorisedWidget()
         catw.add("Filesystem", "Paths", self._pathSettings())
+        catw.add("Filesystem", "Learning sync", self._syncSettings())
         catw.add("User interface", "Icons", self._iconsSettings())
         catw.add("User interface", "Theme", self._themeSettings())
         catw.add("User interface", "Keymap", self._keymapSettings())
@@ -201,11 +417,15 @@ class CustomisationDialog(QDialog):
 
         # user_dir
         lyt.addRow(QLabel("Location for the save and config files."))
+        self.data_folder_status = WrappedLabel('')
+        self.data_folder_status.setObjectName('data-folder-status')
+        lyt.addRow(self.data_folder_status)
         self.selectors['user_dir'] = PathSelector(
             self.config_edited['user_dir'])
         self.selectors['user_dir'].changed.connect(
             lambda t: self.update_("user_dir", t))
         lyt.addRow("User dir:", self.selectors['user_dir'])
+        self.refreshDataDirectoryStatus()
         lyt.addRow(hline())
         # library_paths
         lyt.addRow(QLabel("Library search paths:"))
@@ -215,6 +435,11 @@ class CustomisationDialog(QDialog):
             lambda paths: self.update_("library_paths", paths))
         lyt.addRow(self.selectors['library_paths'])
         return plib
+
+    def _syncSettings(self):
+        # type: (CustomisationDialog) -> QWidget
+        self.sync_settings = LearningSyncSettings(self.syncActions)
+        return self.sync_settings
 
     def _iconsSettings(self):
         # type: (CustomisationDialog) -> QWidget
@@ -537,8 +762,10 @@ class CustomisationDialog(QDialog):
         if not os.path.exists(self.config_edited['user_dir']):
             ret = QMessageBox.warning(
                 self, "retype",
-                "Cannot find specified user_dir path.\n"
-                "Reset it to former value?",
+                "Cannot find the specified data folder. retype does not create "
+                "a custom or disconnected-volume folder automatically, so it "
+                "does not silently switch where progress is stored.\n"
+                "Reset it to the former value?",
                 QMessageBox.Yes | QMessageBox.No)
             if ret == QMessageBox.Yes:
                 self.config_edited['user_dir'] = self.config['user_dir']
@@ -561,7 +788,15 @@ class CustomisationDialog(QDialog):
             return
 
         # Save
-        self.saveConfig.emit(self.config_edited)
+        if callable(self.saveConfig):
+            saved = self.saveConfig(self.config_edited)
+        elif hasattr(self.saveConfig, 'emit'):
+            saved = self.saveConfig.emit(self.config_edited)
+        else:
+            saved = True
+        if saved is False:
+            self._updateDirtyState()
+            return
         if self.chord_mastery.isDirty():
             self.saveChordMasteryRequested.emit(self.chord_mastery.overrides())
             if self.chord_mastery.saveFailed():
@@ -636,7 +871,10 @@ class CustomisationDialog(QDialog):
             shouldSave = True
 
         if shouldSave:
-            self.saveConfig.emit(self.config)
+            if callable(self.saveConfig):
+                self.saveConfig(self.config)
+            elif hasattr(self.saveConfig, 'emit'):
+                self.saveConfig.emit(self.config)
 
 
 class CheckBox(QCheckBox):
