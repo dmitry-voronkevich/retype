@@ -1079,6 +1079,9 @@ class LearningSync:
         trusted_local_counts = dict(self._local_chord_counts)
         for key, count in self._durable_chord_baseline.items():
             trusted_local_counts[key] = max(trusted_local_counts.get(key, 0), count)
+        if selected is local and _valid_local_chord_counts(local):
+            for key, count in _valid_count_map(local['local_chord_counts']).items():
+                trusted_local_counts[key] = max(trusted_local_counts.get(key, 0), count)
         self._install_published(selected, trusted_local_counts)
         self._record_published_ancestry(selected)
         if provider is selected and local is not selected:

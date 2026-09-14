@@ -1083,6 +1083,29 @@ def test_restart_migrates_v1_published_local_chord_baseline(tmp_path):
     assert restarted.sync_now().chord_counts == {'word': 3}
 
 
+def test_local_published_chord_baseline_is_restored(tmp_path):
+    root = tmp_path / 'folder'
+    local = tmp_path / 'one-local'
+    legacy = tmp_path / 'one-legacy'
+    _legacy(legacy, config=_config())
+    sync = LearningSync(local, legacy)
+    assert sync.configure(root).state == 'ready'
+    sync.record_chords({'word': 2}, {})
+    sync.sync_now()
+
+    bootstrap_path = local / 'local-bootstrap.json'
+    bootstrap = json.loads(bootstrap_path.read_text(encoding='utf-8'))
+    bootstrap.pop('local_chord_counts')
+    bootstrap.pop('last_materialized')
+    bootstrap_path.write_text(json.dumps(bootstrap), encoding='utf-8')
+
+    restarted = LearningSync(local, legacy)
+    assert restarted._local_chord_counts == {'word': 2}
+    restarted.record_chords({'word': 3}, {})
+
+    assert restarted.sync_now().chord_counts == {'word': 3}
+
+
 def test_provider_local_chord_baseline_is_not_trusted(tmp_path):
     root = tmp_path / 'folder'
     local = tmp_path / 'one-local'
