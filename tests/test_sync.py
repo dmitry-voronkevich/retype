@@ -1076,6 +1076,52 @@ def test_restart_accepts_published_sequence_gap_with_matching_predecessor(tmp_pa
     assert not list((local / 'recovery' / 'sync').glob('*.rejected'))
 
 
+def test_publish_accepts_a_known_stale_replica_generation(tmp_path):
+    root = tmp_path / 'folder'
+    sync, _ = _enable(tmp_path, 'one', root, config=_config())
+    sync.sync_now()
+    first = json.loads((root / 'replicas' / (sync.replica_id + '.json')).read_text())
+
+    sync.record_chords({'word': 1}, {})
+    sync.sync_now()
+    sync.record_chords({'word': 2}, {})
+    sync.sync_now()
+    sync = LearningSync(tmp_path / 'one-local', tmp_path / 'one-legacy')
+    (root / 'replicas' / (sync.replica_id + '.json')).write_text(
+        json.dumps(first), encoding='utf-8')
+
+    sync.record_chords({'word': 3}, {})
+    result = sync.sync_now()
+
+    assert sync.replica_id == first['replica_id']
+    assert result.chord_counts == {'word': 3}
+    assert not any('duplicated' in item for item in result.status.diagnostics)
+
+
+def test_lock_contended_settings_failure_marks_revision(tmp_path):
+    sync, _ = _enable(tmp_path, 'one', tmp_path / 'folder', config=_config())
+    sync.sync_now()
+    locked = Event()
+    release = Event()
+
+    def hold_sync_lock():
+        with sync._lock:
+            locked.set()
+            release.wait()
+
+    worker = Thread(target=hold_sync_lock)
+    worker.start()
+    assert locked.wait(1)
+    changed = _config()
+    changed['auto_newline'] = False
+    with patch.object(sync, '_defer', return_value=False):
+        sync.record_settings(changed, _config())
+    release.set()
+    worker.join(1)
+
+    assert sync._settings_revisions['auto_newline'] == 1
+
+
 def test_remote_managed_books_are_not_materialized_without_consent(tmp_path):
     root = tmp_path / 'folder'
     source = tmp_path / 'private.epub'

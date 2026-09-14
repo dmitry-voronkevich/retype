@@ -744,7 +744,9 @@ class MainController(QObject):
             if book_view is not None:
                 book_view.maybeSave()
             deferred_settings = self.learning_sync.deferred_settings()
-            settings = dict(result.settings)
+            settings = (dict(deferred_settings)
+                        if self.learning_sync._legacy_capture_needed else
+                        dict(result.settings))
             settings.update(deferred_settings)
             for key in result.settings:
                 if key not in deferred_settings and \

@@ -187,6 +187,26 @@ def _valid_settings_register_map(value: object) -> dict[str, dict[str, object]]:
     }
 
 
+def _valid_published_ancestry(value: object) -> dict[str, tuple[int, str | None]]:
+    if not isinstance(value, list):
+        return {}
+    result = {}
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        digest = item.get('payload_digest')
+        sequence = item.get('sequence')
+        predecessor = item.get('predecessor_digest')
+        if (not isinstance(digest, str) or not _SHA256.fullmatch(digest) or
+                not _is_int(sequence) or sequence < 1 or
+                (predecessor is not None and
+                 (not isinstance(predecessor, str) or
+                  not _SHA256.fullmatch(predecessor)))):
+            continue
+        result[digest] = (sequence, predecessor)
+    return result
+
+
 def _json_bytes(data: object) -> bytes:
     try:
         return json.dumps(data, sort_keys=True, separators=(',', ':'),
@@ -698,6 +718,7 @@ class LearningSync:
         self.bootstrap_path = self.local_root / 'local-bootstrap.json'
         self.pending_path = self.local_root / 'pending-sync-replica.json'
         self.published_path = self.local_root / 'last-published-sync-replica.json'
+        self.published_ancestry_path = self.local_root / 'published-sync-ancestry.json'
         self.materialized_recovery_path = self.local_root / 'last-materialized-sync-state.json'
         self.legacy_reconciliation_path = self.local_root / 'legacy-reconciliation-needed.json'
         self.deferred_path = self.local_root / 'deferred-sync-mutations.json'
@@ -727,6 +748,7 @@ class LearningSync:
         self._sequence = 0
         self._predecessor: str | None = None
         self._published_predecessor: str | None = None
+        self._published_ancestry = self._load_published_ancestry()
         self._clock = HLC(0, 0)
         self._dirty = False
         self._pending_touch_durable = False
@@ -843,6 +865,22 @@ class LearningSync:
         atomic_write_json(self.bootstrap_path, self._bootstrap,
                           self.recovery_dir / 'bootstrap')
 
+    def _load_published_ancestry(self) -> dict[str, tuple[int, str | None]]:
+        if not self.published_ancestry_path.exists():
+            return _valid_published_ancestry(
+                self._bootstrap.get('published_ancestry'))
+        try:
+            data = _read_json(self.published_ancestry_path)
+            if not isinstance(data, dict) or \
+                    data.get('collection_id') != self.collection_id:
+                raise ValidationError('published sync ancestry belongs to another collection')
+            return _valid_published_ancestry(data.get('ancestry'))
+        except ValidationError as error:
+            self._recover_candidate(
+                self.published_ancestry_path,
+                'published sync ancestry could not be read: {}'.format(error))
+            return {}
+
     def _load_legacy_reconciliation_marker(self) -> None:
         if not self.legacy_reconciliation_path.exists():
             return
@@ -911,6 +949,15 @@ class LearningSync:
                 self.materialized_recovery_path,
                 'materialized sync state could not be read: {}'.format(error))
 
+    def _record_published_ancestry(self, data: Mapping[str, object]) -> None:
+        digest = data.get('payload_digest')
+        sequence = data.get('sequence')
+        predecessor = data.get('predecessor_digest')
+        if isinstance(digest, str) and _SHA256.fullmatch(digest) and \
+                _is_int(sequence) and sequence >= 1 and \
+                (predecessor is None or isinstance(predecessor, str)):
+            self._published_ancestry[digest] = (sequence, predecessor)
+
     def _install_published(self, data: Mapping[str, object]) -> None:
         self._payload = deepcopy(data['payload'])  # type: ignore[arg-type]
         self._sequence = int(data['sequence'])
@@ -937,6 +984,17 @@ class LearningSync:
     def _remember_published_envelope(self, data: Mapping[str, object]) -> None:
         atomic_write_json(self.published_path, data,
                           self.recovery_dir / 'published')
+        self._record_published_ancestry(data)
+        ancestry = [
+            {'payload_digest': digest, 'sequence': sequence,
+             'predecessor_digest': predecessor}
+            for digest, (sequence, predecessor) in
+            sorted(self._published_ancestry.items(),
+                   key=lambda item: (item[1][0], item[0]))]
+        atomic_write_json(self.published_ancestry_path, {
+            'collection_id': self.collection_id,
+            'ancestry': ancestry,
+        }, self.recovery_dir / 'published-ancestry')
 
     def _load_published(self) -> None:
         root = self.sync_root
@@ -972,6 +1030,7 @@ class LearningSync:
         if selected is None:
             return
         self._install_published(selected)
+        self._record_published_ancestry(selected)
         if provider is selected and local is not selected:
             try:
                 self._remember_published_envelope(selected)
@@ -1617,6 +1676,7 @@ class LearningSync:
                         deepcopy(self._bootstrap), deepcopy(self._payload),
                         self._sequence, self._predecessor,
                         self._published_predecessor,
+                        deepcopy(self._published_ancestry),
                         deepcopy(self._materialized_counts),
                         deepcopy(self._materialized_overrides),
                         deepcopy(self._materialized_override_registers),
@@ -1652,6 +1712,7 @@ class LearningSync:
                     self._sequence = 0
                     self._predecessor = None
                     self._published_predecessor = None
+                    self._published_ancestry = {}
                     self._materialized_counts = {}
                     self._materialized_overrides = {}
                     self._materialized_override_registers = {}
@@ -1662,6 +1723,7 @@ class LearningSync:
                     self._local_chord_counts = {}
                     self._bootstrap.pop('last_materialized', None)
                     self._bootstrap.pop('local_chord_counts', None)
+                    self._bootstrap.pop('published_ancestry', None)
                     self._bootstrap['legacy_migrated'] = False
                     self._legacy_capture_needed = False
                 self._bootstrap['sync'] = {
@@ -1691,6 +1753,7 @@ class LearningSync:
                 if previous_state is not None and not transition_committed:
                     (self._bootstrap, self._payload, self._sequence,
                      self._predecessor, self._published_predecessor,
+                     self._published_ancestry,
                      self._materialized_counts, self._materialized_overrides,
                      self._materialized_override_registers,
                      self._materialized_settings_registers,
@@ -2134,6 +2197,13 @@ class LearningSync:
                         previous: Mapping[str, object],
                         _deferred_id: str | None = None) -> None:
         if not self._lock.acquire(blocking=False):
+            if self.enabled:
+                values = learning_settings_from_config(config)
+                before = learning_settings_from_config(previous)
+                for key, value in values.items():
+                    if value != before.get(key):
+                        self._settings_revisions[key] = \
+                            self._settings_revisions.get(key, 0) + 1
             if not self._defer('settings', deepcopy(dict(config)),
                                deepcopy(dict(previous))):
                 self._reconcile_after_deferred_failure()
@@ -2259,7 +2329,8 @@ class LearningSync:
                 if legacy_materialized:
                     self._remember_materialized(result)
                     result.legacy_materialized = True
-                    self._clear_legacy_reconciliation_marker()
+                    if not self._legacy_capture_needed:
+                        self._clear_legacy_reconciliation_marker()
                 managed_limit_exceeded = result.managed_books and \
                     sum(int(metadata['size']) for metadata in
                         result.managed_books.values()) > MAX_MANAGED_LIBRARY_BYTES
@@ -2267,7 +2338,8 @@ class LearningSync:
                     not self.managed_library_consent or
                     not result.managed_books or managed_limit_exceeded or
                     set(result.managed_books).issubset(result.managed_books_ready))
-                if legacy_materialized and managed_materialized:
+                if legacy_materialized and managed_materialized and \
+                        not self._legacy_capture_needed:
                     result.status = SyncStatus(
                         'synced',
                         'Local changes are saved in the selected sync folder.',
@@ -2340,11 +2412,17 @@ class LearningSync:
                 self._dirty = False
                 self.pending_path.unlink(missing_ok=True)
                 return
-            if int(existing['sequence']) < int(envelope['sequence']) and \
-                    existing_digest != envelope.get('predecessor_digest') and \
-                    existing_digest != self._published_predecessor:
-                self._handle_replica_fork(existing, envelope)
-                raise SyncError('replica identity conflict requires recovery')
+            if int(existing['sequence']) < int(envelope['sequence']):
+                known = self._published_ancestry.get(existing_digest)
+                known_ancestor = known is not None and \
+                    known == (int(existing['sequence']),
+                              existing.get('predecessor_digest'))
+                direct_ancestor = existing_digest in (
+                    envelope.get('predecessor_digest'),
+                    self._published_predecessor)
+                if not known_ancestor and not direct_ancestor:
+                    self._handle_replica_fork(existing, envelope)
+                    raise SyncError('replica identity conflict requires recovery')
         atomic_write_json(target, envelope, self.recovery_dir / 'replicas')
         self._remember_published_envelope(envelope)
         self._predecessor = local_digest
@@ -2364,6 +2442,8 @@ class LearningSync:
         self._sequence = 0
         self._predecessor = None
         self._published_predecessor = None
+        self._published_ancestry = {}
+        self._bootstrap.pop('published_ancestry', None)
         self._dirty = False
         self._save_bootstrap()
         self._diagnose('Replica {} was duplicated. A new identity was created; '
