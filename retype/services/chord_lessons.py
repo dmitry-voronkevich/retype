@@ -232,8 +232,9 @@ class ChordMasteryProgress:
             if isinstance(key, str) and key and isinstance(value, bool)
         }
         saved = self.storage.save(merged_uses, merged_overrides, notify=False)
-        self._uses = merged_uses
-        self._manual_overrides = merged_overrides
+        if saved:
+            self._uses = merged_uses
+            self._manual_overrides = merged_overrides
         return saved
 
 

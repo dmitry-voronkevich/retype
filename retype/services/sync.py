@@ -726,6 +726,7 @@ class LearningSync:
         self._payload: dict[str, object] = _empty_payload()
         self._sequence = 0
         self._predecessor: str | None = None
+        self._published_predecessor: str | None = None
         self._clock = HLC(0, 0)
         self._dirty = False
         self._pending_touch_durable = False
@@ -914,6 +915,8 @@ class LearningSync:
         self._payload = deepcopy(data['payload'])  # type: ignore[arg-type]
         self._sequence = int(data['sequence'])
         self._predecessor = str(data['payload_digest'])
+        predecessor = data.get('predecessor_digest')
+        self._published_predecessor = predecessor if isinstance(predecessor, str) else None
         self._clock = HLC.from_data(data['hlc'])
 
     def _read_published_candidate(self, path: Path,
@@ -1344,12 +1347,14 @@ class LearningSync:
                 self._pending_touch_durable = True
                 self._bootstrap['local_chord_counts'] = dict(self._local_chord_counts)
                 self._save_bootstrap()
-            except OSError as error:
+            except (OSError, ValidationError) as error:
                 self._diagnose(
                     'Local pending sync state could not be written: {}'.format(error))
                 self.status = SyncStatus(
                     'waiting', 'Local sync state could not be saved; retrying.',
                     time.time(), list(self.status.diagnostics))
+                if isinstance(error, ValidationError):
+                    raise OSError(str(error)) from error
                 raise
 
     def _touch_or_defer(self, kind: str, *args: object,
@@ -1611,6 +1616,7 @@ class LearningSync:
                     previous_state = (
                         deepcopy(self._bootstrap), deepcopy(self._payload),
                         self._sequence, self._predecessor,
+                        self._published_predecessor,
                         deepcopy(self._materialized_counts),
                         deepcopy(self._materialized_overrides),
                         deepcopy(self._materialized_override_registers),
@@ -1645,6 +1651,7 @@ class LearningSync:
                     self._payload = _empty_payload()
                     self._sequence = 0
                     self._predecessor = None
+                    self._published_predecessor = None
                     self._materialized_counts = {}
                     self._materialized_overrides = {}
                     self._materialized_override_registers = {}
@@ -1683,8 +1690,8 @@ class LearningSync:
             except (OSError, SyncError, ValidationError) as error:
                 if previous_state is not None and not transition_committed:
                     (self._bootstrap, self._payload, self._sequence,
-                     self._predecessor, self._materialized_counts,
-                     self._materialized_overrides,
+                     self._predecessor, self._published_predecessor,
+                     self._materialized_counts, self._materialized_overrides,
                      self._materialized_override_registers,
                      self._materialized_settings_registers,
                      self._materialized_settings_before_commit,
@@ -2328,17 +2335,21 @@ class LearningSync:
                     existing['sequence'] == envelope['sequence']:
                 self._remember_published_envelope(envelope)
                 self._predecessor = local_digest
+                predecessor = envelope.get('predecessor_digest')
+                self._published_predecessor = predecessor if isinstance(predecessor, str) else None
                 self._dirty = False
                 self.pending_path.unlink(missing_ok=True)
                 return
             if int(existing['sequence']) < int(envelope['sequence']) and \
-                    existing_digest != envelope.get('predecessor_digest'):
-                self._diagnose(
-                    'The provider replica is a divergent stale copy; retaining '
-                    'the locally published replica chain.')
+                    existing_digest != envelope.get('predecessor_digest') and \
+                    existing_digest != self._published_predecessor:
+                self._handle_replica_fork(existing, envelope)
+                raise SyncError('replica identity conflict requires recovery')
         atomic_write_json(target, envelope, self.recovery_dir / 'replicas')
         self._remember_published_envelope(envelope)
         self._predecessor = local_digest
+        predecessor = envelope.get('predecessor_digest')
+        self._published_predecessor = predecessor if isinstance(predecessor, str) else None
         self._dirty = False
         self.pending_path.unlink(missing_ok=True)
 
@@ -2352,6 +2363,7 @@ class LearningSync:
         self._payload = _empty_payload()
         self._sequence = 0
         self._predecessor = None
+        self._published_predecessor = None
         self._dirty = False
         self._save_bootstrap()
         self._diagnose('Replica {} was duplicated. A new identity was created; '
@@ -2457,6 +2469,17 @@ class LearningSync:
 
     def _remember_materialized(self, result: SyncResult) -> None:
         previous = self._last_materialized()
+        managed_books = {
+            digest: deepcopy(metadata) for digest, metadata in
+            result.managed_books.items()
+            if _validate_book_metadata(digest, metadata)
+        }
+        previous_managed = previous.get('managed_books')
+        if isinstance(previous_managed, dict):
+            for digest, metadata in previous_managed.items():
+                if digest not in managed_books and \
+                        _validate_book_metadata(digest, metadata):
+                    managed_books[digest] = deepcopy(metadata)
         self._materialized_settings_before_commit = (
             deepcopy(previous.get('settings', {})),
             deepcopy(previous.get('settings_registers', {})))
@@ -2477,6 +2500,7 @@ class LearningSync:
             'chord_override_registers': deepcopy(result.chord_override_registers),
             'settings': deepcopy(settings),
             'settings_registers': deepcopy(self._materialized_settings_registers),
+            'managed_books': managed_books,
             'local_chord_counts': dict(self._local_chord_counts),
         }
         atomic_write_json(self.materialized_recovery_path, state,
@@ -2603,6 +2627,12 @@ class LearningSync:
         return success
 
     def _materialize_managed_books(self, root: Path, result: SyncResult) -> set[str]:
+        previous_managed = self._last_materialized().get('managed_books')
+        if isinstance(previous_managed, dict):
+            for digest, metadata in previous_managed.items():
+                if digest not in result.managed_books and \
+                        _validate_book_metadata(digest, metadata):
+                    result.managed_books[digest] = deepcopy(metadata)
         if not self.managed_library_consent:
             if result.managed_books:
                 self._diagnose('Managed books are unavailable until managed-library consent is enabled.')
@@ -2692,7 +2722,12 @@ class LearningSync:
                 if replicas_dir.is_dir() and self.collection_id is not None:
                     visible.update(merge_replicas(
                         self._scan_replicas(replicas_dir, self.collection_id)).managed_books)
-                all_books = dict(visible)
+                all_books = {}
+                previous_managed = self._last_materialized().get('managed_books')
+                if isinstance(previous_managed, dict):
+                    all_books.update({key: value for key, value in previous_managed.items()
+                                      if _validate_book_metadata(key, value)})
+                all_books.update(visible)
                 all_books.update({key: value for key, value in managed.items()
                                   if isinstance(key, str) and isinstance(value, dict)})
                 existing_total = sum(int(meta['size']) for key, meta in all_books.items()

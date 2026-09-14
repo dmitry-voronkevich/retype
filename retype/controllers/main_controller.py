@@ -288,7 +288,7 @@ class MainController(QObject):
 
         self.customisation_dialog = CustomisationDialog(
             self.config.raw, self._window,
-            self.saveConfigRequested, self.prevViewRequested,
+            self.saveConfig, self.prevViewRequested,
             lambda: self.views[View.book_view].font_size,
             self._window,
             getLoadedChords=lambda: self.views[View.book_view].loaded_chords,
@@ -479,12 +479,12 @@ class MainController(QObject):
                 self.showCustomisationDialog()
 
     def saveConfig(self, config_dict):
-        # type: (MainController, NestedDict) -> None
+        # type: (MainController, NestedDict) -> bool
         previous_config = deepcopy(self.config.raw)
         self.config.populate(config_dict)
         if not self.config.save():
             self.config.populate(previous_config)
-            return
+            return False
         config = self.config
 
         # Repopulate library if paths changed
@@ -546,6 +546,7 @@ class MainController(QObject):
 
         # Update console font
         self.console.font_family = config['console_font']
+        return True
 
     def _syncMutationFailed(self, error):
         # type: (MainController, OSError) -> None
@@ -734,6 +735,7 @@ class MainController(QObject):
         waiting_for_provider = isinstance(result, SyncResult) and \
             result.status.state == 'waiting'
         settings_materialization_failed = False
+        chord_materialization_failed = False
         if isinstance(result, SyncResult):
             book_view = self.views.get(View.book_view) \
                 if hasattr(self, 'views') else None
@@ -782,25 +784,29 @@ class MainController(QObject):
                 overrides = result.chord_overrides
                 if result.chord_revision != self.learning_sync.chord_revision:
                     overrides = self.chord_progress.manual_overrides()
-                self.chord_progress.apply_merged(
-                    result.chord_counts, overrides)
-                if hasattr(self, 'views') and View.book_view in self.views:
-                    self.views[View.book_view].setChordProgress(self.chord_progress)
-                    dialog = getattr(self, 'customisation_dialog', None)
-                    if dialog is not None:
-                        dialog.chordProgress = self.chord_progress
-                        if hasattr(dialog, 'chord_mastery'):
-                            dialog.chord_mastery.setProgress(self.chord_progress)
-                self.learning_sync.acknowledge_sync_application()
-        if settings_materialization_failed:
+                if not self.chord_progress.apply_merged(
+                        result.chord_counts, overrides):
+                    chord_materialization_failed = True
+                else:
+                    if hasattr(self, 'views') and View.book_view in self.views:
+                        self.views[View.book_view].setChordProgress(self.chord_progress)
+                        dialog = getattr(self, 'customisation_dialog', None)
+                        if dialog is not None:
+                            dialog.chordProgress = self.chord_progress
+                            if hasattr(dialog, 'chord_mastery'):
+                                dialog.chord_mastery.setProgress(self.chord_progress)
+                    self.learning_sync.acknowledge_sync_application()
+        if settings_materialization_failed or chord_materialization_failed:
+            message = ('Merged learning settings could not be saved locally; retrying.'
+                       if settings_materialization_failed else
+                       'Merged chord mastery could not be saved locally; retrying.')
             result.status = SyncStatus(
-                'waiting',
-                'Merged learning settings could not be saved locally; retrying.',
-                time.time(), list(result.status.diagnostics))
+                'waiting', message, time.time(), list(result.status.diagnostics))
             self.learning_sync.status = result.status
         self._updateSyncPresentation()
         self._sync_worker = None
-        if waiting_for_provider or settings_materialization_failed:
+        if waiting_for_provider or settings_materialization_failed or \
+                chord_materialization_failed:
             self._scheduleSyncRetry()
             self._sync_pending = False
         elif self._sync_pending or self.learning_sync.has_deferred_changes:

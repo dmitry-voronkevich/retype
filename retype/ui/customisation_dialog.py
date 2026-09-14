@@ -764,7 +764,15 @@ class CustomisationDialog(QDialog):
             return
 
         # Save
-        self.saveConfig.emit(self.config_edited)
+        if callable(self.saveConfig):
+            saved = self.saveConfig(self.config_edited)
+        elif hasattr(self.saveConfig, 'emit'):
+            saved = self.saveConfig.emit(self.config_edited)
+        else:
+            saved = True
+        if saved is False:
+            self._updateDirtyState()
+            return
         if self.chord_mastery.isDirty():
             self.saveChordMasteryRequested.emit(self.chord_mastery.overrides())
             if self.chord_mastery.saveFailed():
