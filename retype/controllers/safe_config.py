@@ -86,7 +86,26 @@ class _SafeConfig:
                         raise OSError('legacy learning file disappeared: {}'.format(
                             filename))
                     if not os.path.exists(destination):
-                        shutil.copy2(source, destination)
+                        descriptor = None
+                        temporary = None
+                        try:
+                            descriptor, temporary = tempfile.mkstemp(
+                                prefix='.' + filename + '.',
+                                dir=self.default_user_dir)
+                            os.close(descriptor)
+                            descriptor = None
+                            shutil.copy2(source, temporary)
+                            if not os.path.exists(destination):
+                                os.replace(temporary, destination)
+                                temporary = None
+                        finally:
+                            if descriptor is not None:
+                                os.close(descriptor)
+                            if temporary is not None:
+                                try:
+                                    os.unlink(temporary)
+                                except OSError:
+                                    pass
             except OSError as error:
                 migration_ready = False
                 logger.warning('Could not copy legacy local learning data: %s',

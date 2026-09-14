@@ -1155,10 +1155,17 @@ class LearningSync:
         count = len(chunks)
         if count > MAX_DEFERRED_PARTS:
             raise SyncError('deferred sync mutations exceed the part limit')
-        if any(len(_json_bytes({'generation': generation, 'index': index,
-                                'count': count, 'events': chunk})) >
-               MAX_DEFERRED_BYTES for index, chunk in enumerate(chunks)):
-            raise SyncError('a deferred sync mutation exceeds the size limit')
+        serialized_size = len(_json_bytes({
+            'generation': generation, 'count': count}))
+        for index, chunk in enumerate(chunks):
+            part = {'generation': generation, 'index': index,
+                    'count': count, 'events': chunk}
+            part_size = len(_json_bytes(part))
+            if part_size > MAX_DEFERRED_BYTES:
+                raise SyncError('a deferred sync mutation exceeds the size limit')
+            serialized_size += part_size
+        if serialized_size > MAX_DEFERRED_BYTES:
+            raise SyncError('deferred sync mutations exceed the size limit')
 
         self.deferred_parts_dir.mkdir(parents=True, exist_ok=True)
         current_parts = set()
@@ -1385,6 +1392,8 @@ class LearningSync:
                   managed_library_consent: bool = False) -> SyncStatus:
         """Opt in to a user-selected directory without deleting anything."""
         root = Path(sync_root).expanduser()
+        transition_committed = False
+        previous_state = None
         with self._lock:
             try:
                 root.mkdir(parents=True, exist_ok=True)
@@ -1408,19 +1417,36 @@ class LearningSync:
                     }, self.recovery_dir / 'manifest')
                 previous_collection = self.collection_id
                 if previous_collection != collection_id:
+                    previous_state = (
+                        deepcopy(self._bootstrap), deepcopy(self._payload),
+                        self._sequence, self._predecessor,
+                        deepcopy(self._materialized_counts),
+                        deepcopy(self._materialized_overrides),
+                        deepcopy(self._materialized_override_registers),
+                        deepcopy(self._materialized_settings_registers),
+                        deepcopy(self._materialized_settings_before_commit),
+                        deepcopy(self._local_chord_counts), self._dirty,
+                        self._legacy_capture_needed,
+                        self._pending_touch_durable,
+                        set(self._deferred_recovery_pending),
+                        set(self._deferred_recovery_cleanup))
+                    if self._deferred:
+                        with self._deferred_lock:
+                            try:
+                                self._persist_deferred_locked()
+                            except (OSError, SyncError) as error:
+                                raise SyncError(
+                                    'deferred sync state could not be preserved while switching sync collections') from error
                     if self.pending_path.exists() and not self._recover_candidate(
                             self.pending_path,
                             'pending state was retained while switching sync collections'):
                         raise SyncError(
-                            'pending sync state could not be preserved while switching collections')
+                            'pending sync state could not be preserved while switching sync collections')
                     if (self.deferred_path.exists() or self.deferred_parts_dir.is_dir()) and \
                             not self._recover_deferred_state(
                                 'deferred state was retained while switching sync collections'):
                         raise SyncError(
-                            'deferred sync state could not be preserved while switching collections')
-                    with self._deferred_lock:
-                        self._deferred.clear()
-                        self._persist_deferred_locked()
+                            'deferred sync state could not be preserved while switching sync collections')
                     # A different folder is a different collection, not an
                     # opportunity to reuse old G-counter components.
                     self._payload = _empty_payload()
@@ -1434,7 +1460,6 @@ class LearningSync:
                     self._local_chord_counts = {}
                     self._bootstrap.pop('last_materialized', None)
                     self._bootstrap.pop('local_chord_counts', None)
-                    self.pending_path.unlink(missing_ok=True)
                     self._bootstrap['legacy_migrated'] = False
                     self._legacy_capture_needed = False
                 self._bootstrap['sync'] = {
@@ -1444,6 +1469,12 @@ class LearningSync:
                     'managed_library_consent': bool(managed_library_consent),
                 }
                 self._save_bootstrap()
+                if previous_collection != collection_id:
+                    transition_committed = True
+                    with self._deferred_lock:
+                        self._deferred.clear()
+                        self._persist_deferred_locked()
+                    self.pending_path.unlink(missing_ok=True)
                 self._prune_deferred_markers()
                 if previous_collection == collection_id and \
                         self._bootstrap.get('legacy_migrated') is True:
@@ -1455,6 +1486,18 @@ class LearningSync:
                     'Local changes are queued for the selected sync folder.')
                 return self.status
             except (OSError, SyncError, ValidationError) as error:
+                if previous_state is not None and not transition_committed:
+                    (self._bootstrap, self._payload, self._sequence,
+                     self._predecessor, self._materialized_counts,
+                     self._materialized_overrides,
+                     self._materialized_override_registers,
+                     self._materialized_settings_registers,
+                     self._materialized_settings_before_commit,
+                     self._local_chord_counts, self._dirty,
+                     self._legacy_capture_needed,
+                     self._pending_touch_durable,
+                     self._deferred_recovery_pending,
+                     self._deferred_recovery_cleanup) = previous_state
                 self.status = SyncStatus('waiting',
                     'Waiting for the selected sync folder: {}'.format(error))
                 return self.status
@@ -1486,10 +1529,15 @@ class LearningSync:
         with self._lock:
             sync = self._bootstrap.setdefault('sync', {})
             assert isinstance(sync, dict)
+            previous_enabled = sync.get('enabled')
             sync['enabled'] = False
             try:
                 self._save_bootstrap()
             except OSError as error:
+                if previous_enabled is None:
+                    sync.pop('enabled', None)
+                else:
+                    sync['enabled'] = previous_enabled
                 self._diagnose(
                     'Local sync settings could not be saved: {}'.format(error))
                 self.status = SyncStatus(
