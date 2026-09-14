@@ -1031,6 +1031,33 @@ def test_deferred_settings_are_available_for_live_result_application(tmp_path):
     assert sync.deferred_settings() == {'auto_newline': False}
 
 
+def test_provider_cannot_modify_local_chord_baseline_without_digest_update(tmp_path):
+    root = tmp_path / 'folder'
+    sync, _ = _enable(tmp_path, 'one', root, config=_config())
+    sync.record_chords({'word': 2}, {})
+    sync.sync_now()
+
+    replica_path = root / 'replicas' / (sync.replica_id + '.json')
+    replica = json.loads(replica_path.read_text(encoding='utf-8'))
+    replica['local_chord_counts']['word'] = 1_000_000
+
+    with pytest.raises(ValidationError, match='chord counts digest'):
+        validate_envelope(replica, sync.collection_id)
+
+
+def test_replica_fork_clears_persisted_ancestry(tmp_path):
+    root = tmp_path / 'folder'
+    sync, _ = _enable(tmp_path, 'one', root, config=_config())
+    sync.sync_now()
+    old_replica_id = sync.replica_id
+    assert sync.published_ancestry_path.exists()
+
+    sync._handle_replica_fork({'remote': True}, {'local': True})
+
+    assert sync.replica_id != old_replica_id
+    assert not sync.published_ancestry_path.exists()
+
+
 def test_restart_restores_published_replica_without_fork_recovery(tmp_path):
     root = tmp_path / 'folder'
     local = tmp_path / 'one-local'

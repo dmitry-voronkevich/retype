@@ -226,6 +226,18 @@ def _digest(data: object) -> str:
     return sha256(_json_bytes(data)).hexdigest()
 
 
+def _local_chord_counts_digest(local_chord_counts: Mapping[str, int]) -> str:
+    return _digest(dict(local_chord_counts))
+
+
+def _authenticated_local_chord_counts(data: Mapping[str, object]) -> bool:
+    local_counts = data.get('local_chord_counts')
+    digest = data.get('local_chord_counts_digest')
+    return (_valid_count_map_strict(local_counts) and
+            isinstance(digest, str) and _SHA256.fullmatch(digest) is not None and
+            _local_chord_counts_digest(local_counts) == digest)
+
+
 def _safe_basename(value: object) -> str | None:
     if not isinstance(value, str) or not value or len(value) > 512:
         return None
@@ -516,9 +528,18 @@ def validate_envelope(data: object, collection_id: str | None = None) -> dict[st
         raise ValidationError('replica predecessor digest is invalid')
     payload = data.get('payload')
     digest = data.get('payload_digest')
+    local_counts = data.get('local_chord_counts')
+    local_counts_digest = data.get('local_chord_counts_digest')
     if not isinstance(payload, dict) or not isinstance(digest, str) or \
             not _SHA256.fullmatch(digest) or _digest(payload) != digest:
         raise ValidationError('replica payload digest does not match')
+    if local_counts is not None and not _valid_count_map_strict(local_counts):
+        raise ValidationError('local chord counts are malformed')
+    if local_counts_digest is not None and \
+            (local_counts is None or not isinstance(local_counts_digest, str) or
+             not _SHA256.fullmatch(local_counts_digest) or
+             _local_chord_counts_digest(local_counts) != local_counts_digest):
+        raise ValidationError('local chord counts digest does not match')
     _validate_payload(payload)
     return data
 
@@ -879,6 +900,8 @@ class LearningSync:
             if not isinstance(data, dict) or \
                     data.get('collection_id') != self.collection_id:
                 raise ValidationError('published sync ancestry belongs to another collection')
+            if data.get('replica_id') != self.replica_id:
+                raise ValidationError('published sync ancestry belongs to another replica')
             return _valid_published_ancestry(data.get('ancestry'))
         except ValidationError as error:
             self._recover_candidate(
@@ -970,7 +993,8 @@ class LearningSync:
 
     def _install_published(self, data: Mapping[str, object]) -> None:
         self._payload = deepcopy(data['payload'])  # type: ignore[arg-type]
-        local_counts = _valid_count_map(data.get('local_chord_counts'))
+        local_counts = (_valid_count_map(data.get('local_chord_counts'))
+                        if _authenticated_local_chord_counts(data) else {})
         for key, count in local_counts.items():
             self._local_chord_counts[key] = max(
                 self._local_chord_counts.get(key, 0), count)
@@ -1010,6 +1034,7 @@ class LearningSync:
                    key=lambda item: (item[1][0], item[0]))]
         atomic_write_json(self.published_ancestry_path, {
             'collection_id': self.collection_id,
+            'replica_id': self.replica_id,
             'ancestry': ancestry,
         }, self.recovery_dir / 'published-ancestry')
 
@@ -1071,13 +1096,14 @@ class LearningSync:
                     pending_counts = pending_chords.get('counts', {}) \
                         if isinstance(pending_chords, dict) else {}
                     pending_counts = _valid_count_map(pending_counts)
-                    if 'local_chord_counts' not in data and pending_counts:
+                    if pending_counts and not _authenticated_local_chord_counts(data):
                         self._recover_candidate(
                             self.pending_path,
-                            'pending chord state has no recoverable cumulative baseline')
+                            'pending chord state has no authenticated cumulative baseline')
                         return
-                    pending_local_counts = _valid_count_map(
+                    pending_local_counts = (_valid_count_map(
                         data.get('local_chord_counts'))
+                        if _authenticated_local_chord_counts(data) else {})
                     for key, count in pending_local_counts.items():
                         self._local_chord_counts[key] = max(
                             self._local_chord_counts.get(key, 0), count)
@@ -1405,6 +1431,8 @@ class LearningSync:
             'hlc': stamp.to_data(),
             'predecessor_digest': self._predecessor,
             'payload_digest': _digest(self._payload),
+            'local_chord_counts_digest': _local_chord_counts_digest(
+                self._local_chord_counts),
             'payload': deepcopy(self._payload),
         }
 
@@ -2473,6 +2501,12 @@ class LearningSync:
         self._bootstrap.pop('published_ancestry', None)
         self._dirty = False
         self._save_bootstrap()
+        try:
+            self.published_ancestry_path.unlink(missing_ok=True)
+        except OSError as error:
+            self._diagnose(
+                'Published sync ancestry could not be cleared: {}'.format(error))
+            raise SyncError('published sync ancestry could not be cleared') from error
         self._diagnose('Replica {} was duplicated. A new identity was created; '
                        'the divergent state is in recovery diagnostics.'.format(old))
 
