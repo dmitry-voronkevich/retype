@@ -131,7 +131,7 @@ class LibraryController(object):
         try:
             with open(self._managed_index_path(), 'r', encoding='utf-8') as file:
                 data = json.load(file)
-        except (OSError, ValueError, TypeError):
+        except (OSError, ValueError, TypeError, RecursionError):
             return {}
         if not isinstance(data, dict):
             return {}

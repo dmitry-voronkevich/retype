@@ -1056,6 +1056,7 @@ class LearningSync:
         pointer_data = None
         pointer_generation = None
         pointer_usable = False
+        pointer_recovery_succeeded = True
         if pointer_exists:
             try:
                 pointer_data = _read_json(self.deferred_path, MAX_DEFERRED_BYTES)
@@ -1068,7 +1069,7 @@ class LearningSync:
                     raise ValidationError('deferred sync generation is malformed')
                 pointer_usable = True
             except (OSError, SyncError, ValidationError) as error:
-                self._recover_candidate(
+                pointer_recovery_succeeded = self._recover_candidate(
                     self.deferred_path,
                     'deferred sync pointer could not be read: {}'.format(error))
 
@@ -1112,9 +1113,10 @@ class LearningSync:
                                   item[0]))
             with self._deferred_lock:
                 self._deferred = loaded
-            if not pointer_usable or not pointer_exists or legacy or \
-                    selected_generation != pointer_generation or \
-                    self._deferred_recovery_cleanup:
+            if pointer_recovery_succeeded and (
+                    not pointer_usable or not pointer_exists or legacy or
+                    selected_generation != pointer_generation or
+                    self._deferred_recovery_cleanup):
                 try:
                     with self._deferred_lock:
                         self._persist_deferred_locked()

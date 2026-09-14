@@ -1,7 +1,20 @@
 import zipfile
 from hashlib import sha256
+from unittest.mock import patch
 
 from retype.controllers.library import LibraryController
+
+
+def test_nested_managed_index_does_not_abort_library_startup(tmp_path):
+    managed = tmp_path / 'managed-books'
+    managed.mkdir()
+    (managed / '.retype-managed-index.json').write_text('{}', encoding='utf-8')
+
+    with patch('retype.controllers.library.json.load',
+               side_effect=RecursionError('too deeply nested')):
+        library = LibraryController('', [], str(managed))
+
+    assert library._library_items == {}
 
 
 def test_consent_revocation_hides_managed_books_after_restart(tmp_path):

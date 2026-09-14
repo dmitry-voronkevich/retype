@@ -605,6 +605,38 @@ def test_corrupt_deferred_pointer_recovers_complete_parts(tmp_path):
     assert restarted.sync_now().chord_counts == {'word': 1}
 
 
+def test_malformed_deferred_pointer_is_retained_when_recovery_fails(tmp_path):
+    root = tmp_path / 'folder'
+    local = tmp_path / 'one-local'
+    legacy = tmp_path / 'one-legacy'
+    _legacy(legacy, config=_config())
+    first = LearningSync(local, legacy)
+    assert first.configure(root).state == 'ready'
+    first.sync_now()
+    locked = Event()
+    release = Event()
+
+    def hold_sync_lock():
+        with first._lock:
+            locked.set()
+            release.wait()
+
+    worker = Thread(target=hold_sync_lock)
+    worker.start()
+    assert locked.wait(1)
+    first.record_chords({'word': 1}, {})
+    release.set()
+    worker.join(1)
+    pointer = local / 'deferred-sync-mutations.json'
+    pointer.write_text('{not json', encoding='utf-8')
+
+    with patch.object(LearningSync, '_recover_candidate', return_value=False):
+        restarted = LearningSync(local, legacy)
+
+    assert pointer.read_text(encoding='utf-8') == '{not json'
+    assert restarted.has_deferred_changes
+
+
 def test_deferred_generation_rejects_excessive_part_count(tmp_path):
     sync, _ = _enable(tmp_path, 'one', tmp_path / 'folder', config=_config())
 
