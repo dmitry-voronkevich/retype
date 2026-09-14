@@ -1,7 +1,7 @@
 Customisation Dialog
 ====================
 
-The Customisation Dialog allows you to customise many aspects of *retype*. It is saved in file ``config.json`` in the :ref:`user-dir`.
+The Customisation Dialog allows you to customise many aspects of *retype*. Its settings are saved in ``config.json`` in the active data folder described by :ref:`user-dir`.
 
 When all the options are set to the same values as they are in the config, the Revert button is greyed out. When you change them it will be clickable and allows you to revert to the saved values. In order to save changed settings, the Save button must be pressed. After doing so, the Revert button will be greyed out again since the options values match the saved ones again.
 
@@ -17,15 +17,20 @@ User dir
 
 Path to the active data folder, where local ``save.json``,
 ``chord-mastery.json``, and ``config.json`` are stored. A fresh installation
-creates its default per-user data folder. The Filesystem pane names the folder
-in use and reports any copy from an older source-run or application-bundle
-location; those original files are left in place and recovery copies are kept.
+creates its default per-user data folder. On the first launch after this layout
+change, when the old configuration used the source-run or packaged-application
+data root, valid ``save.json``, ``chord-mastery.json``, and ``config.json`` are
+copied into the new folder. The originals are never removed, existing
+destination files are never overwritten, and recovery copies are kept. A
+legacy configuration that points to a custom data folder remains pointed there;
+that external or missing folder is not silently replaced or copied.
 
-If this setting names a missing custom folder, retype does not create it
-silently: it may be a disconnected external or provider volume, and creating a
-replacement could hide existing progress. Reconnect or create the intended
-folder, or choose another existing folder. Until then, retype explains that it
-cannot save progress or settings there.
+The Filesystem pane names the folder in use and reports copied, preserved, or
+skipped legacy data. If this setting names a missing custom folder, retype does
+not create it silently: it may be a disconnected external or provider volume,
+and creating a replacement could hide existing progress. Reconnect or create
+the intended folder, or choose another existing folder. Until then, retype
+explains that it cannot save progress or settings there.
 
 .. _library-search-paths:
 

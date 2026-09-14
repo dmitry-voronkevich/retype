@@ -17,8 +17,8 @@ Enable and use sync
 
 #. Choose **Choose sync folder…** and review the upload scope. Confirming
    copies existing local progress, chord mastery, and eligible learning settings
-   into this installation's replica; it never moves or deletes the local files
-   or existing files in the chosen folder.
+   into this installation's replica; it never moves or deletes local learning
+   data or existing learning data in the chosen folder.
 #. Use **Sync now** to scan complete replica files immediately. retype also
    queues local changes and scans without putting provider-folder I/O in the
    typing path.
@@ -65,8 +65,9 @@ locally while their progress remains available for a valid matching edition.
 Reliability and recovery
 ------------------------
 
-Each installation writes only its own validated replica file. Complete files
-are atomically replaced and rolling local backups plus rejected-file copies are
-kept in the local application-data recovery directory. This allows deterministic
+For learning-state synchronization, each installation writes only its own
+validated replica file. Complete files are atomically replaced and rolling
+local backups plus rejected-file copies are kept in the local
+application-data recovery directory. This allows deterministic
 merges after offline or simultaneous use, but it is eventual synchronization,
 not a lock or an instant cloud guarantee. Do not edit replica files manually.
