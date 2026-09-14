@@ -206,7 +206,7 @@ Attempting to load config from: {}".format(user_dir, custom_path))
         if os.path.exists(path):
             logger.info(f'Read config: {path}')
             try:
-                with open(path, 'r') as f:
+                with open(path, 'r', encoding='utf-8') as f:
                     config = json.load(f)  # type: Config
                     return config
             except (OSError, ValueError, TypeError, RecursionError) as e:
@@ -301,7 +301,7 @@ Attempting to load config from: {}".format(user_dir, custom_path))
         dconfig = None
         path = os.path.join(self.default_user_dir, self.config_rel_path)
         try:
-            with open(path, 'r') as f:
+            with open(path, 'r', encoding='utf-8') as f:
                 dconfig = json.load(f)  # type: Config
         except (OSError, ValueError, TypeError, RecursionError) as e:
             s = 'Unable to load dconfig file.'
