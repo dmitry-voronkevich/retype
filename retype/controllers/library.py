@@ -459,6 +459,9 @@ class LibraryController(object):
                 'This is normal if the save file has not been created yet.')
             save = {}
 
+        if not isinstance(save, dict):
+            logger.warning('Save file is not an object; preserving it and using empty progress.')
+            save = {}
         save = self.migrateV1Save(save)
         self.save_file_contents = save
         return save

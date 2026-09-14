@@ -707,12 +707,18 @@ class LearningSync:
             if isinstance(baseline, dict) else None
         self._materialized_settings_registers = _valid_settings_register_map(
             baseline_setting_registers)
+        self._durable_chord_baseline = _valid_count_map(
+            self._bootstrap.get('local_chord_counts'))
+        if isinstance(baseline, dict):
+            self._durable_chord_baseline.update(_valid_count_map(
+                baseline.get('local_chord_counts')))
+        self._durable_chord_baseline.update(self._read_legacy_chord_counts())
         self._materialized_settings_before_commit = None
         self._local_chord_counts = _valid_count_map(
             self._bootstrap.get('local_chord_counts'))
         self._load_published()
-        self._load_pending()
         self._initialize_materialized_count_baseline()
+        self._load_pending()
         self._load_deferred()
         self._prune_deferred_markers()
 
@@ -865,11 +871,24 @@ class LearningSync:
             provider = self._read_published_candidate(
                 root / 'replicas' / (self.replica_id + '.json'), collection)
         selected = local
-        if provider is not None and (local is None or
-                                     int(provider['sequence']) > int(local['sequence'])):
+        if provider is not None and local is None:
             selected = provider
         elif provider is not None and local is not None:
-            if int(provider['sequence']) < int(local['sequence']):
+            provider_sequence = int(provider['sequence'])
+            local_sequence = int(local['sequence'])
+            if provider_sequence > local_sequence:
+                extends_local = (
+                    provider_sequence == local_sequence + 1 and
+                    provider.get('predecessor_digest') == local.get('payload_digest'))
+                if extends_local:
+                    selected = provider
+                else:
+                    self._diagnose(
+                        'The provider replica conflicts with the last local publication.')
+                    self._recover_candidate(
+                        root / 'replicas' / (self.replica_id + '.json'),
+                        'provider replica does not extend the last local publication')
+            elif provider_sequence < local_sequence:
                 self._diagnose('The provider replica is stale; retaining the last local publication.')
             elif provider['payload_digest'] != local['payload_digest']:
                 self._diagnose('The provider replica conflicts with the last local publication.')
@@ -893,12 +912,25 @@ class LearningSync:
                 data = validate_envelope(data, collection)
                 if data['replica_id'] == self.replica_id and \
                         int(data['sequence']) >= self._sequence:
+                    payload = data['payload']
+                    pending_chords = payload.get('chords', {}) \
+                        if isinstance(payload, dict) else {}
+                    pending_counts = pending_chords.get('counts', {}) \
+                        if isinstance(pending_chords, dict) else {}
+                    pending_counts = _valid_count_map(pending_counts)
+                    if ('local_chord_counts' not in data and
+                            any(key not in self._durable_chord_baseline
+                                for key in pending_counts)):
+                        self._recover_candidate(
+                            self.pending_path,
+                            'pending chord state has no durable cumulative baseline')
+                        return
                     pending_local_counts = _valid_count_map(
                         data.get('local_chord_counts'))
                     for key, count in pending_local_counts.items():
                         self._local_chord_counts[key] = max(
                             self._local_chord_counts.get(key, 0), count)
-                    self._payload = deepcopy(data['payload'])  # type: ignore[arg-type]
+                    self._payload = deepcopy(payload)  # type: ignore[arg-type]
                     self._sequence = int(data['sequence'])
                     self._predecessor = data.get('predecessor_digest')  # type: ignore[assignment]
                     self._clock = HLC.from_data(data['hlc'])
