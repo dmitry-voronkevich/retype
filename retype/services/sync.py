@@ -230,7 +230,7 @@ def _local_chord_counts_digest(local_chord_counts: Mapping[str, int]) -> str:
     return _digest(dict(local_chord_counts))
 
 
-def _authenticated_local_chord_counts(data: Mapping[str, object]) -> bool:
+def _valid_local_chord_counts(data: Mapping[str, object]) -> bool:
     local_counts = data.get('local_chord_counts')
     digest = data.get('local_chord_counts_digest')
     return (_valid_count_map_strict(local_counts) and
@@ -991,10 +991,11 @@ class LearningSync:
                     key=lambda item: (item[1][0], item[0]),
                     reverse=True)[:MAX_PUBLISHED_ANCESTRY])
 
-    def _install_published(self, data: Mapping[str, object]) -> None:
+    def _install_published(
+            self, data: Mapping[str, object],
+            trusted_local_counts: Mapping[str, int] | None = None) -> None:
         self._payload = deepcopy(data['payload'])  # type: ignore[arg-type]
-        local_counts = (_valid_count_map(data.get('local_chord_counts'))
-                        if _authenticated_local_chord_counts(data) else {})
+        local_counts = _valid_count_map(trusted_local_counts)
         for key, count in local_counts.items():
             self._local_chord_counts[key] = max(
                 self._local_chord_counts.get(key, 0), count)
@@ -1071,7 +1072,9 @@ class LearningSync:
                 self._diagnose('The provider replica conflicts with the last local publication.')
         if selected is None:
             return
-        self._install_published(selected)
+        trusted_local_counts = _valid_count_map(
+            local.get('local_chord_counts') if local is not None else None)
+        self._install_published(selected, trusted_local_counts)
         self._record_published_ancestry(selected)
         if provider is selected and local is not selected:
             try:
@@ -1096,14 +1099,14 @@ class LearningSync:
                     pending_counts = pending_chords.get('counts', {}) \
                         if isinstance(pending_chords, dict) else {}
                     pending_counts = _valid_count_map(pending_counts)
-                    if pending_counts and not _authenticated_local_chord_counts(data):
+                    if pending_counts and not _valid_local_chord_counts(data):
                         self._recover_candidate(
                             self.pending_path,
-                            'pending chord state has no authenticated cumulative baseline')
+                            'pending chord state has no validated cumulative baseline')
                         return
                     pending_local_counts = (_valid_count_map(
                         data.get('local_chord_counts'))
-                        if _authenticated_local_chord_counts(data) else {})
+                        if _valid_local_chord_counts(data) else {})
                     for key, count in pending_local_counts.items():
                         self._local_chord_counts[key] = max(
                             self._local_chord_counts.get(key, 0), count)
