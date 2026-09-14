@@ -770,7 +770,7 @@ class MainController(QObject):
                     result.managed_books_loaded)
                 if added:
                     self.views[View.shelf_view].addBooks(added)
-            if result.legacy_materialized or result.status.state == 'synced':
+            if result.chord_materialized or result.status.state == 'synced':
                 overrides = result.chord_overrides
                 if result.chord_revision != self.learning_sync.chord_revision:
                     overrides = self.chord_progress.manual_overrides()

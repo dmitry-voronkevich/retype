@@ -108,6 +108,7 @@ class SyncResult:
     legacy_materialized: bool = False
     managed_books_ready: set[str] = field(default_factory=set)
     managed_books_loaded: dict[str, object] = field(default_factory=dict)
+    chord_materialized: bool = False
     chord_revision: int = 0
 
 
@@ -267,6 +268,38 @@ def atomic_write_json(path: Path, data: object, backup_dir: Path | None = None,
                 os.close(directory)
         except OSError:
             # Not every platform/filesystem permits fsync on a directory.
+            pass
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        if temporary is not None:
+            try:
+                os.unlink(temporary)
+            except OSError:
+                pass
+
+
+def _atomic_write_bytes(path: Path, data: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor = None
+    temporary = None
+    try:
+        descriptor, temporary = tempfile.mkstemp(
+            prefix='.' + path.name + '.', suffix='.tmp', dir=str(path.parent))
+        with os.fdopen(descriptor, 'wb') as file:
+            descriptor = None
+            file.write(data)
+            file.flush()
+            os.fsync(file.fileno())
+        os.replace(temporary, path)
+        temporary = None
+        try:
+            directory = os.open(str(path.parent), os.O_RDONLY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
+        except OSError:
             pass
     finally:
         if descriptor is not None:
@@ -959,12 +992,10 @@ class LearningSync:
                     pending_counts = pending_chords.get('counts', {}) \
                         if isinstance(pending_chords, dict) else {}
                     pending_counts = _valid_count_map(pending_counts)
-                    if ('local_chord_counts' not in data and
-                            any(key not in self._durable_chord_baseline
-                                for key in pending_counts)):
+                    if 'local_chord_counts' not in data and pending_counts:
                         self._recover_candidate(
                             self.pending_path,
-                            'pending chord state has no durable cumulative baseline')
+                            'pending chord state has no recoverable cumulative baseline')
                         return
                     pending_local_counts = _valid_count_map(
                         data.get('local_chord_counts'))
@@ -1352,6 +1383,18 @@ class LearningSync:
         logger.warning('Learning sync: %s', message)
         self.status.diagnostics.append(message)
         self.status.diagnostics = self.status.diagnostics[-20:]
+
+    def _reconcile_after_deferred_failure(self) -> None:
+        if self._last_materialized():
+            self._legacy_capture_needed = True
+            self._persist_legacy_reconciliation_marker()
+            return
+        try:
+            self._bootstrap['legacy_migrated'] = False
+            self._save_bootstrap()
+        except OSError as error:
+            self._diagnose(
+                'Local sync recovery state could not be written: {}'.format(error))
 
     def _defer(self, kind: str, *args: object,
                deferred_baseline: Mapping[str, int] | None = None,
@@ -1916,7 +1959,8 @@ class LearningSync:
         if valid is None:
             return
         if not self._lock.acquire(blocking=False):
-            self._defer('book', identity, dict(data))
+            if not self._defer('book', identity, dict(data)):
+                self._reconcile_after_deferred_failure()
             return
         try:
             if not self.enabled:
@@ -1961,10 +2005,11 @@ class LearningSync:
                         total > baseline.get(key, 0) + 1 and \
                         self._materialized_counts.get(key, 0) >= total:
                     baseline[key] = self._materialized_counts[key]
-            self._defer(
-                'chords', dict(progress), dict(overrides),
-                deferred_baseline=baseline,
-                deferred_override_baseline=self._post_sync_overrides_baseline)
+            if not self._defer(
+                    'chords', dict(progress), dict(overrides),
+                    deferred_baseline=baseline,
+                    deferred_override_baseline=self._post_sync_overrides_baseline):
+                self._reconcile_after_deferred_failure()
             for key, total in progress.items():
                 if isinstance(key, str) and key and _is_int(total) and total >= 0:
                     self._post_sync_counts_baseline[key] = max(
@@ -1977,18 +2022,19 @@ class LearningSync:
         if not self._lock.acquire(blocking=False):
             if self.enabled:
                 self._chord_revision += 1
-            self._defer(
-                'chords', dict(progress), dict(overrides),
-                deferred_baseline=(_deferred_baseline if _deferred_baseline is not None
-                                    else self._sync_callback_counts_baseline
-                                    if self._sync_callback_counts_baseline is not None
-                                    else self._local_chord_counts),
-                deferred_override_baseline=(
-                    _deferred_override_baseline
-                    if _deferred_override_baseline is not None else
-                    self._sync_callback_overrides_baseline
-                    if self._sync_callback_overrides_baseline is not None else
-                    self._materialized_overrides))
+            if not self._defer(
+                    'chords', dict(progress), dict(overrides),
+                    deferred_baseline=(_deferred_baseline if _deferred_baseline is not None
+                                        else self._sync_callback_counts_baseline
+                                        if self._sync_callback_counts_baseline is not None
+                                        else self._local_chord_counts),
+                    deferred_override_baseline=(
+                        _deferred_override_baseline
+                        if _deferred_override_baseline is not None else
+                        self._sync_callback_overrides_baseline
+                        if self._sync_callback_overrides_baseline is not None else
+                        self._materialized_overrides)):
+                self._reconcile_after_deferred_failure()
             return
         try:
             if not self.enabled:
@@ -2081,8 +2127,9 @@ class LearningSync:
                         previous: Mapping[str, object],
                         _deferred_id: str | None = None) -> None:
         if not self._lock.acquire(blocking=False):
-            self._defer('settings', deepcopy(dict(config)),
-                        deepcopy(dict(previous)))
+            if not self._defer('settings', deepcopy(dict(config)),
+                               deepcopy(dict(previous))):
+                self._reconcile_after_deferred_failure()
             return
         try:
             if not self.enabled:
@@ -2470,6 +2517,7 @@ class LearningSync:
         older/path-based entry is not silently discarded.
         """
         success = True
+        result.chord_materialized = False
         try:
             self.legacy_dir.mkdir(parents=True, exist_ok=True)
             save_path = self.legacy_dir / 'save.json'
@@ -2543,6 +2591,7 @@ class LearningSync:
                     chord_data.pop('manual_overrides', None)
                 atomic_write_json(chord_path, chord_data,
                                   self.recovery_dir / 'materialized')
+            result.chord_materialized = chord_valid
         except OSError as error:
             success = False
             self._diagnose('Merged learning data could not be materialized locally: {}'.format(error))
@@ -2663,7 +2712,10 @@ class LearningSync:
                 if not destination.exists():
                     created_paths.append(destination)
                     _copy_atomic(path, destination, digest, size)
-                if not manifest.exists():
+                previous_manifest_bytes = None
+                if manifest.exists():
+                    previous_manifest_bytes = manifest.read_bytes()
+                else:
                     created_paths.append(manifest)
                 atomic_write_json(manifest, metadata, self.recovery_dir / 'books')
                 local_copy = self.managed_library_dir / (digest + '.epub')
@@ -2704,6 +2756,14 @@ class LearningSync:
                         local_copy.unlink(missing_ok=True)
                     except OSError:
                         pass
+                if 'previous_manifest_bytes' in locals() and \
+                        previous_manifest_bytes is not None:
+                    try:
+                        _atomic_write_bytes(manifest, previous_manifest_bytes)
+                    except OSError as rollback_error:
+                        self._diagnose(
+                            'Failed managed EPUB import could not restore its manifest: {}'.format(
+                                rollback_error))
                 if managed is not None and digest is not None:
                     if previous_metadata is missing:
                         managed.pop(digest, None)

@@ -273,6 +273,81 @@ def test_typing_callback_queues_without_waiting_for_a_folder_scan(tmp_path):
     assert sync.sync_now().chord_counts == {'word': 1}
 
 
+def test_old_pending_chord_envelope_is_recovered_without_baseline(tmp_path):
+    root = tmp_path / 'folder'
+    sync, _ = _enable(tmp_path, 'one', root, config=_config())
+    sync.sync_now()
+    sync.record_chords({'word': 2}, {})
+
+    pending = json.loads(sync.pending_path.read_text(encoding='utf-8'))
+    pending.pop('local_chord_counts')
+    sync.pending_path.write_text(json.dumps(pending), encoding='utf-8')
+
+    LearningSync(tmp_path / 'one-local', tmp_path / 'one-legacy')
+
+    assert sync.pending_path.exists()
+    assert list((tmp_path / 'one-local' / 'recovery' / 'sync').glob('*.rejected'))
+
+
+def test_lock_contended_defer_failure_marks_legacy_reconciliation(tmp_path):
+    sync, _ = _enable(tmp_path, 'one', tmp_path / 'folder', config=_config())
+    sync.sync_now()
+    locked = Event()
+    release = Event()
+
+    def hold_sync_lock():
+        with sync._lock:
+            locked.set()
+            release.wait()
+
+    worker = Thread(target=hold_sync_lock)
+    worker.start()
+    assert locked.wait(1)
+    changed = _config()
+    changed['auto_newline'] = False
+    with patch.object(sync, '_defer', return_value=False):
+        sync.record_settings(changed, _config())
+    release.set()
+    worker.join(1)
+
+    assert (tmp_path / 'one-local' /
+            'legacy-reconciliation-needed.json').exists()
+
+
+def test_chords_apply_when_save_materialization_is_unsupported(tmp_path):
+    root = tmp_path / 'folder'
+    sender, _ = _enable(
+        tmp_path, 'sender', root,
+        chords={'version': 2, 'progress': {'word': 2}}, config=_config())
+    sender.sync_now()
+    receiver, legacy = _enable(tmp_path, 'receiver', root, config=_config())
+    (legacy / 'save.json').write_text('[]', encoding='utf-8')
+
+    result = receiver.sync_now()
+
+    assert result.legacy_materialized is False
+    assert result.chord_materialized is True
+    assert json.loads((legacy / 'chord-mastery.json').read_text())['progress'] == {
+        'word': 2}
+
+
+def test_failed_reimport_restores_existing_manifest(tmp_path):
+    root = tmp_path / 'folder'
+    source = tmp_path / 'private.epub'
+    _epub(source)
+    sync, _ = _enable(tmp_path, 'one', root, config=_config())
+    sync.set_managed_library_consent(True)
+    metadata = sync.import_book(source, title='original')
+    manifest = root / 'books' / 'sha256' / (metadata['digest'] + '.json')
+    original_manifest = manifest.read_bytes()
+
+    with patch.object(sync, '_touch', side_effect=OSError('disk full')):
+        with pytest.raises(SyncError, match='managed EPUB import failed'):
+            sync.import_book(source, title='replacement')
+
+    assert manifest.read_bytes() == original_manifest
+
+
 def test_pending_chord_use_is_not_counted_again_after_restart(tmp_path):
     root = tmp_path / 'folder'
     local = tmp_path / 'one-local'
