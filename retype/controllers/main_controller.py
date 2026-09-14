@@ -763,6 +763,14 @@ class MainController(QObject):
             merged_save_changed = set()
             if result.save and hasattr(self, 'library'):
                 merged_save_changed = self.library.applyMergedSave(result.save)
+            if active_checksum in merged_save_changed and \
+                    hasattr(self, 'library') and hasattr(self, 'views') and \
+                    View.book_view in self.views:
+                book = next((item for item in self.library.books.values()
+                             if item.checksum == active_checksum), None) \
+                    if self.library.books else None
+                if book is not None:
+                    self.views[View.book_view].setBook(book, book.save_data)
             if result.managed_books and hasattr(self, 'library') and \
                     self.learning_sync.managed_library_consent:
                 added = self.library.addManagedBooks(
@@ -783,12 +791,6 @@ class MainController(QObject):
                         dialog.chordProgress = self.chord_progress
                         if hasattr(dialog, 'chord_mastery'):
                             dialog.chord_mastery.setProgress(self.chord_progress)
-                if active_checksum in merged_save_changed:
-                    book = next((item for item in self.library.books.values()
-                                 if item.checksum == active_checksum), None) \
-                        if self.library.books else None
-                    if book is not None:
-                        self.views[View.book_view].setBook(book, book.save_data)
                 self.learning_sync.acknowledge_sync_application()
         if settings_materialization_failed:
             result.status = SyncStatus(

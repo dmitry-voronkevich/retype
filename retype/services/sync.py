@@ -913,7 +913,7 @@ class LearningSync:
     def _install_published(self, data: Mapping[str, object]) -> None:
         self._payload = deepcopy(data['payload'])  # type: ignore[arg-type]
         self._sequence = int(data['sequence'])
-        self._predecessor = data.get('predecessor_digest')  # type: ignore[assignment]
+        self._predecessor = str(data['payload_digest'])
         self._clock = HLC.from_data(data['hlc'])
 
     def _read_published_candidate(self, path: Path,
@@ -2305,6 +2305,7 @@ class LearningSync:
         envelope = self._envelope()
         if len(_json_bytes(envelope)) > MAX_REPLICA_BYTES:
             raise SyncError('local learning state exceeds the 5 MiB replica limit')
+        local_digest = str(envelope['payload_digest'])
         existing = None
         if target.exists():
             try:
@@ -2317,7 +2318,6 @@ class LearningSync:
             if existing['replica_id'] != self.replica_id:
                 raise SyncError('replica file ownership is invalid')
             existing_digest = str(existing['payload_digest'])
-            local_digest = str(envelope['payload_digest'])
             if existing['sequence'] == envelope['sequence'] and existing_digest != local_digest:
                 self._handle_replica_fork(existing, envelope)
                 raise SyncError('replica identity conflict requires recovery')
@@ -2327,13 +2327,18 @@ class LearningSync:
             if existing_digest == local_digest and \
                     existing['sequence'] == envelope['sequence']:
                 self._remember_published_envelope(envelope)
+                self._predecessor = local_digest
                 self._dirty = False
                 self.pending_path.unlink(missing_ok=True)
                 return
-            envelope['predecessor_digest'] = existing_digest
-            self._predecessor = existing_digest
+            if int(existing['sequence']) < int(envelope['sequence']) and \
+                    existing_digest != envelope.get('predecessor_digest'):
+                self._diagnose(
+                    'The provider replica is a divergent stale copy; retaining '
+                    'the locally published replica chain.')
         atomic_write_json(target, envelope, self.recovery_dir / 'replicas')
         self._remember_published_envelope(envelope)
+        self._predecessor = local_digest
         self._dirty = False
         self.pending_path.unlink(missing_ok=True)
 

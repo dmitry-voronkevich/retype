@@ -67,6 +67,7 @@ class LibraryController(object):
         self.indexManagedLibrary(self._library_items)
         self.books = None  # type: dict[int, BookWrapper] | None
         self.save_file_contents = None  # type: Save | None
+        self._save_file_preserved = False
 
     @property
     def user_dir(self):
@@ -380,6 +381,12 @@ class LibraryController(object):
         else:
             save = self.save_file_contents = {key: data}
 
+        if self._save_file_preserved:
+            logger.warning('Leaving unsupported save file untouched.')
+            if callable(self.on_save):
+                self.on_save(key, dict(data))
+            return False
+
         saved = True
         try:
             with open(self.save_abs_path, 'w', encoding='utf-8') as f:
@@ -438,6 +445,7 @@ class LibraryController(object):
 
     def loadSaveFile(self):
         # type: (LibraryController) -> Save
+        self._save_file_preserved = False
         if os.path.exists(self.save_abs_path):
             logger.info(f'Read save: {self.save_abs_path}')
             try:
@@ -452,6 +460,7 @@ class LibraryController(object):
                 msg.exec()
                 # Keep the unreadable legacy copy for recovery; callers can
                 # continue with an empty in-memory library state.
+                self._save_file_preserved = True
                 save = {}
         else:
             logger.debug(
@@ -461,6 +470,7 @@ class LibraryController(object):
 
         if not isinstance(save, dict):
             logger.warning('Save file is not an object; preserving it and using empty progress.')
+            self._save_file_preserved = True
             save = {}
         save = self.migrateV1Save(save)
         self.save_file_contents = save
