@@ -1024,9 +1024,13 @@ class LearningSync:
             return None
 
     def _remember_published_envelope(self, data: Mapping[str, object]) -> None:
-        atomic_write_json(self.published_path, data,
+        persisted = deepcopy(dict(data))
+        persisted['local_chord_counts'] = dict(self._local_chord_counts)
+        persisted['local_chord_counts_digest'] = _local_chord_counts_digest(
+            self._local_chord_counts)
+        atomic_write_json(self.published_path, persisted,
                           self.recovery_dir / 'published')
-        self._record_published_ancestry(data)
+        self._record_published_ancestry(persisted)
         ancestry = [
             {'payload_digest': digest, 'sequence': sequence,
              'predecessor_digest': predecessor}
@@ -1072,8 +1076,9 @@ class LearningSync:
                 self._diagnose('The provider replica conflicts with the last local publication.')
         if selected is None:
             return
-        trusted_local_counts = _valid_count_map(
-            local.get('local_chord_counts') if local is not None else None)
+        trusted_local_counts = dict(self._local_chord_counts)
+        for key, count in self._durable_chord_baseline.items():
+            trusted_local_counts[key] = max(trusted_local_counts.get(key, 0), count)
         self._install_published(selected, trusted_local_counts)
         self._record_published_ancestry(selected)
         if provider is selected and local is not selected:
