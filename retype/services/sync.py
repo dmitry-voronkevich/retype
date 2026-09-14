@@ -36,6 +36,7 @@ SYNC_VERSION = 1
 MAX_REPLICA_BYTES = 5 * 1024 * 1024
 MAX_DEFERRED_BYTES = MAX_REPLICA_BYTES
 MAX_DEFERRED_PARTS = 1024
+MAX_PUBLISHED_ANCESTRY = 1024
 MAX_HLC_FUTURE_MS = 24 * 60 * 60 * 1000
 MAX_HLC_COUNTER = 1_000_000
 MAX_MANAGED_BOOK_BYTES = 100 * 1024 * 1024
@@ -204,6 +205,10 @@ def _valid_published_ancestry(value: object) -> dict[str, tuple[int, str | None]
                   not _SHA256.fullmatch(predecessor)))):
             continue
         result[digest] = (sequence, predecessor)
+    if len(result) > MAX_PUBLISHED_ANCESTRY:
+        result = dict(sorted(
+            result.items(), key=lambda item: (item[1][0], item[0]),
+            reverse=True)[:MAX_PUBLISHED_ANCESTRY])
     return result
 
 
@@ -957,9 +962,21 @@ class LearningSync:
                 _is_int(sequence) and sequence >= 1 and \
                 (predecessor is None or isinstance(predecessor, str)):
             self._published_ancestry[digest] = (sequence, predecessor)
+            if len(self._published_ancestry) > MAX_PUBLISHED_ANCESTRY:
+                self._published_ancestry = dict(sorted(
+                    self._published_ancestry.items(),
+                    key=lambda item: (item[1][0], item[0]),
+                    reverse=True)[:MAX_PUBLISHED_ANCESTRY])
 
     def _install_published(self, data: Mapping[str, object]) -> None:
         self._payload = deepcopy(data['payload'])  # type: ignore[arg-type]
+        local_counts = _valid_count_map(data.get('local_chord_counts'))
+        for key, count in local_counts.items():
+            self._local_chord_counts[key] = max(
+                self._local_chord_counts.get(key, 0), count)
+            self._durable_chord_baseline[key] = max(
+                self._durable_chord_baseline.get(key, 0), count)
+        self._bootstrap['local_chord_counts'] = dict(self._local_chord_counts)
         self._sequence = int(data['sequence'])
         self._predecessor = str(data['payload_digest'])
         predecessor = data.get('predecessor_digest')
@@ -2421,8 +2438,18 @@ class LearningSync:
                     envelope.get('predecessor_digest'),
                     self._published_predecessor)
                 if not known_ancestor and not direct_ancestor:
-                    self._handle_replica_fork(existing, envelope)
-                    raise SyncError('replica identity conflict requires recovery')
+                    oldest_sequence = min(
+                        (item[0] for item in self._published_ancestry.values()),
+                        default=0)
+                    if oldest_sequence and int(existing['sequence']) < oldest_sequence:
+                        if not self._recover_candidate(
+                                target,
+                                'provider replica is older than the retained ancestry window'):
+                            raise SyncError(
+                                'stale provider replica could not be preserved for recovery')
+                    else:
+                        self._handle_replica_fork(existing, envelope)
+                        raise SyncError('replica identity conflict requires recovery')
         atomic_write_json(target, envelope, self.recovery_dir / 'replicas')
         self._remember_published_envelope(envelope)
         self._predecessor = local_digest
