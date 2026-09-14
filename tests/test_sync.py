@@ -123,13 +123,18 @@ def test_legacy_progress_recovery_survives_sync_state_write_failures(tmp_path):
     (legacy / 'chord-mastery.json').write_text(
         json.dumps({'version': 2, 'progress': {'word': 1}}), encoding='utf-8')
 
+    sync._pending_touch_durable = False
     with patch.object(sync, '_touch', side_effect=OSError('disk full')), \
             patch.object(sync, '_defer', return_value=False), \
             patch.object(sync, '_save_bootstrap', side_effect=OSError('disk full')):
         sync.record_chords({'word': 1}, {})
 
+    assert (tmp_path / 'one-local' /
+            'legacy-reconciliation-needed.json').exists()
     restarted = LearningSync(tmp_path / 'one-local', legacy)
     assert restarted.sync_now().chord_counts == {'word': 1}
+    assert not (tmp_path / 'one-local' /
+                'legacy-reconciliation-needed.json').exists()
 
 
 def test_copy_atomic_rejects_changed_bytes_before_replacing_destination(tmp_path):
@@ -1011,6 +1016,25 @@ def test_remote_managed_books_are_not_materialized_without_consent(tmp_path):
     assert not (receiver.managed_library_dir /
                 (metadata['digest'] + '.epub')).exists()
     assert any('consent' in item for item in result.status.diagnostics)
+
+
+def test_core_state_is_materialized_when_managed_book_is_unavailable(tmp_path):
+    root = tmp_path / 'folder'
+    source = tmp_path / 'private.epub'
+    _epub(source)
+    sender, _ = _enable(tmp_path, 'sender', root, config=_config())
+    sender.set_managed_library_consent(True)
+    sender.import_book(source)
+    sender.sync_now()
+
+    receiver, _ = _enable(tmp_path, 'receiver', root, config=_config())
+    receiver.set_managed_library_consent(True)
+    receiver._materialize_managed_books = lambda root, result: set()
+
+    result = receiver.sync_now()
+
+    assert result.status.state == 'waiting'
+    assert result.legacy_materialized is True
 
 
 def test_invalid_replica_is_recovered_and_provider_absence_keeps_local_operation(tmp_path):

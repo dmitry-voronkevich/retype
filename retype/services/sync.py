@@ -105,6 +105,7 @@ class SyncResult:
     # retained LWW value makes a later "recent position" recovery UX possible.
     book_resumes: dict[str, dict[str, object]] = field(default_factory=dict)
     managed_books_materialized: bool = False
+    legacy_materialized: bool = False
     managed_books_ready: set[str] = field(default_factory=set)
     managed_books_loaded: dict[str, object] = field(default_factory=dict)
     chord_revision: int = 0
@@ -665,6 +666,7 @@ class LearningSync:
         self.pending_path = self.local_root / 'pending-sync-replica.json'
         self.published_path = self.local_root / 'last-published-sync-replica.json'
         self.materialized_recovery_path = self.local_root / 'last-materialized-sync-state.json'
+        self.legacy_reconciliation_path = self.local_root / 'legacy-reconciliation-needed.json'
         self.deferred_path = self.local_root / 'deferred-sync-mutations.json'
         self.deferred_parts_dir = self.local_root / 'deferred-sync-mutations.parts'
         self.recovery_dir = self.local_root / 'recovery' / 'sync'
@@ -690,6 +692,7 @@ class LearningSync:
         self._dirty = False
         self._pending_touch_durable = False
         self._legacy_capture_needed = False
+        self._load_legacy_reconciliation_marker()
         self._settings_revisions: dict[str, int] = {}
         self._chord_revision = 0
         baseline = self._bootstrap.get('last_materialized')
@@ -800,6 +803,40 @@ class LearningSync:
     def _save_bootstrap(self) -> None:
         atomic_write_json(self.bootstrap_path, self._bootstrap,
                           self.recovery_dir / 'bootstrap')
+
+    def _load_legacy_reconciliation_marker(self) -> None:
+        if not self.legacy_reconciliation_path.exists():
+            return
+        try:
+            data = _read_json(self.legacy_reconciliation_path)
+            if not isinstance(data, dict) or \
+                    data.get('collection_id') != self.collection_id:
+                raise ValidationError('legacy reconciliation marker is malformed')
+            self._legacy_capture_needed = True
+        except ValidationError as error:
+            self._recover_candidate(
+                self.legacy_reconciliation_path,
+                'legacy reconciliation marker could not be read: {}'.format(error))
+
+    def _persist_legacy_reconciliation_marker(self) -> None:
+        collection_id = self.collection_id
+        if collection_id is None:
+            return
+        try:
+            atomic_write_json(self.legacy_reconciliation_path, {
+                'collection_id': collection_id,
+            }, self.recovery_dir / 'legacy-reconciliation')
+        except OSError as error:
+            self._diagnose(
+                'Legacy reconciliation marker could not be written: {}'.format(error))
+
+    def _clear_legacy_reconciliation_marker(self) -> None:
+        try:
+            self.legacy_reconciliation_path.unlink(missing_ok=True)
+            self._legacy_capture_needed = False
+        except OSError as error:
+            self._diagnose(
+                'Legacy reconciliation marker could not be cleared: {}'.format(error))
 
     def _load_materialized_recovery(self) -> None:
         if not self.materialized_recovery_path.exists():
@@ -1292,6 +1329,7 @@ class LearningSync:
                 return False
             if self._last_materialized():
                 self._legacy_capture_needed = True
+                self._persist_legacy_reconciliation_marker()
                 return False
             try:
                 self._bootstrap['legacy_migrated'] = False
@@ -2066,6 +2104,8 @@ class LearningSync:
                     self._retain_materialized_settings(result)
                 if legacy_materialized:
                     self._remember_materialized(result)
+                    result.legacy_materialized = True
+                    self._clear_legacy_reconciliation_marker()
                 managed_limit_exceeded = result.managed_books and \
                     sum(int(metadata['size']) for metadata in
                         result.managed_books.values()) > MAX_MANAGED_LIBRARY_BYTES
