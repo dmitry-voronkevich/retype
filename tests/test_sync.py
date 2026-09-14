@@ -530,7 +530,8 @@ def test_merge_is_duplicate_reorder_independent_and_lww_ties_are_deterministic(t
     second.sync_now()
     replicas = []
     for path in (root / 'replicas').glob('*.json'):
-        replicas.append(validate_envelope(json.loads(path.read_text()), first.collection_id))
+        replicas.append(validate_envelope(
+                json.loads(path.read_text(encoding='utf-8')), first.collection_id))
 
     normal = merge_replicas(replicas)
     reverse_duplicate = merge_replicas(list(reversed(replicas)) + replicas)
@@ -584,7 +585,7 @@ def test_restart_retains_last_publication_when_provider_is_stale(tmp_path):
     first.record_chords({'word': 2}, {})
     first.sync_now()
     stale = json.loads((root / 'replicas' /
-                        (first.replica_id + '.json')).read_text())
+                        (first.replica_id + '.json')).read_text(encoding='utf-8'))
     first.record_chords({'word': 3}, {})
     assert first.sync_now().chord_counts == {'word': 3}
     (root / 'replicas' / (first.replica_id + '.json')).write_text(
