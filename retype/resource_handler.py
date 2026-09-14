@@ -10,19 +10,26 @@ _frozen = getattr(sys, 'frozen', False)  # type: ignore[misc]
 _meipass = getattr(sys, '_MEIPASS', False)  # type: ignore[misc]
 
 
+def _root_from_runtime(frozen, meipass, executable, module_file, argv0):
+    # type: (bool, object, str, str | None, str) -> str
+    """Resolve the old data root without depending on import-time globals.
+
+    Before per-user data directories, both source runs and frozen applications
+    stored ``config.json`` beside their runtime root.  Keeping this resolution
+    explicit lets the migration use the same old location for either launch.
+    """
+    if frozen or meipass:
+        return os.path.abspath(os.path.dirname(executable))
+    source_file = module_file or argv0
+    return os.path.abspath(os.path.join(
+        os.path.dirname(os.path.abspath(source_file)), '..'))
+
+
 def __getRoot():
     # type: () -> str
-    root = ''
-    if _frozen or _meipass:  # type: ignore[misc]
-        root = os.path.dirname(sys.executable)
-    else:
-        file = None
-        try:
-            file = __file__
-        except NameError:
-            file = sys.argv[0]
-        root = os.path.join(os.path.dirname(os.path.abspath(file)), '..')
-    return os.path.abspath(root)
+    return _root_from_runtime(
+        bool(_frozen), _meipass, sys.executable,
+        globals().get('__file__'), sys.argv[0])
 
 
 root_path = __getRoot()

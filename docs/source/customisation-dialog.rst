@@ -15,7 +15,17 @@ Paths
 User dir
 ^^^^^^^^
 
-Path to the user dir, which is where the save and config files are stored.
+Path to the active data folder, where local ``save.json``,
+``chord-mastery.json``, and ``config.json`` are stored. A fresh installation
+creates its default per-user data folder. The Filesystem pane names the folder
+in use and reports any copy from an older source-run or application-bundle
+location; those original files are left in place and recovery copies are kept.
+
+If this setting names a missing custom folder, retype does not create it
+silently: it may be a disconnected external or provider volume, and creating a
+replacement could hide existing progress. Reconnect or create the intended
+folder, or choose another existing folder. Until then, retype explains that it
+cannot save progress or settings there.
 
 .. _library-search-paths:
 

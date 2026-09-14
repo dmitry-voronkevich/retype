@@ -293,7 +293,8 @@ class MainController(QObject):
             self._window,
             getLoadedChords=lambda: self.views[View.book_view].loaded_chords,
             chordProgress=self.chord_progress,
-            syncActions=self)
+            syncActions=self,
+            dataDirectoryStatus=self.data_directory_status)
         self.customisation_dialog.loadChordsNowRequested.connect(
             self.loadChordsNow)
         self.customisation_dialog.saveChordMasteryRequested.connect(
@@ -463,14 +464,27 @@ class MainController(QObject):
                                   self.aboutDialogRequested,
                                   self.config['auto_newline'])
 
+    def data_directory_status(self):
+        # type: (MainController) -> str
+        return self.config.data_directory_status(str(self.learning_sync.local_root))
+
     def _verifyUserDir(self):
         # type: (MainController) -> None
         user_dir = self.config['user_dir']
         if not os.path.exists(user_dir):
+            reason = ('retype could not create the per-user data folder; check '
+                      'permissions and available storage.'
+                      if self.config.isPathDefaultUserDir(user_dir) else
+                      'the saved User dir setting points to a folder that is '
+                      'missing or temporarily unavailable (for example, a '
+                      'disconnected volume). retype does not create custom '
+                      'folders automatically.')
             msg = QMessageBox(
-                QMessageBox.Icon.Warning, 'retype', f'User dir \'{user_dir}\'\
- cannot be found.\nretype will not be able to save and load progress and\
- configuration.')
+                QMessageBox.Icon.Warning, 'retype',
+                'Data folder \'{}\' cannot be found because {}\n'
+                'Existing data is not removed or moved, but progress and '
+                'settings cannot be saved until the folder is available.'
+                .format(user_dir, reason))
             msg.addButton(QMessageBox.StandardButton.Ignore)
             change_btn = msg.addButton(
                 'Change', QMessageBox.ButtonRole.ActionRole)
@@ -546,6 +560,9 @@ class MainController(QObject):
 
         # Update console font
         self.console.font_family = config['console_font']
+        dialog = getattr(self, 'customisation_dialog', None)
+        if dialog is not None and hasattr(dialog, 'refreshDataDirectoryStatus'):
+            dialog.refreshDataDirectoryStatus()
         return True
 
     def _syncMutationFailed(self, error):

@@ -2,7 +2,7 @@ import json
 from copy import deepcopy
 from types import SimpleNamespace
 
-from qt import QObject, Qt, QPushButton, pyqtSignal
+from qt import QObject, Qt, QPushButton, QMessageBox, pyqtSignal
 
 from retype.controllers.safe_config import SafeConfig
 import retype.controllers.safe_config as safe_config_module
@@ -11,6 +11,7 @@ from retype.services.chord_detection import ValidatedChord
 from retype.services.chord_lessons import ChordMasteryProgress, ChordMasteryStorage
 from retype.services.chord_mastery import MIN_SUCCESSFUL_USES_FOR_MASTERY
 from retype.ui import CustomisationDialog
+import retype.ui.customisation_dialog as customisation_dialog_module
 
 
 class FakeWindow(QObject):
@@ -52,6 +53,115 @@ class TestCustomisation:
         assert json.loads((destination / 'save.json').read_text()) == save
         assert json.loads((destination / 'chord-mastery.json').read_text()) == chords
         assert config['user_dir'] == str(destination)
+        assert json.loads((legacy / 'save.json').read_text()) == save
+        backups = destination / 'recovery' / 'legacy-migration'
+        assert list(backups.glob('save.json.*.legacy.bak'))
+        assert 'copied without removing the original' in config.data_directory_status()
+
+    def test_existing_bootstrap_does_not_hide_legacy_learning_files(
+            self, tmp_path, monkeypatch):
+        legacy = tmp_path / 'legacy-root'
+        destination = tmp_path / 'application-data'
+        legacy.mkdir()
+        destination.mkdir()
+        current = deepcopy(default_config)
+        current['user_dir'] = str(destination)
+        save = {'a' * 32: {
+            'persistent_pos': 1, 'chapter_pos': 0, 'progress': 2}}
+        chords = {'version': 2, 'progress': {'word': 3}}
+        (destination / 'config.json').write_text(json.dumps(current))
+        (legacy / 'save.json').write_text(json.dumps(save))
+        (legacy / 'chord-mastery.json').write_text(json.dumps(chords))
+        monkeypatch.setattr(safe_config_module, 'root_path', str(legacy))
+        monkeypatch.setitem(default_config, 'user_dir', str(destination))
+
+        config = SafeConfig()
+
+        assert json.loads((destination / 'save.json').read_text()) == save
+        assert json.loads((destination / 'chord-mastery.json').read_text()) == chords
+        assert 'config.json' not in config.data_migration['copied']
+        assert json.loads((legacy / 'save.json').read_text()) == save
+
+    def test_legacy_root_config_and_learning_files_never_overwrite_new_data(
+            self, tmp_path, monkeypatch):
+        legacy = tmp_path / 'legacy-root'
+        destination = tmp_path / 'application-data'
+        legacy.mkdir()
+        destination.mkdir()
+        legacy_config = deepcopy(default_config)
+        legacy_config['user_dir'] = str(legacy)
+        source_save = {'a' * 32: {
+            'persistent_pos': 1, 'chapter_pos': 0, 'progress': 2}}
+        existing_save = {'b' * 32: {
+            'persistent_pos': 8, 'chapter_pos': 1, 'progress': 9}}
+        chords = {'version': 2, 'progress': {'word': 3}}
+        (legacy / 'config.json').write_text(json.dumps(legacy_config))
+        (legacy / 'save.json').write_text(json.dumps(source_save))
+        (legacy / 'chord-mastery.json').write_text(json.dumps(chords))
+        (destination / 'save.json').write_text(json.dumps(existing_save))
+        monkeypatch.setattr(safe_config_module, 'root_path', str(legacy))
+        monkeypatch.setitem(default_config, 'user_dir', str(destination))
+
+        first = SafeConfig()
+        second = SafeConfig()
+
+        assert json.loads((destination / 'config.json').read_text())['user_dir'] == \
+            str(destination)
+        assert json.loads((destination / 'save.json').read_text()) == existing_save
+        assert json.loads((destination / 'chord-mastery.json').read_text()) == chords
+        assert json.loads((legacy / 'save.json').read_text()) == source_save
+        assert 'save.json' in first.data_migration['preserved']
+        assert second.data_migration['copied'] == []
+        backups = destination / 'recovery' / 'legacy-migration'
+        assert list(backups.glob('config.json.*.legacy.bak'))
+        assert list(backups.glob('save.json.*.legacy.bak'))
+
+    def test_legacy_custom_user_dir_remains_active_and_is_not_copied(
+            self, tmp_path, monkeypatch):
+        legacy = tmp_path / 'legacy-root'
+        destination = tmp_path / 'application-data'
+        selected = tmp_path / 'selected-data'
+        legacy.mkdir()
+        selected.mkdir()
+        legacy_config = deepcopy(default_config)
+        legacy_config['user_dir'] = str(selected)
+        save = {'a' * 32: {
+            'persistent_pos': 1, 'chapter_pos': 0, 'progress': 2}}
+        (legacy / 'config.json').write_text(json.dumps(legacy_config))
+        (selected / 'save.json').write_text(json.dumps(save))
+        monkeypatch.setattr(safe_config_module, 'root_path', str(legacy))
+        monkeypatch.setitem(default_config, 'user_dir', str(destination))
+
+        config = SafeConfig()
+
+        assert config['user_dir'] == str(selected)
+        assert json.loads((destination / 'config.json').read_text())['user_dir'] == \
+            str(selected)
+        assert json.loads((selected / 'save.json').read_text()) == save
+        assert not (destination / 'save.json').exists()
+        assert 'Data folder in use: {}'.format(selected) in config.data_directory_status()
+
+    def test_corrupt_legacy_data_is_not_copied_or_used_to_replace_data(
+            self, tmp_path, monkeypatch):
+        legacy = tmp_path / 'legacy-root'
+        destination = tmp_path / 'application-data'
+        legacy.mkdir()
+        destination.mkdir()
+        corrupt_destination = '{"not": "a supported save"}'
+        chords = {'version': 2, 'progress': {'word': 3}}
+        (legacy / 'save.json').write_text('["corrupt"]')
+        (legacy / 'chord-mastery.json').write_text(json.dumps(chords))
+        (destination / 'save.json').write_text(corrupt_destination)
+        monkeypatch.setattr(safe_config_module, 'root_path', str(legacy))
+        monkeypatch.setitem(default_config, 'user_dir', str(destination))
+
+        config = SafeConfig()
+
+        assert (destination / 'save.json').read_text() == corrupt_destination
+        assert json.loads((destination / 'chord-mastery.json').read_text()) == chords
+        assert 'save.json (unreadable)' in config.data_migration['skipped']
+        assert list((destination / 'recovery' / 'legacy-migration').glob(
+            'chord-mastery.json.*.legacy.bak'))
 
     def test_unsupported_destination_learning_file_is_preserved(
             self, tmp_path, monkeypatch):
@@ -129,6 +239,50 @@ class TestCustomisation:
         panel.consent.setChecked(True)
         assert actions.consent is True
         assert panel.import_button.isEnabled() is True
+
+    def test_data_folder_status_explains_active_folder_and_migration(self):
+        status = ('Data folder in use: /local/retype. Legacy data was copied '
+                  'without removing the original.')
+        dialog = CustomisationDialog(
+            default_config, FakeWindow(), *[None]*3,
+            dataDirectoryStatus=lambda: status)
+
+        assert dialog.data_folder_status.label.text() == status
+
+    def test_sync_folder_confirmation_explains_import_and_epub_consent(
+            self, monkeypatch):
+        class SyncActions:
+            def __init__(self):
+                self.learning_sync = SimpleNamespace(
+                    enabled=False, managed_library_consent=False)
+                self.calls = []
+
+            def enableSync(self, folder, consent):
+                self.calls.append((folder, consent))
+                self.learning_sync.enabled = True
+
+        actions = SyncActions()
+        dialog = CustomisationDialog(
+            default_config, FakeWindow(), *[None]*3, syncActions=actions)
+        captured = {}
+        monkeypatch.setattr(
+            customisation_dialog_module.QFileDialog, 'getExistingDirectory',
+            lambda *args: '/sync-folder')
+
+        def confirm(*args):
+            captured['text'] = args[2]
+            return QMessageBox.StandardButton.Yes
+
+        monkeypatch.setattr(customisation_dialog_module.QMessageBox,
+                            'question', confirm)
+        dialog.sync_settings.chooseFolder()
+
+        assert actions.calls == [('/sync-folder', False)]
+        assert 'copy existing local progress' in captured['text']
+        assert 'never moves or deletes local data' in captured['text']
+        assert 'managed-library consent and an explicit Import EPUB' in \
+            captured['text']
+        assert 'Library search paths and their EPUBs stay local' in captured['text']
 
     def test_auto_newline_default_value(self):
         dialog = _setup()

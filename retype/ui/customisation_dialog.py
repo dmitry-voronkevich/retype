@@ -224,10 +224,13 @@ class LearningSyncSettings(QWidget):
             return
         message = QMessageBox.question(
             self, 'Enable learning sync',
-            'retype will place per-device learning-state files in this folder. '
-            'It will upload progress, chord mastery word keys, and vetted '
-            'learning settings. It will not upload EPUBs unless you explicitly '
-            'import them below. Continue?',
+            'retype will copy existing local progress, chord mastery, and '
+            'eligible learning settings into this device\'s sync replica, then '
+            'write that replica to the selected folder. This never moves or '
+            'deletes local data or existing data in the selected folder. '
+            'Library search paths and their EPUBs stay local. An EPUB is copied '
+            'only after managed-library consent and an explicit Import EPUB '
+            'action below. Continue?',
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
             QMessageBox.StandardButton.Cancel)
         if message != QMessageBox.StandardButton.Yes:
@@ -279,7 +282,8 @@ class CustomisationDialog(QDialog):
                  parent=None,  # type: QWidget | None
                  getLoadedChords=None,  # type: Callable[[], dict[str, object]] | None
                  chordProgress=None,  # type: ChordMasteryProgress | None
-                 syncActions=None  # type: object | None
+                 syncActions=None,  # type: object | None
+                 dataDirectoryStatus=None  # type: callable | None
                  ):
         # type: (...) -> None
         QDialog.__init__(self, parent, Qt.WindowType.WindowCloseButtonHint)
@@ -298,6 +302,7 @@ class CustomisationDialog(QDialog):
         self.getLoadedChords = getLoadedChords or (lambda: {})
         self.chordProgress = chordProgress
         self.syncActions = syncActions
+        self.dataDirectoryStatus = dataDirectoryStatus
 
         self._initUI()
         self.setModal(True)
@@ -316,6 +321,19 @@ class CustomisationDialog(QDialog):
             self.chord_mastery.refresh()
         if hasattr(self, 'sync_settings'):
             self.sync_settings.refresh()
+        self.refreshDataDirectoryStatus()
+
+    def refreshDataDirectoryStatus(self):
+        # type: (CustomisationDialog) -> None
+        if not hasattr(self, 'data_folder_status'):
+            return
+        status = self.dataDirectoryStatus
+        text = status() if callable(status) else (
+            'Data folder in use: {}. It stores local progress, chord mastery, '
+            'and configuration.'.format(self.config['user_dir']))
+        self.data_folder_status.label.setText(text)
+        self.data_folder_status.doc.setPlainText(text)
+        self.data_folder_status.updateGeometry()
 
     def getUserDir(self):
         # type: (CustomisationDialog) -> str
@@ -399,11 +417,15 @@ class CustomisationDialog(QDialog):
 
         # user_dir
         lyt.addRow(QLabel("Location for the save and config files."))
+        self.data_folder_status = WrappedLabel('')
+        self.data_folder_status.setObjectName('data-folder-status')
+        lyt.addRow(self.data_folder_status)
         self.selectors['user_dir'] = PathSelector(
             self.config_edited['user_dir'])
         self.selectors['user_dir'].changed.connect(
             lambda t: self.update_("user_dir", t))
         lyt.addRow("User dir:", self.selectors['user_dir'])
+        self.refreshDataDirectoryStatus()
         lyt.addRow(hline())
         # library_paths
         lyt.addRow(QLabel("Library search paths:"))
@@ -740,8 +762,10 @@ class CustomisationDialog(QDialog):
         if not os.path.exists(self.config_edited['user_dir']):
             ret = QMessageBox.warning(
                 self, "retype",
-                "Cannot find specified user_dir path.\n"
-                "Reset it to former value?",
+                "Cannot find the specified data folder. retype does not create "
+                "a custom or disconnected-volume folder automatically, so it "
+                "does not silently switch where progress is stored.\n"
+                "Reset it to the former value?",
                 QMessageBox.Yes | QMessageBox.No)
             if ret == QMessageBox.Yes:
                 self.config_edited['user_dir'] = self.config['user_dir']

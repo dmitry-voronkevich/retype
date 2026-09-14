@@ -15,7 +15,10 @@ folder** only means that retype completed a local folder write.
 Enable and use sync
 -------------------
 
-#. Choose **Choose sync folder…** and review the upload scope.
+#. Choose **Choose sync folder…** and review the upload scope. Confirming
+   copies existing local progress, chord mastery, and eligible learning settings
+   into this installation's replica; it never moves or deletes the local files
+   or existing files in the chosen folder.
 #. Use **Sync now** to scan complete replica files immediately. retype also
    queues local changes and scans without putting provider-folder I/O in the
    typing path.
@@ -41,7 +44,9 @@ What synchronizes
 
 The following always stay local: user and library paths, window geometry and
 splitters, fonts, icons, themes, keymaps, caches, logs, session statistics,
-and the CharaChorder device dictionary.
+and the CharaChorder device dictionary. Choosing a sync folder does not upload
+any EPUB discovered in a library search path and never deletes cloud-folder
+data.
 
 Managed EPUB library
 --------------------
