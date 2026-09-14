@@ -105,8 +105,8 @@ class TestCustomisation:
         first = SafeConfig()
         second = SafeConfig()
 
-        assert json.loads((destination / 'config.json').read_text())['user_dir'] == \
-            str(destination)
+        assert json.loads((destination / 'config.json').read_text(
+            encoding='utf-8'))['user_dir'] == str(destination)
         assert json.loads((destination / 'save.json').read_text()) == existing_save
         assert json.loads((destination / 'chord-mastery.json').read_text()) == chords
         assert json.loads((legacy / 'save.json').read_text()) == source_save
@@ -135,8 +135,8 @@ class TestCustomisation:
         config = SafeConfig()
 
         assert config['user_dir'] == str(selected)
-        assert json.loads((destination / 'config.json').read_text())['user_dir'] == \
-            str(selected)
+        assert json.loads((destination / 'config.json').read_text(
+            encoding='utf-8'))['user_dir'] == str(selected)
         assert json.loads((selected / 'save.json').read_text()) == save
         assert not (destination / 'save.json').exists()
         assert 'Data folder in use: {}'.format(selected) in config.data_directory_status()

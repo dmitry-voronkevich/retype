@@ -82,7 +82,9 @@ def _epub(path: Path, data=b'book'):
 
 
 def test_hlc_rejects_unbounded_remote_timestamps():
-    future = int(time.time() * 1000) + 24 * 60 * 60 * 1000 + 1
+    # Leave enough margin that a millisecond tick between constructing the
+    # value and validating it cannot turn the rejection boundary into equality.
+    future = int(time.time() * 1000) + 24 * 60 * 60 * 1000 + 1000
 
     with pytest.raises(ValidationError):
         HLC.from_data({'wall_ms': future, 'counter': 0})

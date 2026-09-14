@@ -1,4 +1,5 @@
 import os
+import posixpath
 import sys
 from pathlib import Path
 from qt import QIcon
@@ -10,6 +11,20 @@ _frozen = getattr(sys, 'frozen', False)  # type: ignore[misc]
 _meipass = getattr(sys, '_MEIPASS', False)  # type: ignore[misc]
 
 
+def _runtime_absolute(path):
+    # type: (str) -> str
+    """Make runtime fixture paths absolute without changing their flavour.
+
+    Windows tests also exercise the macOS/source-run cases with POSIX-shaped
+    paths.  ``ntpath`` would reinterpret those as paths on the current drive,
+    which is not what the runtime arguments mean in those cases.
+    """
+    if (os.name == 'nt' and path.startswith('/') and
+            not (len(path) > 1 and path[1] == ':')):
+        return posixpath.normpath(path)
+    return os.path.abspath(path)
+
+
 def _root_from_runtime(frozen, meipass, executable, module_file, argv0):
     # type: (bool, object, str, str | None, str) -> str
     """Resolve the old data root without depending on import-time globals.
@@ -19,10 +34,18 @@ def _root_from_runtime(frozen, meipass, executable, module_file, argv0):
     explicit lets the migration use the same old location for either launch.
     """
     if frozen or meipass:
-        return os.path.abspath(os.path.dirname(executable))
+        executable_path = _runtime_absolute(executable)
+        if (os.name == 'nt' and executable_path.startswith('/') and
+                not (len(executable_path) > 1 and executable_path[1] == ':')):
+            return posixpath.dirname(executable_path)
+        return os.path.dirname(executable_path)
     source_file = module_file or argv0
-    return os.path.abspath(os.path.join(
-        os.path.dirname(os.path.abspath(source_file)), '..'))
+    source_path = _runtime_absolute(source_file)
+    if (os.name == 'nt' and source_path.startswith('/') and
+            not (len(source_path) > 1 and source_path[1] == ':')):
+        return posixpath.normpath(posixpath.join(
+            posixpath.dirname(source_path), '..'))
+    return os.path.abspath(os.path.join(os.path.dirname(source_path), '..'))
 
 
 def __getRoot():
