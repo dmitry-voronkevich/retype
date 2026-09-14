@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING
 from retype.extras.dict import SafeDict
 from retype.constants import default_config
 from retype.resource_handler import root_path
-from retype.services.sync import atomic_write_json
+from retype.services.sync import atomic_write_json, _validate_save
 
 logger = logging.getLogger(__name__)
 
@@ -47,15 +47,22 @@ class _SafeConfig:
         return os.path.abspath(path) == \
             os.path.abspath(self.default_user_dir)
 
-    def _is_complete_legacy_learning_file(self, path, filename):
-        # type: (_SafeConfig, str, str) -> bool
+    def _is_complete_legacy_learning_file(self, path, filename,
+                                          source_data=None):
+        # type: (_SafeConfig, str, str, object | None) -> bool
         try:
             with open(path, 'r', encoding='utf-8') as file:
                 data = json.load(file)
         except (OSError, ValueError, TypeError, RecursionError):
             return False
         if filename == 'save.json':
-            return isinstance(data, dict)
+            if not isinstance(data, dict) or any(
+                    _validate_save(item) is None for item in data.values()):
+                return False
+            if isinstance(source_data, dict) and source_data and \
+                    not set(source_data).issubset(data):
+                return False
+            return True
         return isinstance(data, dict) and data.get('version') in (1, 2) and \
             isinstance(data.get('progress'), dict)
 
@@ -110,13 +117,19 @@ class _SafeConfig:
                     if not os.path.exists(source):
                         raise OSError('legacy learning file disappeared: {}'.format(
                             filename))
+                    source_data = None
+                    try:
+                        with open(source, 'r', encoding='utf-8') as file:
+                            source_data = json.load(file)
+                    except (OSError, ValueError, TypeError, RecursionError):
+                        pass
                     if self._is_unsupported_legacy_learning_file(
                             destination, filename):
                         logger.warning('Preserving unsupported local learning file: %s',
                                        destination)
                         continue
                     if not self._is_complete_legacy_learning_file(
-                            destination, filename):
+                            destination, filename, source_data):
                         descriptor = None
                         temporary = None
                         try:

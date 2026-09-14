@@ -1400,14 +1400,48 @@ class LearningSync:
 
     def _recover_candidate(self, path: Path, reason: str) -> bool:
         recovered = True
+        descriptor = None
+        temporary = None
         try:
             self.recovery_dir.mkdir(parents=True, exist_ok=True)
-            bytes_ = path.read_bytes()
-            name = '{}.{}.rejected'.format(path.name, sha256(bytes_).hexdigest()[:12])
-            (self.recovery_dir / name).write_bytes(bytes_)
+            descriptor, temporary = tempfile.mkstemp(
+                prefix='.' + path.name + '.', dir=str(self.recovery_dir))
+            digest = sha256()
+            copied = 0
+            truncated = False
+            with path.open('rb') as source, os.fdopen(descriptor, 'wb') as target:
+                descriptor = None
+                while copied < MAX_REPLICA_BYTES:
+                    chunk = source.read(min(1024 * 1024,
+                                           MAX_REPLICA_BYTES - copied))
+                    if not chunk:
+                        break
+                    target.write(chunk)
+                    digest.update(chunk)
+                    copied += len(chunk)
+                if copied == MAX_REPLICA_BYTES and source.read(1):
+                    truncated = True
+                target.flush()
+                os.fsync(target.fileno())
+            suffix = '.truncated' if truncated else ''
+            name = '{}.{}{}.rejected'.format(
+                path.name, digest.hexdigest()[:12], suffix)
+            os.replace(temporary, self.recovery_dir / name)
+            temporary = None
+            if truncated:
+                self._diagnose('{} was truncated to the recovery size limit.'.format(
+                    path.name))
         except OSError as error:
             recovered = False
             self._diagnose('{} could not be preserved: {}'.format(path.name, error))
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+            if temporary is not None:
+                try:
+                    os.unlink(temporary)
+                except OSError:
+                    pass
         self._diagnose('{}: {}'.format(path.name, reason))
         return recovered
 
@@ -1995,10 +2029,6 @@ class LearningSync:
                     result = merge_replicas(replicas)
                     self._retain_materialized_chord_state(result)
                     self._retain_materialized_settings(result)
-                result.status = SyncStatus('synced',
-                    'Local changes are saved in the selected sync folder.',
-                    time.time(), list(self.status.diagnostics))
-                self.status = result.status
                 with self._deferred_lock:
                     self._finalizing_counts_baseline = dict(self._materialized_counts)
                 legacy_materialized = self._materialize_legacy_state(result)
@@ -2014,10 +2044,6 @@ class LearningSync:
                     result = merge_replicas(replicas)
                     self._retain_materialized_chord_state(result)
                     self._retain_materialized_settings(result)
-                    result.status = SyncStatus('synced',
-                        'Local changes are saved in the selected sync folder.',
-                        time.time(), list(self.status.diagnostics))
-                    self.status = result.status
                     legacy_materialized = self._materialize_legacy_state(result)
                     if legacy_materialized:
                         self._remember_local_chord_baseline(result)
@@ -2040,16 +2066,33 @@ class LearningSync:
                     self._retain_materialized_settings(result)
                 if legacy_materialized:
                     self._remember_materialized(result)
-                result.status.diagnostics = list(self.status.diagnostics)
+                managed_limit_exceeded = result.managed_books and \
+                    sum(int(metadata['size']) for metadata in
+                        result.managed_books.values()) > MAX_MANAGED_LIBRARY_BYTES
+                managed_materialized = (
+                    not self.managed_library_consent or
+                    not result.managed_books or managed_limit_exceeded or
+                    set(result.managed_books).issubset(result.managed_books_ready))
+                if legacy_materialized and managed_materialized:
+                    result.status = SyncStatus(
+                        'synced',
+                        'Local changes are saved in the selected sync folder.',
+                        time.time(), list(self.status.diagnostics))
+                else:
+                    result.status = SyncStatus(
+                        'waiting',
+                        'Merged learning state could not be materialized locally; retrying.',
+                        time.time(), list(self.status.diagnostics))
+                self.status = result.status
+                if result.status.diagnostics:
+                    result.status.message = (
+                        'Sync completed with recovery notices. Show recovery '
+                        'diagnostics for details.')
                 result.settings_revisions = {
                     key: self._settings_revisions.get(key, 0)
                     for key in result.settings
                 }
                 result.chord_revision = self._chord_revision
-                if result.status.diagnostics:
-                    result.status.message = (
-                        'Sync completed with recovery notices. Show recovery '
-                        'diagnostics for details.')
                 return result
             except (OSError, SyncError, ValidationError) as error:
                 self.status = SyncStatus('waiting',
