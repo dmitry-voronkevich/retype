@@ -847,7 +847,10 @@ class CustomisationDialog(QDialog):
             shouldSave = True
 
         if shouldSave:
-            self.saveConfig.emit(self.config)
+            if callable(self.saveConfig):
+                self.saveConfig(self.config)
+            elif hasattr(self.saveConfig, 'emit'):
+                self.saveConfig.emit(self.config)
 
 
 class CheckBox(QCheckBox):

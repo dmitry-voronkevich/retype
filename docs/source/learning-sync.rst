@@ -4,8 +4,8 @@ Learning sync
 Learning sync is optional. It keeps a small set of learning data in a folder
 that you choose, so a folder provider such as iCloud Drive, OneDrive, Dropbox,
 or a network folder can make it available to another retype installation. On
-macOS, create a new folder in iCloud Drive and choose it from **Customisation →
-Filesystem → Learning sync**.
+macOS, iCloud Drive is the recommended provider: create a new folder there and
+choose it from **Customisation → Filesystem → Learning sync**.
 
 retype does not use iCloud account APIs, CloudKit, a retype account, or a
 hosted service. It cannot tell whether a provider has uploaded a change to
@@ -34,7 +34,8 @@ What synchronizes
   opens the **furthest** saved position. A changed EPUB is a different edition;
   its progress is not silently mapped.
 * Cumulative chord-mastery word keys and manual mastered/unmastered choices.
-  Independent offline practice is combined rather than overwritten.
+  Independent offline practice is added rather than overwritten; concurrent
+  manual choices use deterministic last-writer-wins semantics.
 * Line splits, replacements, automatic newline, chord lesson settings, and
   the stenography map.
 
