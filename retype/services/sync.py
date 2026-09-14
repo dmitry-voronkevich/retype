@@ -878,7 +878,6 @@ class LearningSync:
             local_sequence = int(local['sequence'])
             if provider_sequence > local_sequence:
                 extends_local = (
-                    provider_sequence == local_sequence + 1 and
                     provider.get('predecessor_digest') == local.get('payload_digest'))
                 if extends_local:
                     selected = provider

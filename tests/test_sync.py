@@ -972,6 +972,30 @@ def test_restart_restores_published_replica_without_fork_recovery(tmp_path):
     assert not any('duplicated' in item for item in result.status.diagnostics)
 
 
+def test_restart_accepts_published_sequence_gap_with_matching_predecessor(tmp_path):
+    root = tmp_path / 'folder'
+    local = tmp_path / 'one-local'
+    legacy = tmp_path / 'one-legacy'
+    _legacy(legacy, config=_config())
+    sync = LearningSync(local, legacy)
+    assert sync.configure(root).state == 'ready'
+    sync.sync_now()
+    first_published = json.loads(sync.published_path.read_text(encoding='utf-8'))
+
+    sync.record_chords({'word': 1}, {})
+    sync.record_chords({'word': 2}, {})
+    sync._publish(root / 'replicas')
+    published = json.loads(sync.published_path.read_text(encoding='utf-8'))
+    assert published['sequence'] > first_published['sequence'] + 1
+    assert published['predecessor_digest'] == first_published['payload_digest']
+
+    sync.published_path.write_text(json.dumps(first_published), encoding='utf-8')
+    restarted = LearningSync(local, legacy)
+
+    assert restarted.sync_now().chord_counts == {'word': 2}
+    assert not list((local / 'recovery' / 'sync').glob('*.rejected'))
+
+
 def test_remote_managed_books_are_not_materialized_without_consent(tmp_path):
     root = tmp_path / 'folder'
     source = tmp_path / 'private.epub'
