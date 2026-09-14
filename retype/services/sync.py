@@ -681,6 +681,11 @@ class LearningSync:
         self._deferred_recovery_pending: set[Path] = set()
         self._deferred_recovery_cleanup: set[Path] = set()
         self._finalizing_counts_baseline: dict[str, int] | None = None
+        self._sync_callback_counts_baseline: dict[str, int] | None = None
+        self._sync_callback_overrides_baseline: dict[str, bool] | None = None
+        self._post_sync_counts_baseline: dict[str, int] | None = None
+        self._post_sync_overrides_baseline: dict[str, bool] | None = None
+        self._sync_application_guard = False
         self._bootstrap_recovered = False
         self.status = SyncStatus()
         self._bootstrap = self._load_bootstrap()
@@ -1000,8 +1005,8 @@ class LearningSync:
             if not isinstance(event_collection, str) or not isinstance(event_id, str) or \
                     not _valid_uuid(event_id) or not isinstance(kind, str) or \
                     kind not in ('book', 'chords', 'settings') or \
-                    not isinstance(args, list) or len(args) not in (2, 3) or \
-                    (len(args) == 3 and kind != 'chords'):
+                    not isinstance(args, list) or len(args) not in (2, 3, 4) or \
+                    (len(args) in (3, 4) and kind != 'chords'):
                 raise ValidationError('deferred sync mutations are malformed')
             if kind == 'book' and (not isinstance(args[0], str) or
                                    not _BOOK_IDENTITY.fullmatch(args[0]) or
@@ -1015,10 +1020,12 @@ class LearningSync:
                     not _valid_settings_config(args[0]) or
                     not _valid_settings_config(args[1])):
                 raise ValidationError('deferred settings mutation is malformed')
-            if kind == 'chords' and len(args) == 3:
+            if kind == 'chords' and len(args) in (3, 4):
                 baseline = args[2]
                 if not _valid_count_map_strict(baseline):
                     raise ValidationError('deferred chord baseline is malformed')
+                if len(args) == 4 and not _valid_override_map_strict(args[3]):
+                    raise ValidationError('deferred chord override baseline is malformed')
             elif len(args) != 2:
                 raise ValidationError('deferred sync mutation is malformed')
             loaded.append((event_collection, event_id, kind, tuple(args)))
@@ -1316,7 +1323,8 @@ class LearningSync:
 
     def _touch_or_defer(self, kind: str, *args: object,
                         deferred_id: str | None = None,
-                        deferred_baseline: Mapping[str, int] | None = None) -> bool:
+                        deferred_baseline: Mapping[str, int] | None = None,
+                        deferred_override_baseline: Mapping[str, bool] | None = None) -> bool:
         try:
             self._touch()
             return True
@@ -1325,7 +1333,8 @@ class LearningSync:
                 return True
             if deferred_id is not None:
                 raise
-            if self._defer(kind, *args, deferred_baseline=deferred_baseline):
+            if self._defer(kind, *args, deferred_baseline=deferred_baseline,
+                            deferred_override_baseline=deferred_override_baseline):
                 return False
             if self._last_materialized():
                 self._legacy_capture_needed = True
@@ -1345,13 +1354,22 @@ class LearningSync:
         self.status.diagnostics = self.status.diagnostics[-20:]
 
     def _defer(self, kind: str, *args: object,
-               deferred_baseline: Mapping[str, int] | None = None) -> bool:
+               deferred_baseline: Mapping[str, int] | None = None,
+               deferred_override_baseline: Mapping[str, bool] | None = None) -> bool:
         event_args = args
         with self._deferred_lock:
             if kind == 'chords':
                 baseline = dict(deferred_baseline) if deferred_baseline is not None else None
+                if baseline is None and self._sync_callback_counts_baseline is not None:
+                    baseline = dict(self._sync_callback_counts_baseline)
                 if baseline is None and self._finalizing_counts_baseline is not None:
                     baseline = dict(self._finalizing_counts_baseline)
+                override_baseline = (
+                    dict(deferred_override_baseline)
+                    if deferred_override_baseline is not None else None)
+                if override_baseline is None and \
+                        self._sync_callback_overrides_baseline is not None:
+                    override_baseline = dict(self._sync_callback_overrides_baseline)
                 progress = args[0] if args and isinstance(args[0], dict) else {}
                 if self._finalizing_counts_baseline is not None:
                     for key, total in progress.items():
@@ -1360,8 +1378,25 @@ class LearningSync:
                                 baseline[key] = max(0, total - 1)
                             self._finalizing_counts_baseline[key] = max(
                                 self._finalizing_counts_baseline.get(key, 0), total)
+                if self._sync_callback_counts_baseline is not None:
+                    for key, total in progress.items():
+                        if isinstance(key, str) and key and _is_int(total) and total >= 0:
+                            self._sync_callback_counts_baseline[key] = max(
+                                self._sync_callback_counts_baseline.get(key, 0), total)
+                current_overrides = args[1] if len(args) > 1 and \
+                    isinstance(args[1], dict) else {}
+                if self._sync_callback_overrides_baseline is not None:
+                    self._sync_callback_overrides_baseline = {
+                        key: value for key, value in current_overrides.items()
+                        if isinstance(key, str) and key and isinstance(value, bool)
+                    }
                 if baseline is not None:
                     event_args = args + (baseline,)
+                if override_baseline is not None:
+                    if baseline is None:
+                        event_args = args + ({}, override_baseline)
+                    else:
+                        event_args = event_args + (override_baseline,)
             event = (self.collection_id or '', str(uuid4()), kind, event_args)
             self._deferred.append(event)
             try:
@@ -1419,10 +1454,12 @@ class LearningSync:
                 if kind == 'book':
                     self.record_book(str(args[0]), args[1], _deferred_id=event_id)  # type: ignore[arg-type]
                 elif kind == 'chords':
-                    baseline = args[2] if len(args) == 3 else None
+                    baseline = args[2] if len(args) >= 3 else None
+                    override_baseline = args[3] if len(args) == 4 else None
                     self.record_chords(
                         args[0], args[1], _deferred_id=event_id,
-                        _deferred_baseline=baseline)  # type: ignore[arg-type]
+                        _deferred_baseline=baseline,
+                        _deferred_override_baseline=override_baseline)  # type: ignore[arg-type]
                 elif kind == 'settings':
                     self.record_settings(args[0], args[1], _deferred_id=event_id)  # type: ignore[arg-type]
             with self._deferred_lock:
@@ -1430,6 +1467,14 @@ class LearningSync:
                     self._deferred.pop(0)
                     self._persist_deferred_locked()
             self._forget_deferred_marker(event_id)
+
+    def enable_sync_application_guard(self) -> None:
+        self._sync_application_guard = True
+
+    def acknowledge_sync_application(self) -> None:
+        with self._lock:
+            self._post_sync_counts_baseline = None
+            self._post_sync_overrides_baseline = None
 
     @property
     def has_deferred_changes(self) -> bool:
@@ -1528,6 +1573,8 @@ class LearningSync:
                         deepcopy(self._materialized_override_registers),
                         deepcopy(self._materialized_settings_registers),
                         deepcopy(self._materialized_settings_before_commit),
+                        deepcopy(self._post_sync_counts_baseline),
+                        deepcopy(self._post_sync_overrides_baseline),
                         deepcopy(self._local_chord_counts), self._dirty,
                         self._legacy_capture_needed,
                         self._pending_touch_durable,
@@ -1560,6 +1607,8 @@ class LearningSync:
                     self._materialized_override_registers = {}
                     self._materialized_settings_registers = {}
                     self._materialized_settings_before_commit = None
+                    self._post_sync_counts_baseline = None
+                    self._post_sync_overrides_baseline = None
                     self._local_chord_counts = {}
                     self._bootstrap.pop('last_materialized', None)
                     self._bootstrap.pop('local_chord_counts', None)
@@ -1596,6 +1645,8 @@ class LearningSync:
                      self._materialized_override_registers,
                      self._materialized_settings_registers,
                      self._materialized_settings_before_commit,
+                     self._post_sync_counts_baseline,
+                     self._post_sync_overrides_baseline,
                      self._local_chord_counts, self._dirty,
                      self._legacy_capture_needed,
                      self._pending_touch_durable,
@@ -1647,6 +1698,8 @@ class LearningSync:
                     'waiting', 'Local sync settings could not be saved; retrying.',
                     time.time(), list(self.status.diagnostics))
                 return self.status
+            self._post_sync_counts_baseline = None
+            self._post_sync_overrides_baseline = None
             self.status = SyncStatus()
             return self.status
 
@@ -1897,11 +1950,45 @@ class LearningSync:
     def record_chords(self, progress: Mapping[str, int],
                       overrides: Mapping[str, bool],
                       _deferred_id: str | None = None,
-                      _deferred_baseline: Mapping[str, int] | None = None) -> None:
+                      _deferred_baseline: Mapping[str, int] | None = None,
+                      _deferred_override_baseline: Mapping[str, bool] | None = None) -> None:
+        if _deferred_id is None and self._sync_application_guard and \
+                self.enabled and self._post_sync_counts_baseline is not None:
+            self._chord_revision += 1
+            baseline = dict(self._post_sync_counts_baseline)
+            for key, total in progress.items():
+                if isinstance(key, str) and key and _is_int(total) and total >= 0 and \
+                        total > baseline.get(key, 0) + 1 and \
+                        self._materialized_counts.get(key, 0) >= total:
+                    baseline[key] = self._materialized_counts[key]
+            self._defer(
+                'chords', dict(progress), dict(overrides),
+                deferred_baseline=baseline,
+                deferred_override_baseline=self._post_sync_overrides_baseline)
+            for key, total in progress.items():
+                if isinstance(key, str) and key and _is_int(total) and total >= 0:
+                    self._post_sync_counts_baseline[key] = max(
+                        self._post_sync_counts_baseline.get(key, 0), total)
+            self._post_sync_overrides_baseline = {
+                key: value for key, value in overrides.items()
+                if isinstance(key, str) and key and isinstance(value, bool)
+            }
+            return
         if not self._lock.acquire(blocking=False):
             if self.enabled:
                 self._chord_revision += 1
-            self._defer('chords', dict(progress), dict(overrides))
+            self._defer(
+                'chords', dict(progress), dict(overrides),
+                deferred_baseline=(_deferred_baseline if _deferred_baseline is not None
+                                    else self._sync_callback_counts_baseline
+                                    if self._sync_callback_counts_baseline is not None
+                                    else self._local_chord_counts),
+                deferred_override_baseline=(
+                    _deferred_override_baseline
+                    if _deferred_override_baseline is not None else
+                    self._sync_callback_overrides_baseline
+                    if self._sync_callback_overrides_baseline is not None else
+                    self._materialized_overrides))
             return
         try:
             if not self.enabled:
@@ -1920,6 +2007,10 @@ class LearningSync:
             before_local_chord_counts = dict(self._local_chord_counts)
             before_materialized_overrides = dict(self._materialized_overrides)
             before_bootstrap_local_counts = self._bootstrap.get('local_chord_counts')
+            callback_override_baseline = (
+                dict(_deferred_override_baseline)
+                if _deferred_override_baseline is not None else
+                before_materialized_overrides)
             callback_baseline = {
                 key: max(self._materialized_counts.get(key, 0),
                          self._local_chord_counts.get(key, 0))
@@ -1946,12 +2037,12 @@ class LearningSync:
                     self._local_chord_counts.get(key, 0), total)
             current = {key: value for key, value in overrides.items()
                        if isinstance(key, str) and key and isinstance(value, bool)}
-            for key in set(current) | set(self._materialized_overrides):
+            for key in set(current) | set(callback_override_baseline):
                 value = current.get(key)
-                was_present = key in self._materialized_overrides
+                was_present = key in callback_override_baseline
                 is_present = key in current
                 if was_present == is_present and \
-                        self._materialized_overrides.get(key) == value:
+                        callback_override_baseline.get(key) == value:
                     continue
                 stamp = self._now()
                 registers[key] = {'value': value, 'hlc': stamp.to_data(),
@@ -1968,7 +2059,11 @@ class LearningSync:
                 saved = self._touch_or_defer(
                     'chords', dict(progress), dict(overrides),
                     deferred_id=_deferred_id,
-                    deferred_baseline=callback_baseline)
+                    deferred_baseline=(
+                        self._sync_callback_counts_baseline
+                        if self._sync_callback_counts_baseline is not None
+                        else callback_baseline),
+                    deferred_override_baseline=callback_override_baseline)
                 if not saved and _deferred_id is None:
                     chords['counts'] = before_contributions
                     chords['overrides'] = before_registers
@@ -2035,6 +2130,11 @@ class LearningSync:
                 if not self.enabled:
                     self.status = SyncStatus()
                     return SyncResult(self.status)
+                self._post_sync_counts_baseline = None
+                self._post_sync_overrides_baseline = None
+                self._sync_callback_counts_baseline = dict(self._local_chord_counts)
+                self._sync_callback_overrides_baseline = dict(
+                    self._materialized_overrides)
                 root = self.sync_root
                 collection = self.collection_id
                 if root is None or collection is None:
@@ -2133,8 +2233,21 @@ class LearningSync:
                     for key in result.settings
                 }
                 result.chord_revision = self._chord_revision
+                if self._sync_application_guard:
+                    self._post_sync_counts_baseline = dict(
+                        self._sync_callback_counts_baseline or
+                        self._local_chord_counts)
+                    self._post_sync_overrides_baseline = dict(
+                        self._sync_callback_overrides_baseline or
+                        self._materialized_overrides)
+                self._sync_callback_counts_baseline = None
+                self._sync_callback_overrides_baseline = None
                 return result
             except (OSError, SyncError, ValidationError) as error:
+                self._sync_callback_counts_baseline = None
+                self._sync_callback_overrides_baseline = None
+                self._post_sync_counts_baseline = None
+                self._post_sync_overrides_baseline = None
                 self.status = SyncStatus('waiting',
                     'Waiting for the selected sync folder: {}'.format(error),
                     time.time(), list(self.status.diagnostics))

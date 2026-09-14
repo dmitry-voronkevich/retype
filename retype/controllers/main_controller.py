@@ -1,5 +1,6 @@
 import os
 import logging
+import time
 from copy import deepcopy
 from enum import Enum
 from qt import (QApplication, QObject, pyqtSignal, QUrl, QDesktopServices,
@@ -18,7 +19,7 @@ from retype.services.icon_set import Icons
 from retype.services.platform import platform_policy
 from retype.services import (ChordMasteryProgress, ChordMasteryStorage,
                              DeviceSnapshotReader, DeviceStartupLoader,
-                             LearningSync, SyncError, SyncResult,
+                             LearningSync, SyncError, SyncResult, SyncStatus,
                              apply_learning_settings, snapshot_to_chords)
 from retype.resource_handler import getApplicationDataPath, getIconsPath
 
@@ -110,6 +111,7 @@ class MainController(QObject):
         bootstrap_root = config_dir or getApplicationDataPath()
         self.learning_sync = LearningSync(bootstrap_root,
                                           self.config['user_dir'])
+        self.learning_sync.enable_sync_application_guard()
         self._sync_worker = None  # type: _SyncWorker | None
         self._sync_generation = 0
         self._managed_book_worker = None  # type: _ManagedBookImportWorker | None
@@ -731,6 +733,7 @@ class MainController(QObject):
             return
         waiting_for_provider = isinstance(result, SyncResult) and \
             result.status.state == 'waiting'
+        settings_materialization_failed = False
         if isinstance(result, SyncResult):
             book_view = self.views.get(View.book_view) \
                 if hasattr(self, 'views') else None
@@ -754,6 +757,7 @@ class MainController(QObject):
                     if self.config.save():
                         self._applySyncedSettingsToLiveViews()
                     else:
+                        settings_materialization_failed = True
                         self.config.populate(previous_config)
                         self.learning_sync.rollback_materialized_settings()
             merged_save_changed = set()
@@ -785,9 +789,16 @@ class MainController(QObject):
                         if self.library.books else None
                     if book is not None:
                         self.views[View.book_view].setBook(book, book.save_data)
+                self.learning_sync.acknowledge_sync_application()
+        if settings_materialization_failed:
+            result.status = SyncStatus(
+                'waiting',
+                'Merged learning settings could not be saved locally; retrying.',
+                time.time(), list(result.status.diagnostics))
+            self.learning_sync.status = result.status
         self._updateSyncPresentation()
         self._sync_worker = None
-        if waiting_for_provider:
+        if waiting_for_provider or settings_materialization_failed:
             self._scheduleSyncRetry()
             self._sync_pending = False
         elif self._sync_pending or self.learning_sync.has_deferred_changes:

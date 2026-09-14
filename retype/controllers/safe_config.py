@@ -63,8 +63,30 @@ class _SafeConfig:
                     not set(source_data).issubset(data):
                 return False
             return True
-        return isinstance(data, dict) and data.get('version') in (1, 2) and \
-            isinstance(data.get('progress'), dict)
+        if not isinstance(data, dict) or data.get('version') not in (1, 2) or \
+                not isinstance(data.get('progress'), dict):
+            return False
+        if isinstance(source_data, dict) and \
+                isinstance(source_data.get('progress'), dict):
+            source_progress = source_data['progress']
+            destination_progress = data['progress']
+            if not set(source_progress).issubset(destination_progress):
+                return False
+            for key, value in source_progress.items():
+                destination_value = destination_progress[key]
+                if isinstance(value, int) and not isinstance(value, bool) and \
+                        value >= 0:
+                    if not isinstance(destination_value, int) or \
+                            isinstance(destination_value, bool) or \
+                            destination_value < value:
+                        return False
+                elif destination_value != value:
+                    return False
+            for key, value in source_data.items():
+                if key not in ('version', 'progress') and \
+                        (key not in data or data[key] != value):
+                    return False
+        return True
 
     def _is_unsupported_legacy_learning_file(self, path, filename):
         # type: (_SafeConfig, str, str) -> bool
