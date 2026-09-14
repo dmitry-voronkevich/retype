@@ -84,6 +84,21 @@ def test_symlinked_managed_books_respect_consent_on_index_and_revoke(tmp_path):
     assert library._library_items == {}
 
 
+def test_progress_sync_callback_runs_when_legacy_save_fails(tmp_path):
+    calls = []
+    library = LibraryController(str(tmp_path), [], on_save=lambda key, data:
+                                calls.append((key, data)))
+    book = FakeBookWrapper(FakeLibraryItem())
+    data = {'progress': 20, 'chapter_pos': 1, 'persistent_pos': 2}
+
+    with patch('builtins.open', side_effect=OSError('disk full')), \
+            patch('retype.controllers.library.QMessageBox'):
+        saved = library.save(book, data)
+
+    assert saved is False
+    assert calls == [(book.checksum, data)]
+
+
 def test_apply_merged_save_rejects_unsupported_entries():
     library = LibraryController('', [])
     malformed = {'chapter_pos': 0, 'persistent_pos': 0, 'progress': float('nan')}

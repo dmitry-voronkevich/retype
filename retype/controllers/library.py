@@ -381,10 +381,12 @@ class LibraryController(object):
         else:
             save = self.save_file_contents = {key: data}
 
+        saved = True
         try:
             with open(self.save_abs_path, 'w', encoding='utf-8') as f:
                 json.dump(save, f, indent=2)
         except (OSError, ValueError, TypeError) as e:
+            saved = False
             s = 'Unable to save progress to disk.'
             if e is FileNotFoundError:
                 s += f' Unable to find user_dir {self._user_dir}.'
@@ -393,10 +395,9 @@ class LibraryController(object):
             msg.setDetailedText(f'Path: {self.save_abs_path}\n\n'
                                 f'{traceback.format_exc()}')
             msg.exec()
-            return False
         if callable(self.on_save):
             self.on_save(key, dict(data))
-        return True
+        return saved
 
     def migrateV1Save(self, save):
         # type: (LibraryController, Save) -> Save

@@ -10,7 +10,8 @@ from qt import Qt, QWidget
 from retype.controllers.main_controller import View
 from retype.constants import default_config
 from retype.services import (
-    AdaptiveChordExposure, MIN_SUCCESSFUL_USES_FOR_MASTERY,
+    AdaptiveChordExposure, MIN_SUCCESSFUL_USES_FOR_MASTERY, SyncResult,
+    SyncStatus,
 )
 from retype.services.chord_detection import BACKSPACE_KEY, ValidatedChord
 from retype.ui import CustomisationDialog
@@ -107,6 +108,50 @@ def test_learning_sync_retries_after_folder_returns(controller, qtbot, tmp_path)
     unavailable.rename(folder)
     qtbot.waitUntil(
         lambda: controller.learning_sync.status.state == 'synced', timeout=5000)
+
+
+def test_failed_config_save_does_not_apply_configuration(
+        controller, qtbot):
+    previous = deepcopy(controller.config.raw)
+    updated = deepcopy(previous)
+    updated['prompt'] = 'unsaved prompt'
+    controller.config.save = lambda: False
+
+    controller.saveConfig(updated)
+
+    assert controller.config.raw == previous
+
+
+def test_disabling_sync_ignores_inflight_completion(
+        make_controller, qtbot, tmp_path):
+    controller = make_controller()
+    folder = tmp_path / 'sync-folder'
+    controller.enableSync(str(folder))
+    qtbot.waitUntil(
+        lambda: controller.learning_sync.status.state == 'synced', timeout=5000)
+    qtbot.waitUntil(lambda: controller._sync_worker is None, timeout=5000)
+
+    started = Event()
+    release = Event()
+    old_value = controller.config['auto_newline']
+    result = SyncResult(
+        SyncStatus('synced', 'merged'),
+        settings={'auto_newline': not old_value},
+        settings_revisions=dict(controller.learning_sync._settings_revisions))
+
+    def blocked_sync():
+        started.set()
+        release.wait(5)
+        return result
+
+    controller.learning_sync.sync_now = blocked_sync
+    controller.requestSync()
+    qtbot.waitUntil(started.is_set, timeout=5000)
+    controller.disableSync()
+    release.set()
+    qtbot.waitUntil(lambda: controller._sync_worker is None, timeout=5000)
+
+    assert controller.config['auto_newline'] == old_value
 
 
 def test_customisation_dialog_refreshes_mastery_on_reopen(

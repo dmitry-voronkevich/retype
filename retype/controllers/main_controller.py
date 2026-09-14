@@ -111,6 +111,7 @@ class MainController(QObject):
         self.learning_sync = LearningSync(bootstrap_root,
                                           self.config['user_dir'])
         self._sync_worker = None  # type: _SyncWorker | None
+        self._sync_generation = 0
         self._managed_book_worker = None  # type: _ManagedBookImportWorker | None
         self._managed_library_worker = None  # type: _ManagedLibraryLoadWorker | None
         self._managed_library_generation = 0
@@ -479,7 +480,9 @@ class MainController(QObject):
         # type: (MainController, NestedDict) -> None
         previous_config = deepcopy(self.config.raw)
         self.config.populate(config_dict)
-        self.config.save()
+        if not self.config.save():
+            self.config.populate(previous_config)
+            return
         config = self.config
 
         # Repopulate library if paths changed
@@ -608,6 +611,9 @@ class MainController(QObject):
 
     def disableSync(self):
         # type: (MainController) -> object
+        self._sync_generation += 1
+        self._sync_pending = False
+        self._sync_retry_timer.stop()
         status = self.learning_sync.disable()
         self._updateSyncPresentation()
         return status
@@ -656,9 +662,16 @@ class MainController(QObject):
             self._sync_pending = True
             return
         self.learning_sync.status.message = 'Checking the selected sync folder…'
+        self._sync_generation += 1
+        generation = self._sync_generation
         worker = _SyncWorker(self.learning_sync)
         self._sync_worker = worker
-        worker.completed.connect(self._syncCompleted)
+        worker.completed.connect(
+            lambda result, worker=worker, generation=generation:
+                self._syncCompleted(result, generation, worker))
+        worker.finished.connect(
+            lambda worker=worker, generation=generation:
+                self._syncWorkerFinished(worker, generation))
         worker.finished.connect(worker.deleteLater)
         worker.start()
         self._updateSyncPresentation()
@@ -698,8 +711,24 @@ class MainController(QObject):
         if dialog is not None and hasattr(dialog, 'applyExternalConfig'):
             dialog.applyExternalConfig(self.config.raw)
 
-    def _syncCompleted(self, result):
-        # type: (MainController, object) -> None
+    def _syncWorkerFinished(self, worker, generation):
+        # type: (MainController, _SyncWorker, int) -> None
+        if worker is not self._sync_worker or \
+                generation == self._sync_generation:
+            return
+        self._sync_worker = None
+        if self.learning_sync.enabled and not self._sync_closing:
+            self._sync_pending = False
+            self.requestSync()
+
+    def _syncCompleted(self, result, generation=None, worker=None):
+        # type: (MainController, object, int | None, _SyncWorker | None) -> None
+        if worker is not None and worker is not self._sync_worker:
+            return
+        if generation is not None and generation != self._sync_generation:
+            return
+        if not self.learning_sync.enabled or self._sync_closing:
+            return
         waiting_for_provider = isinstance(result, SyncResult) and \
             result.status.state == 'waiting'
         if isinstance(result, SyncResult):
