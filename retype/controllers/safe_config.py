@@ -47,6 +47,18 @@ class _SafeConfig:
         return os.path.abspath(path) == \
             os.path.abspath(self.default_user_dir)
 
+    def _is_complete_legacy_learning_file(self, path, filename):
+        # type: (_SafeConfig, str, str) -> bool
+        try:
+            with open(path, 'r', encoding='utf-8') as file:
+                data = json.load(file)
+        except (OSError, ValueError, TypeError, RecursionError):
+            return False
+        if filename == 'save.json':
+            return isinstance(data, dict)
+        return isinstance(data, dict) and data.get('version') in (1, 2) and \
+            isinstance(data.get('progress'), dict)
+
     def _migrateLegacyBundleData(self):
         # type: (_SafeConfig) -> None
         """Copy, never move, old bundle-root state into the writable root.
@@ -85,7 +97,8 @@ class _SafeConfig:
                     if not os.path.exists(source):
                         raise OSError('legacy learning file disappeared: {}'.format(
                             filename))
-                    if not os.path.exists(destination):
+                    if not self._is_complete_legacy_learning_file(
+                            destination, filename):
                         descriptor = None
                         temporary = None
                         try:
@@ -95,9 +108,8 @@ class _SafeConfig:
                             os.close(descriptor)
                             descriptor = None
                             shutil.copy2(source, temporary)
-                            if not os.path.exists(destination):
-                                os.replace(temporary, destination)
-                                temporary = None
+                            os.replace(temporary, destination)
+                            temporary = None
                         finally:
                             if descriptor is not None:
                                 os.close(descriptor)

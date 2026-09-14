@@ -362,11 +362,10 @@ class LibraryController(object):
         if self.books is None:
             return changed
         for book in self.books.values():
-            data = self.save_file_contents.get(book.checksum)
-            if isinstance(data, dict):
+            data = _validate_save(self.save_file_contents.get(book.checksum))
+            if data is not None:
                 book.save_data = data
-                if isinstance(data.get('progress'), (int, float)):
-                    book.updateProgress(data['progress'])
+                book.updateProgress(data['progress'])
         return changed
 
     def save(self, book, data):
