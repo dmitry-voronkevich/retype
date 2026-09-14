@@ -59,6 +59,19 @@ class _SafeConfig:
         return isinstance(data, dict) and data.get('version') in (1, 2) and \
             isinstance(data.get('progress'), dict)
 
+    def _is_unsupported_legacy_learning_file(self, path, filename):
+        # type: (_SafeConfig, str, str) -> bool
+        try:
+            with open(path, 'r', encoding='utf-8') as file:
+                data = json.load(file)
+        except (OSError, ValueError, TypeError, RecursionError):
+            return False
+        if filename == 'save.json':
+            return not isinstance(data, dict)
+        return not (isinstance(data, dict) and
+                    data.get('version') in (1, 2) and
+                    isinstance(data.get('progress'), dict))
+
     def _migrateLegacyBundleData(self):
         # type: (_SafeConfig) -> None
         """Copy, never move, old bundle-root state into the writable root.
@@ -97,6 +110,11 @@ class _SafeConfig:
                     if not os.path.exists(source):
                         raise OSError('legacy learning file disappeared: {}'.format(
                             filename))
+                    if self._is_unsupported_legacy_learning_file(
+                            destination, filename):
+                        logger.warning('Preserving unsupported local learning file: %s',
+                                       destination)
+                        continue
                     if not self._is_complete_legacy_learning_file(
                             destination, filename):
                         descriptor = None

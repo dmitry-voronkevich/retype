@@ -53,6 +53,27 @@ class TestCustomisation:
         assert json.loads((destination / 'chord-mastery.json').read_text()) == chords
         assert config['user_dir'] == str(destination)
 
+    def test_unsupported_destination_learning_file_is_preserved(
+            self, tmp_path, monkeypatch):
+        legacy = tmp_path / 'legacy-root'
+        destination = tmp_path / 'application-data'
+        legacy.mkdir()
+        destination.mkdir()
+        source = {'version': 2, 'progress': {'word': 3}}
+        unsupported = {
+            'version': 99, 'progress': {'word': 8},
+            'future_field': {'keep': True},
+        }
+        (legacy / 'chord-mastery.json').write_text(json.dumps(source))
+        target = destination / 'chord-mastery.json'
+        target.write_text(json.dumps(unsupported))
+        monkeypatch.setattr(safe_config_module, 'root_path', str(legacy))
+        monkeypatch.setitem(default_config, 'user_dir', str(destination))
+
+        SafeConfig()
+
+        assert json.loads(target.read_text()) == unsupported
+
     def test_custom_user_dir_updates_local_bootstrap_not_selected_config_twice(self, tmp_path):
         bootstrap = tmp_path / 'application-data'
         selected = tmp_path / 'selected-learning-data'

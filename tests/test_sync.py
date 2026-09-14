@@ -285,6 +285,29 @@ def test_pending_chord_use_is_not_counted_again_after_restart(tmp_path):
     assert restarted.sync_now().chord_counts == {'word': 5}
 
 
+def test_v1_pending_without_local_baseline_does_not_use_contribution_as_baseline(
+        tmp_path):
+    root = tmp_path / 'folder'
+    local = tmp_path / 'one-local'
+    legacy = tmp_path / 'one-legacy'
+    _legacy(legacy, config=_config())
+    sync = LearningSync(local, legacy)
+    assert sync.configure(root).state == 'ready'
+    sync.sync_now()
+    sync.record_chords({'word': 2}, {})
+
+    pending = json.loads(sync.pending_path.read_text(encoding='utf-8'))
+    pending.pop('local_chord_counts')
+    sync.pending_path.write_text(json.dumps(pending), encoding='utf-8')
+    bootstrap = json.loads(sync.bootstrap_path.read_text(encoding='utf-8'))
+    bootstrap.pop('local_chord_counts')
+    sync.bootstrap_path.write_text(json.dumps(bootstrap), encoding='utf-8')
+
+    restarted = LearningSync(local, legacy)
+
+    assert restarted._local_chord_counts == {}
+
+
 def test_pending_chord_use_is_not_counted_again_on_reenable(tmp_path):
     root = tmp_path / 'folder'
     sync, legacy = _enable(

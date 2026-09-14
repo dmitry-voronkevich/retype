@@ -895,13 +895,6 @@ class LearningSync:
                         int(data['sequence']) >= self._sequence:
                     pending_local_counts = _valid_count_map(
                         data.get('local_chord_counts'))
-                    if 'local_chord_counts' not in data:
-                        payload = data.get('payload')
-                        payload_chords = payload.get('chords', {}) \
-                            if isinstance(payload, dict) else {}
-                        pending_local_counts = _valid_count_map(
-                            payload_chords.get('counts')
-                            if isinstance(payload_chords, dict) else {})
                     for key, count in pending_local_counts.items():
                         self._local_chord_counts[key] = max(
                             self._local_chord_counts.get(key, 0), count)
@@ -1710,21 +1703,25 @@ class LearningSync:
         except ValidationError as error:
             if config_path.exists():
                 self._diagnose('Legacy learning settings were not imported: {}'.format(error))
-        self._initialize_materialized_count_baseline()
+        self._initialize_materialized_count_baseline(include_payload_counts=True)
         self._touch()
 
-    def _initialize_materialized_count_baseline(self) -> None:
-        chords = self._payload.get('chords', {})
-        counts = chords.get('counts', {}) if isinstance(chords, dict) else {}
-        if not isinstance(counts, dict):
-            return
+    def _initialize_materialized_count_baseline(
+            self, include_payload_counts: bool = False) -> None:
+        baselines = []
         last = self._last_materialized()
-        last_counts = _valid_count_map(last.get('chord_counts', {}))
-        legacy_counts = self._read_legacy_chord_counts()
-        for key, count in {**last_counts, **counts, **legacy_counts}.items():
-            if isinstance(key, str) and key and _is_int(count) and count >= 0:
-                self._local_chord_counts[key] = max(
-                    self._local_chord_counts.get(key, 0), count)
+        baselines.append(_valid_count_map(last.get('chord_counts', {})))
+        baselines.append(self._read_legacy_chord_counts())
+        if include_payload_counts:
+            chords = self._payload.get('chords', {})
+            counts = chords.get('counts', {}) if isinstance(chords, dict) else {}
+            if isinstance(counts, dict):
+                baselines.append(_valid_count_map(counts))
+        for baseline in baselines:
+            for key, count in baseline.items():
+                if isinstance(key, str) and key and _is_int(count) and count >= 0:
+                    self._local_chord_counts[key] = max(
+                        self._local_chord_counts.get(key, 0), count)
 
     def _read_legacy_chord_counts(self) -> dict[str, int]:
         path = self.legacy_dir / 'chord-mastery.json'
