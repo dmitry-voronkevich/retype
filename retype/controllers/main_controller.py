@@ -66,6 +66,9 @@ class MainController(QObject):
                                           self.config['user_dir'])
         self._sync_worker = None  # type: _SyncWorker | None
         self._sync_pending = False
+        self._sync_schedule_timer = QTimer(self)
+        self._sync_schedule_timer.setSingleShot(True)
+        self._sync_schedule_timer.timeout.connect(self.requestSync)
         initial_sync = self.learning_sync.sync_now()
         if initial_sync.settings:
             self.config.populate(apply_learning_settings(self.config.raw,
@@ -513,7 +516,7 @@ class MainController(QObject):
     def _scheduleSync(self):
         # type: (MainController) -> None
         if self.learning_sync.enabled:
-            QTimer.singleShot(1000, self.requestSync)
+            self._sync_schedule_timer.start(1000)
 
     def _syncCompleted(self, result):
         # type: (MainController, object) -> None
@@ -568,6 +571,7 @@ class MainController(QObject):
 
     def _syncOnClosing(self):
         # type: (MainController) -> None
+        self._sync_schedule_timer.stop()
         worker = self._sync_worker
         if worker is not None and worker.isRunning():
             worker.wait(1500)
