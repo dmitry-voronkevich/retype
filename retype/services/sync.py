@@ -1043,16 +1043,20 @@ class LearningSync:
                 self._publish(replicas_dir)
                 replicas = self._scan_replicas(replicas_dir, collection)
                 result = merge_replicas(replicas)
-                result.status = SyncStatus('synced',
-                    'Local changes are saved in the selected sync folder.',
-                    time.time(), list(self.status.diagnostics))
-                self.status = result.status
                 self._materialized_counts = dict(result.chord_counts)
                 self._materialized_overrides = dict(result.chord_overrides)
                 self._remember_materialized(result)
                 self._materialize_legacy_state(result)
+                # Do not publish the final status until managed-book objects
+                # have been materialized. Consumers use ``synced`` as the
+                # completion signal, and otherwise a slower Windows copy can
+                # race that signal and make a just-synced EPUB appear absent.
                 self._materialize_managed_books(root, result)
-                result.status.diagnostics = list(self.status.diagnostics)
+                result.status = SyncStatus(
+                    'synced',
+                    'Local changes are saved in the selected sync folder.',
+                    time.time(), list(self.status.diagnostics))
+                self.status = result.status
                 if result.status.diagnostics:
                     result.status.message = (
                         'Sync completed with recovery notices. Show recovery '

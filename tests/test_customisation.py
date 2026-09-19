@@ -51,7 +51,8 @@ class TestCustomisation:
         config.save()
 
         assert (selected / 'config.json').exists()
-        saved_bootstrap = json.loads((bootstrap / 'config.json').read_text())
+        saved_bootstrap = json.loads(
+            (bootstrap / 'config.json').read_text(encoding='utf-8'))
         assert saved_bootstrap['user_dir'] == str(selected)
 
     def test_chord_json_setting_is_removed(self, tmp_path):

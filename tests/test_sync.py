@@ -198,7 +198,8 @@ def test_merge_is_duplicate_reorder_independent_and_lww_ties_are_deterministic(t
     second.sync_now()
     replicas = []
     for path in (root / 'replicas').glob('*.json'):
-        replicas.append(validate_envelope(json.loads(path.read_text()), first.collection_id))
+        replicas.append(validate_envelope(
+                json.loads(path.read_text(encoding='utf-8')), first.collection_id))
 
     normal = merge_replicas(replicas)
     reverse_duplicate = merge_replicas(list(reversed(replicas)) + replicas)
