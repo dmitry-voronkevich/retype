@@ -199,6 +199,20 @@ def test_sync_settings_are_applied_to_runtime_consumers(controller, qtbot):
     assert controller.console.highlighting_service.auto_newline is False
 
 
+def test_sync_materialization_preserves_legacy_save_entries(controller):
+    legacy_entry = {'persistent_pos': 1, 'chapter_pos': 0, 'progress': 5}
+    synced_entry = {'persistent_pos': 2, 'chapter_pos': 0, 'progress': 10}
+    controller.library.save_file_contents = {'/old/book.epub': legacy_entry}
+
+    controller._syncCompleted(SyncResult(
+        status=SyncStatus(), save={'a' * 32: synced_entry}))
+
+    assert controller.library.save_file_contents == {
+        '/old/book.epub': legacy_entry,
+        'a' * 32: synced_entry,
+    }
+
+
 def test_customisation_dialog_refreshes_mastery_on_reopen(
         controller, qtbot):
     book_view = controller.views[View.book_view]

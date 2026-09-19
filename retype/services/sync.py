@@ -13,6 +13,7 @@ from hashlib import sha256
 import json
 import logging
 import os
+from math import isfinite
 from pathlib import Path
 import re
 import shutil
@@ -233,7 +234,8 @@ def _validate_save(data: object) -> dict[str, object] | None:
     progress = data.get('progress')
     if (not _is_int(persistent) or persistent < 0 or not _is_int(chapter) or
             chapter < 0 or not isinstance(progress, (int, float)) or
-            isinstance(progress, bool) or progress < 0 or progress > 100):
+            isinstance(progress, bool) or progress < 0 or progress > 100 or
+            not isfinite(progress)):
         return None
     out: dict[str, object] = {
         'persistent_pos': persistent,
@@ -1277,17 +1279,56 @@ class LearningSync:
                                          _file_sha256(destination) != digest):
                 self._recover_candidate(destination, 'existing managed book does not match digest')
                 raise SyncError('the selected folder contains a rejected book with this digest')
-            if not destination.exists():
-                _copy_atomic(path, destination)
-            atomic_write_json(manifest, metadata, self.recovery_dir / 'books')
+            destination_created = False
             local_copy = self.managed_library_dir / (digest + '.epub')
-            if not local_copy.exists():
-                _copy_atomic(path, local_copy)
-            previous_editions = [item for key, item in managed.items()
-                                 if key != digest and isinstance(item, dict) and
-                                 item.get('original_filename') == path.name]
-            managed[digest] = metadata
-            self._touch()
+            local_copy_created = False
+            manifest_before = manifest.read_bytes() if manifest.exists() else None
+            previous_managed = managed.get(digest)
+            previous_sequence = self._sequence
+            previous_clock = self._clock
+            previous_dirty = self._dirty
+            manifest_written = False
+            try:
+                if not destination.exists():
+                    destination_created = True
+                    _copy_atomic(path, destination)
+                manifest_written = True
+                atomic_write_json(manifest, metadata, self.recovery_dir / 'books')
+                if not local_copy.exists():
+                    local_copy_created = True
+                    _copy_atomic(path, local_copy)
+                previous_editions = [item for key, item in managed.items()
+                                     if key != digest and isinstance(item, dict) and
+                                     item.get('original_filename') == path.name]
+                managed[digest] = metadata
+                self._touch()
+            except OSError:
+                if previous_managed is None:
+                    managed.pop(digest, None)
+                else:
+                    managed[digest] = previous_managed
+                self._sequence = previous_sequence
+                self._clock = previous_clock
+                self._dirty = previous_dirty
+                if manifest_written:
+                    try:
+                        if manifest_before is None:
+                            manifest.unlink(missing_ok=True)
+                        else:
+                            manifest.write_bytes(manifest_before)
+                    except OSError:
+                        pass
+                if local_copy_created:
+                    try:
+                        local_copy.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+                if destination_created:
+                    try:
+                        destination.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+                raise
             if previous_editions:
                 self._diagnose('Imported {} as a separate edition; progress is not '
                                'mapped between changed EPUB bytes.'.format(path.name))

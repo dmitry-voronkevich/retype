@@ -1,3 +1,4 @@
+from hashlib import sha256
 import json
 import os
 from pathlib import Path
@@ -9,10 +10,11 @@ import zipfile
 
 import pytest
 
+import retype.services.sync as sync_module
 from retype.services.sync import (
-    HLC, LearningSync, SyncError, apply_learning_settings, atomic_write_json,
-    learning_settings_from_config,
-    merge_replicas, validate_envelope,
+    HLC, LearningSync, SyncError, _validate_save, apply_learning_settings,
+    atomic_write_json, learning_settings_from_config, merge_replicas,
+    validate_envelope,
 )
 
 
@@ -259,6 +261,13 @@ def test_invalid_replica_is_recovered_and_provider_absence_keeps_local_operation
     assert (tmp_path / 'one-local' / 'pending-sync-replica.json').exists()
 
 
+def test_save_progress_must_be_finite():
+    data = {'persistent_pos': 1, 'chapter_pos': 0, 'progress': float('nan')}
+    assert _validate_save(data) is None
+    data['progress'] = float('inf')
+    assert _validate_save(data) is None
+
+
 def test_atomic_write_failure_leaves_previous_complete_file_and_no_temp(tmp_path):
     target = tmp_path / 'state.json'
     target.write_text('{"old":true}', encoding='utf-8')
@@ -308,6 +317,33 @@ def test_managed_import_filesystem_failure_is_a_sync_error_and_keeps_source(tmp_
 
     assert source.exists()
     assert not (root / 'books').exists()
+
+
+def test_managed_import_rolls_back_all_new_artifacts_on_local_copy_failure(tmp_path):
+    root = tmp_path / 'folder'
+    sync, _ = _enable(tmp_path, 'one', root, config=_config())
+    sync.sync_now()
+    sync.set_managed_library_consent(True)
+    source = tmp_path / 'private.epub'
+    _epub(source)
+    original_copy = sync_module._copy_atomic
+    calls = []
+
+    def fail_local_copy(source_path, destination_path):
+        calls.append(destination_path)
+        if len(calls) == 2:
+            raise OSError('disk full')
+        return original_copy(source_path, destination_path)
+
+    with patch('retype.services.sync._copy_atomic', side_effect=fail_local_copy):
+        with pytest.raises(SyncError, match='managed EPUB import failed'):
+            sync.import_book(source)
+
+    digest = sha256(source.read_bytes()).hexdigest()
+    assert not (root / 'books' / 'sha256' / (digest + '.epub')).exists()
+    assert not (root / 'books' / 'sha256' / (digest + '.json')).exists()
+    assert not (sync.managed_library_dir / (digest + '.epub')).exists()
+    assert source.exists()
 
 
 def test_managed_books_need_consent_are_content_addressed_and_never_auto_imported(tmp_path):

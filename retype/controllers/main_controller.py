@@ -535,7 +535,10 @@ class MainController(QObject):
                     self._repopulateLibrary(self.config['user_dir'],
                                             self.config['library_paths'])
             if result.save and hasattr(self, 'library'):
-                self.library.save_file_contents = dict(result.save)
+                current = self.library.save_file_contents
+                materialized = dict(current) if isinstance(current, dict) else {}
+                materialized.update(result.save)
+                self.library.save_file_contents = materialized
             if (result.chord_counts or result.chord_overrides) and \
                     hasattr(self, 'views') and View.book_view in self.views:
                 self.chord_progress = ChordMasteryProgress(
