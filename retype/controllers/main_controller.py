@@ -500,7 +500,12 @@ class MainController(QObject):
         """Run provider-folder I/O outside the Qt/typing event path."""
         if not self.learning_sync.enabled:
             return
-        if self._sync_worker is not None and self._sync_worker.isRunning():
+        # Keep a request queued until the worker's finished signal has been
+        # handled.  On Windows a QThread can report that it stopped before
+        # the queued ``finished`` callback runs; starting another worker in
+        # that gap replaces the reference used by the callback and can drop
+        # the pending managed-book publication.
+        if self._sync_worker is not None:
             self._sync_pending = True
             return
         self.learning_sync.status.message = 'Checking the selected sync folder…'
