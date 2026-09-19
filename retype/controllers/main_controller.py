@@ -1,6 +1,7 @@
 import os
 import logging
 from copy import deepcopy
+from pathlib import Path
 from enum import Enum
 from qt import (QApplication, QObject, pyqtSignal, QUrl, QDesktopServices,
                 QMessageBox, QThread, QTimer)
@@ -520,8 +521,19 @@ class MainController(QObject):
             if result.settings:
                 updated = apply_learning_settings(self.config.raw, result.settings)
                 if updated != self.config.raw:
-                    self.config.populate(updated)
-                    self.config.save()
+                    self.saveConfig(updated)
+            if result.managed_books and hasattr(self, 'library'):
+                known_paths = {
+                    os.path.abspath(str(item.path))
+                    for item in self.library._library_items.values()
+                }
+                managed_paths = {
+                    os.path.abspath(str(path))
+                    for path in Path(self.learning_sync.managed_library_dir).glob('*.epub')
+                }
+                if managed_paths - known_paths:
+                    self._repopulateLibrary(self.config['user_dir'],
+                                            self.config['library_paths'])
             if result.save and hasattr(self, 'library'):
                 self.library.save_file_contents = dict(result.save)
             if (result.chord_counts or result.chord_overrides) and \

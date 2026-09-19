@@ -32,6 +32,13 @@ def _check_state(section, row):
 
 
 class TestCustomisation:
+    def test_default_user_dir_is_created_before_config_use(self, tmp_path):
+        user_dir = tmp_path / 'new-user-data'
+
+        SafeConfig(str(user_dir))
+
+        assert user_dir.is_dir()
+
     def test_custom_user_dir_updates_local_bootstrap_not_selected_config_twice(self, tmp_path):
         bootstrap = tmp_path / 'application-data'
         selected = tmp_path / 'selected-learning-data'

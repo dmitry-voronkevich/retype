@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 from threading import Event
 from types import SimpleNamespace
+import zipfile
 
 import pytest
 from qt import QFileDialog, Qt, QWidget
@@ -13,7 +14,8 @@ from qt import QFileDialog, Qt, QWidget
 from retype.controllers.main_controller import View
 from retype.constants import default_config
 from retype.services import (
-    AdaptiveChordExposure, MIN_SUCCESSFUL_USES_FOR_MASTERY,
+    AdaptiveChordExposure, MIN_SUCCESSFUL_USES_FOR_MASTERY, SyncResult,
+    SyncStatus,
 )
 from retype.services.chord_detection import BACKSPACE_KEY, ValidatedChord
 from retype.ui import CustomisationDialog
@@ -150,6 +152,51 @@ def test_importing_selected_epub_creates_managed_record_and_keeps_source(
 
     assert invalid.read_bytes() == b'not an EPUB'
     assert 'corrupt or unsupported' in panel.status.label.text()
+
+
+def test_remote_managed_book_is_indexed_after_sync_completion(
+        make_controller, qtbot, tmp_path):
+    first = make_controller()
+    second = make_controller()
+    sync_folder = tmp_path / 'sync-folder'
+    first.enableSync(str(sync_folder), managed_library_consent=True)
+    qtbot.waitUntil(
+        lambda: first.learning_sync.status.state == 'synced', timeout=5000)
+
+    source = tmp_path / 'remote.epub'
+    bundled = Path(__file__).parents[2] / 'library' / 'Flatland.epub'
+    source.write_bytes(bundled.read_bytes())
+    with zipfile.ZipFile(source, 'a') as archive:
+        archive.writestr('remote-marker.txt', 'remote')
+    digest = sha256(source.read_bytes()).hexdigest()
+    first.importManagedBook(str(source))
+    qtbot.waitUntil(
+        lambda: any(
+            digest in json.loads(replica.read_text(encoding='utf-8'))[
+                'payload']['managed_books']
+            for replica in (sync_folder / 'replicas').glob('*.json')),
+        timeout=5000)
+
+    second.enableSync(str(sync_folder), managed_library_consent=True)
+    qtbot.waitUntil(
+        lambda: second.learning_sync.status.state == 'synced', timeout=5000)
+
+    managed_path = next(
+        second.learning_sync.managed_library_dir.glob('*.epub'))
+    assert managed_path.name == digest + '.epub'
+    assert managed_path.exists()
+    assert any(book.path == str(managed_path)
+               for book in second.library.books.values())
+
+
+def test_sync_settings_are_applied_to_runtime_consumers(controller, qtbot):
+    assert controller.console.highlighting_service.auto_newline is True
+
+    controller._syncCompleted(SyncResult(
+        status=SyncStatus(), settings={'auto_newline': False}))
+
+    assert controller.config['auto_newline'] is False
+    assert controller.console.highlighting_service.auto_newline is False
 
 
 def test_customisation_dialog_refreshes_mastery_on_reopen(

@@ -892,6 +892,15 @@ class LearningSync:
         except ValidationError as error:
             if config_path.exists():
                 self._diagnose('Legacy learning settings were not imported: {}'.format(error))
+        self._materialized_counts = {
+            key: int(value) for key, value in counts.items()
+            if isinstance(key, str) and _is_int(value) and value >= 0
+        }
+        self._materialized_overrides = {
+            key: register['value'] for key, register in overrides.items()
+            if isinstance(key, str) and isinstance(register, dict) and
+            isinstance(register.get('value'), bool)
+        }
         self._touch()
 
     def record_book(self, identity: str, data: Mapping[str, object]) -> None:
@@ -1193,6 +1202,15 @@ class LearningSync:
 
     def import_book(self, source: str | Path, title: str | None = None) -> dict[str, object]:
         """Explicitly copy one user-selected EPUB into the managed library."""
+        try:
+            return self._import_book(source, title)
+        except SyncError:
+            raise
+        except OSError as error:
+            raise SyncError('managed EPUB import failed: {}'.format(error)) from error
+
+    def _import_book(self, source: str | Path,
+                    title: str | None = None) -> dict[str, object]:
         path = Path(source)
         with self._lock:
             if not self.enabled:

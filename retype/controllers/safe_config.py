@@ -31,6 +31,10 @@ class _SafeConfig:
             self.default_user_dir, self.config_rel_path)
         self._migrateLegacyBundleData()
         self.config = self.raw = self.load(self.base_config_abs_path)
+        try:
+            os.makedirs(self.config['user_dir'], exist_ok=True)
+        except OSError as error:
+            logger.warning('Could not create user data directory: %s', error)
         self.safe_dict = SafeDict(
             self.config, self.defaults,
             ['rdict', 'sdict', 'kdict'])

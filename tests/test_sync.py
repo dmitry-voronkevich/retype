@@ -91,6 +91,17 @@ def test_migration_keeps_legacy_files_and_materializes_syncable_state(tmp_path):
     assert legacy_chords['progress']['ignored'] == 'future'
 
 
+def test_legacy_chord_totals_are_not_counted_again_before_first_sync(tmp_path):
+    root = tmp_path / 'folder'
+    sync, _ = _enable(
+        tmp_path, 'one', root,
+        chords={'version': 2, 'progress': {'word': 3}}, config=_config())
+
+    sync.record_chords({'word': 4}, {})
+
+    assert sync.sync_now().chord_counts == {'word': 4}
+
+
 def test_offline_replicas_merge_furthest_progress_and_gcounter_components(tmp_path):
     root = tmp_path / 'folder'
     first, _ = _enable(
@@ -281,6 +292,22 @@ def test_settings_allowlist_never_roams_paths_or_visual_preferences():
     assert updated['adaptive_chord_lesson_limit'] == 7
     assert updated['user_dir'] == '/local/other'
     assert updated['window']['x'] == 999
+
+
+def test_managed_import_filesystem_failure_is_a_sync_error_and_keeps_source(tmp_path):
+    root = tmp_path / 'folder'
+    sync, _ = _enable(tmp_path, 'one', root, config=_config())
+    sync.sync_now()
+    sync.set_managed_library_consent(True)
+    source = tmp_path / 'private.epub'
+    _epub(source)
+
+    with patch('retype.services.sync._copy_atomic', side_effect=OSError('disk full')):
+        with pytest.raises(SyncError, match='managed EPUB import failed'):
+            sync.import_book(source)
+
+    assert source.exists()
+    assert not (root / 'books').exists()
 
 
 def test_managed_books_need_consent_are_content_addressed_and_never_auto_imported(tmp_path):
