@@ -1,11 +1,14 @@
 """High-value GUI wiring checks; service and pure tests remain separate."""
 
 from copy import deepcopy
+from hashlib import sha256
+import json
+from pathlib import Path
 from threading import Event
 from types import SimpleNamespace
 
 import pytest
-from qt import Qt, QWidget
+from qt import QFileDialog, Qt, QWidget
 
 from retype.controllers.main_controller import View
 from retype.constants import default_config
@@ -91,6 +94,62 @@ def test_learning_sync_is_opt_in_and_disables_without_deleting_folder(
     assert controller.learning_sync.enabled is False
     assert (folder / 'retype-sync.json').exists()
     assert panel.disable_button.isEnabled() is False
+
+
+def test_importing_selected_epub_creates_managed_record_and_keeps_source(
+        controller, qtbot, tmp_path, monkeypatch):
+    sync_folder = tmp_path / 'sync-folder'
+    controller.enableSync(str(sync_folder), managed_library_consent=True)
+    qtbot.waitUntil(
+        lambda: controller.learning_sync.status.state == 'synced', timeout=5000)
+
+    panel = controller.customisation_dialog.sync_settings
+    source = Path(__file__).parents[2] / 'library' / 'Flatland.epub'
+    source_bytes = source.read_bytes()
+    digest = sha256(source_bytes).hexdigest()
+    object_path = sync_folder / 'books' / 'sha256' / (digest + '.epub')
+    metadata_path = sync_folder / 'books' / 'sha256' / (digest + '.json')
+
+    # Closing the chooser leaves the selected-sync collection untouched.
+    monkeypatch.setattr(QFileDialog, 'getOpenFileName',
+                        lambda *_: ('', ''))
+    qtbot.mouseClick(panel.import_button, Qt.MouseButton.LeftButton)
+    assert not object_path.exists()
+    assert not metadata_path.exists()
+
+    # An explicit selection is the sole upload trigger. In particular, it
+    # must work for a valid EPUB a source-run user keeps in its local library.
+    monkeypatch.setattr(QFileDialog, 'getOpenFileName',
+                        lambda *_: (str(source), 'EPUB books (*.epub)'))
+    qtbot.mouseClick(panel.import_button, Qt.MouseButton.LeftButton)
+
+    qtbot.waitUntil(object_path.exists, timeout=5000)
+    qtbot.waitUntil(metadata_path.exists, timeout=5000)
+    qtbot.waitUntil(
+        lambda: any(
+            digest in json.loads(replica.read_text(encoding='utf-8'))[
+                'payload']['managed_books']
+            for replica in (sync_folder / 'replicas').glob('*.json')),
+        timeout=5000)
+    assert object_path.read_bytes() == source_bytes
+    assert json.loads(metadata_path.read_text(encoding='utf-8')) == {
+        'schema': 1,
+        'digest': digest,
+        'original_filename': source.name,
+        'title': source.stem,
+        'size': len(source_bytes),
+    }
+    # Import is a copy; selecting a source must never move or alter it.
+    assert source.read_bytes() == source_bytes
+
+    invalid = tmp_path / 'not-an-epub.epub'
+    invalid.write_bytes(b'not an EPUB')
+    monkeypatch.setattr(QFileDialog, 'getOpenFileName',
+                        lambda *_: (str(invalid), 'EPUB books (*.epub)'))
+    qtbot.mouseClick(panel.import_button, Qt.MouseButton.LeftButton)
+
+    assert invalid.read_bytes() == b'not an EPUB'
+    assert 'corrupt or unsupported' in panel.status.label.text()
 
 
 def test_customisation_dialog_refreshes_mastery_on_reopen(

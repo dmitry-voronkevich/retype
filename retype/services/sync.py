@@ -16,6 +16,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import sys
 import tempfile
 import threading
 import time
@@ -1200,16 +1201,24 @@ class LearningSync:
                 raise SyncError('managed-library consent is required before copying books')
             if path.suffix.lower() != '.epub' or not path.is_file():
                 raise SyncError('select a readable EPUB file')
-            try:
-                # Import lazily to keep this pure protocol module independent
-                # of resource-handler initialisation order.
-                from retype.resource_handler import getLibraryPath
-                bundled = Path(getLibraryPath()).resolve()
-                if os.path.commonpath((str(path.resolve()), str(bundled))) == str(bundled):
-                    raise SyncError('bundled EPUBs are already available and are never uploaded')
-            except ValueError:
-                # Different Windows volumes cannot share a common path.
-                pass
+            # A source checkout's ``library`` is a useful ordinary local
+            # library while developing or running retype from source. Its
+            # files are not necessarily the EPUBs shipped in a release, so a
+            # path-only check here used to reject an explicitly selected local
+            # EPUB before any object or metadata could be written. Packaged
+            # resource EPUBs remain excluded; those are not user library data.
+            if getattr(sys, 'frozen', False) or getattr(sys, '_MEIPASS', None):
+                try:
+                    # Import lazily to keep this protocol module independent
+                    # of resource-handler initialisation order.
+                    from retype.resource_handler import getLibraryPath
+                    bundled = Path(getLibraryPath()).resolve()
+                    if os.path.commonpath((str(path.resolve()), str(bundled))) == str(bundled):
+                        raise SyncError(
+                            'bundled EPUBs are already available and are never uploaded')
+                except ValueError:
+                    # Different Windows volumes cannot share a common path.
+                    pass
             try:
                 is_epub_archive = zipfile.is_zipfile(path)
             except OSError as error:

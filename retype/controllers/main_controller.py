@@ -503,6 +503,8 @@ class MainController(QObject):
         worker = _SyncWorker(self.learning_sync)
         self._sync_worker = worker
         worker.completed.connect(self._syncCompleted)
+        worker.finished.connect(
+            lambda worker=worker: self._syncWorkerFinished(worker))
         worker.finished.connect(worker.deleteLater)
         worker.start()
         self._updateSyncPresentation()
@@ -533,6 +535,11 @@ class MainController(QObject):
                     if hasattr(dialog, 'chord_mastery'):
                         dialog.chord_mastery.setProgress(self.chord_progress)
         self._updateSyncPresentation()
+
+    def _syncWorkerFinished(self, worker):
+        # type: (MainController, _SyncWorker) -> None
+        if self._sync_worker is not worker:
+            return
         self._sync_worker = None
         if self._sync_pending or self.learning_sync.has_deferred_changes:
             self._sync_pending = False

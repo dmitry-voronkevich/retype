@@ -1,6 +1,7 @@
 import json
 import os
 from pathlib import Path
+import sys
 from threading import Event, Thread
 from unittest.mock import patch
 import time
@@ -311,6 +312,26 @@ def test_managed_books_need_consent_are_content_addressed_and_never_auto_importe
     corrupt.write_bytes(b'not an epub')
     with pytest.raises(SyncError, match='corrupt'):
         sync.import_book(corrupt)
+
+
+def test_packaged_library_epubs_are_not_imported_even_with_consent(
+        tmp_path, monkeypatch):
+    root = tmp_path / 'folder'
+    sync, _ = _enable(tmp_path, 'one', root, config=_config())
+    sync.set_managed_library_consent(True)
+    bundled = tmp_path / 'packaged-library'
+    bundled.mkdir()
+    source = bundled / 'built-in.epub'
+    _epub(source)
+
+    from retype import resource_handler
+    monkeypatch.setattr(sys, 'frozen', True, raising=False)
+    monkeypatch.setattr(resource_handler, 'getLibraryPath', lambda: str(bundled))
+
+    with pytest.raises(SyncError, match='bundled EPUBs'):
+        sync.import_book(source)
+    assert not (root / 'books').exists()
+    assert source.exists()
 
 
 def test_managed_book_hash_mismatch_is_diagnosed_without_indexing_bad_bytes(tmp_path):
