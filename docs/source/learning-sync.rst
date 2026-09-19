@@ -46,8 +46,8 @@ Managed EPUB library
 --------------------
 
 No discovered library path is uploaded. To make a user EPUB available on other
-installations, first grant the displayed global managed-library consent, then
-select **Import EPUB into managed library…**. retype copies only that explicitly
+installations, first grant the displayed managed-library consent, then select
+**Import EPUB into managed library…**. retype copies only that explicitly
 selected book using a SHA-256 content address. Bundled EPUBs in packaged
 retype releases are never uploaded. When running from source, the checkout's
 ``library`` can also hold local EPUBs; an explicitly selected one still needs
