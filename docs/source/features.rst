@@ -9,7 +9,8 @@ Available features
 
 * :doc:`Customisation <customisation-dialog>`
 
-  * Customisable user dir path where the config and save files are stored
+  * Active data-folder and learning-sync controls (see :ref:`user-dir` and
+    :doc:`learning-sync`)
 
   * Customisable library load paths to load epubs from
 

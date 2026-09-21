@@ -33,10 +33,13 @@ class ChordMasteryStorage:
     to interpret.
     """
 
-    def __init__(self, user_dir=None):
-        # type: (str | None) -> None
+    def __init__(self, user_dir=None, on_change=None):
+        # type: (str | None, object | None) -> None
         self.path = os.path.join(user_dir, MASTERY_PROGRESS_FILENAME) \
             if user_dir else None
+        # A sync adapter receives already-persisted, local legacy state.  It
+        # never participates in lesson selection and can queue its own work.
+        self.on_change = on_change
         self._raw_data = {}  # type: dict[str, object]
         self._raw_progress = {}  # type: dict[object, object]
         self._raw_overrides = {}  # type: dict[str, bool]
@@ -54,7 +57,7 @@ class ChordMasteryStorage:
         try:
             with open(self.path, 'r', encoding='utf-8') as file:
                 data = json.load(file)
-        except (OSError, ValueError, TypeError) as error:
+        except (OSError, ValueError, TypeError, RecursionError) as error:
             self.writable = False
             logger.warning('Chord mastery progress is unreadable; preserving '
                            'it without overwriting: %s', error)
@@ -85,10 +88,8 @@ class ChordMasteryStorage:
                                'entry %r while preserving it on disk', key)
         return progress
 
-    def save(self, progress, overrides=None):
-        # type: (Mapping[str, int], Mapping[str, bool] | None) -> bool
-        if not self.path or not self.writable:
-            return False
+    def save(self, progress, overrides=None, notify=True):
+        # type: (Mapping[str, int], Mapping[str, bool] | None, bool) -> bool
         merged = dict(self._raw_progress)
         merged.update(progress)
         merged_overrides = dict(self._raw_overrides)
@@ -97,6 +98,10 @@ class ChordMasteryStorage:
             for key, mastered in overrides.items():
                 if isinstance(key, str) and key and isinstance(mastered, bool):
                     merged_overrides[key] = mastered
+        if not self.path or not self.writable:
+            if notify and callable(self.on_change):
+                self.on_change(dict(merged), dict(merged_overrides))
+            return False
         data = dict(self._raw_data)
         data['version'] = MASTERY_PROGRESS_FORMAT
         data['progress'] = merged
@@ -109,9 +114,13 @@ class ChordMasteryStorage:
                 json.dump(data, file, indent=2, sort_keys=True)
         except OSError as error:
             logger.warning('Unable to save chord mastery progress: %s', error)
+            if notify and callable(self.on_change):
+                self.on_change(dict(merged), dict(merged_overrides))
             return False
         self._raw_progress = merged
         self._raw_overrides = merged_overrides
+        if notify and callable(self.on_change):
+            self.on_change(dict(merged), dict(merged_overrides))
         return True
 
 
@@ -210,6 +219,23 @@ class ChordMasteryProgress:
         # type: () -> dict[str, ChordProgress]
         keys = set(self._uses) | set(self._manual_overrides)
         return {key: self.progress_for(key) for key in keys}
+
+    def apply_merged(self, uses, overrides):
+        # type: (ChordMasteryProgress, Mapping[str, int], Mapping[str, bool]) -> bool
+        merged_uses = dict(self._uses)
+        for key, count in uses.items():
+            if isinstance(key, str) and key and isinstance(count, int) and \
+                    not isinstance(count, bool) and count >= 0:
+                merged_uses[key] = max(merged_uses.get(key, 0), count)
+        merged_overrides = {
+            key: value for key, value in overrides.items()
+            if isinstance(key, str) and key and isinstance(value, bool)
+        }
+        saved = self.storage.save(merged_uses, merged_overrides, notify=False)
+        if saved:
+            self._uses = merged_uses
+            self._manual_overrides = merged_overrides
+        return saved
 
 
 @dataclass(frozen=True)
