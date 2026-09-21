@@ -91,6 +91,20 @@ class TestBookView:
         book_view.setChapterAction('34092834', 'm')
         assert book_view.called == ('setChapter', 34092834, True, True)
 
+    def test_setChapter_initialises_line_before_clearing_console(
+            self, monkeypatch):
+        book_view = _setup()
+        observed_state = []
+        monkeypatch.setattr(
+            book_view._controller.console, 'clear',
+            lambda: observed_state.append(
+                (book_view.chapter_pos, book_view.line_pos,
+                 book_view.current_line)))
+
+        book_view.setChapter(1, move_cursor=True)
+
+        assert observed_state == [(1, 0, 'waeofiaw\n')]
+
     def test_setChapterNegativeValues(self):
         book_view = _setup()
 

@@ -793,9 +793,13 @@ class BookView(QWidget):
             if getattr(self, 'stats_dock', None) is not None:
                 self.resetSessionStatistics()
         if move_cursor:
-            self._controller.console.clear()
             self.chapter_pos = pos
             self._initChapter(reset)
+            # Clearing emits Console.textChanged synchronously. Do it only
+            # after the new chapter's line state is valid; otherwise the
+            # highlighting service can try to advance the completed chapter
+            # again and recurse indefinitely.
+            self._controller.console.clear()
             if isspaceorempty(self.tobetyped):
                 logger.debug("Skipping empty chapter")
                 self.setChapter(pos + 1, move_cursor, automatic=automatic)
@@ -902,8 +906,7 @@ class BookView(QWidget):
     def _setLine(self, pos):
         # type: (BookView, int) -> None
         if self.tobetyped_list:
-            if self.line_pos is not None and \
-               self.line_pos > len(self.tobetyped_list):
+            if not 0 <= pos < len(self.tobetyped_list):
                 return logger.warning("line_pos out of range")
             if self.rdict:
                 self.current_line = ManifoldStr(
