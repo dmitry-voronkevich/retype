@@ -1,7 +1,10 @@
 import os
 import json
 import logging
+import re
 import traceback
+from hashlib import sha256
+from copy import deepcopy
 from lxml.html import fromstring, builder, tostring, xhtml_to_html
 from lxml.etree import _Element
 from ebooklib import epub
@@ -11,18 +14,60 @@ from typing import TYPE_CHECKING
 
 from retype.extras.space import isspaceorempty
 from retype.extras.hashing import generate_file_md5
+from retype.services.sync import (MAX_MANAGED_BOOK_BYTES, _is_epub_file,
+                                  _is_loadable_epub_file, _validate_save)
 
 logger = logging.getLogger(__name__)
 
+_MANAGED_BOOK_FILENAME = re.compile(r'^[0-9a-f]{64}\.epub$')
+
+
+def _is_within(path, root):
+    try:
+        return os.path.commonpath((os.path.realpath(path), root)) == root
+    except ValueError:
+        return False
+
+
+def _file_sha256(path):
+    digest = sha256()
+    with open(path, 'rb') as file:
+        for chunk in iter(lambda: file.read(1024 * 1024), b''):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def is_valid_managed_book(path, checksum):
+    try:
+        stat = os.stat(path)
+        return stat.st_size <= MAX_MANAGED_BOOK_BYTES and \
+            _file_sha256(path) == checksum and _is_loadable_epub_file(path)
+    except OSError:
+        return False
+
+
+def _save_position_key(data):
+    # type: (object) -> tuple[float, int, int] | None
+    data = _validate_save(data)
+    if data is None:
+        return None
+    return (data['progress'], data['chapter_pos'], data['persistent_pos'])
+
 
 class LibraryController(object):
-    def __init__(self, user_dir, library_paths):
-        # type: (LibraryController, str, list[str]) -> None
+    def __init__(self, user_dir, library_paths, managed_library_path=None,
+                 on_save=None, managed_library_consent=True):
+        # type: (LibraryController, str, list[str], str | None, object | None, bool) -> None
         self.user_dir = user_dir
-        self.library_paths = library_paths
-        self._library_items = self.indexLibrary(library_paths)
+        self.library_paths = list(library_paths)
+        self.managed_library_path = managed_library_path
+        self.managed_library_consent = bool(managed_library_consent)
+        self.on_save = on_save
+        self._library_items = self.indexLibrary(self.library_paths)
+        self.indexManagedLibrary(self._library_items)
         self.books = None  # type: dict[int, BookWrapper] | None
         self.save_file_contents = None  # type: Save | None
+        self._save_file_preserved = False
 
     @property
     def user_dir(self):
@@ -55,11 +100,22 @@ class LibraryController(object):
         book_checksum_list = []
         library_items = {}
         idn = 0
+        managed_root = os.path.realpath(self.managed_library_path) \
+            if self.managed_library_path else None
         for library_path in library_paths:
             for root, dirs, files in os.walk(library_path):
+                if managed_root is not None:
+                    if _is_within(root, managed_root):
+                        continue
+                    dirs[:] = [directory for directory in dirs
+                               if not _is_within(
+                                   os.path.join(root, directory), managed_root)]
                 for f in files:
                     if f.lower().endswith(".epub"):
                         path = os.path.join(root, f)
+                        if managed_root is not None and _is_within(
+                                path, managed_root):
+                            continue
                         checksum = self.checksum(path)
                         if not checksum or checksum in book_checksum_list:
                             continue
@@ -68,12 +124,207 @@ class LibraryController(object):
                         idn += 1
         return library_items
 
-    def instantiateBooks(self):
-        # type: (LibraryController) -> None
+    def _managed_index_path(self):
+        return os.path.join(self.managed_library_path,
+                            '.retype-managed-index.json')
+
+    def _load_managed_index(self):
+        try:
+            with open(self._managed_index_path(), 'r', encoding='utf-8') as file:
+                data = json.load(file)
+        except (OSError, ValueError, TypeError, RecursionError):
+            return {}
+        if not isinstance(data, dict):
+            return {}
+        return {
+            checksum: record for checksum, record in data.items()
+            if isinstance(checksum, str) and
+            _MANAGED_BOOK_FILENAME.fullmatch(checksum + '.epub') and
+            isinstance(record, dict) and isinstance(record.get('size'), int) and
+            isinstance(record.get('mtime_ns'), int) and
+            isinstance(record.get('ctime_ns'), int) and
+            isinstance(record.get('inode'), int)
+        }
+
+    def _save_managed_index(self, index):
+        temporary = self._managed_index_path() + '.tmp'
+        try:
+            with open(temporary, 'w', encoding='utf-8') as file:
+                json.dump(index, file, sort_keys=True)
+            os.replace(temporary, self._managed_index_path())
+        except (OSError, TypeError, ValueError):
+            try:
+                os.unlink(temporary)
+            except OSError:
+                pass
+
+    def indexManagedLibrary(self, library_items):
+        # type: (LibraryController, dict[int, LibraryItem]) -> None
+        if not self.managed_library_path or not self.managed_library_consent:
+            return
+        try:
+            index = self._load_managed_index()
+            index_changed = False
+            with os.scandir(self.managed_library_path) as entries:
+                managed_entries = sorted(entries, key=lambda entry: entry.name)
+                existing = {item.checksum for item in library_items.values()}
+                next_id = max(library_items, default=-1) + 1
+                for entry in managed_entries:
+                    if not entry.is_file() or not _MANAGED_BOOK_FILENAME.fullmatch(
+                            entry.name):
+                        continue
+                    checksum = entry.name[:-len('.epub')]
+                    try:
+                        stat = entry.stat()
+                        if stat.st_size > MAX_MANAGED_BOOK_BYTES:
+                            logger.warning('Ignoring oversized managed EPUB: %s',
+                                           entry.path)
+                            continue
+                        if not _is_epub_file(entry.path):
+                            logger.warning('Ignoring invalid managed EPUB: %s',
+                                           entry.path)
+                            continue
+                        record = index.get(checksum)
+                        unchanged = isinstance(record, dict) and \
+                            record.get('size') == stat.st_size and \
+                            record.get('mtime_ns') == stat.st_mtime_ns and \
+                            record.get('ctime_ns') == stat.st_ctime_ns and \
+                            record.get('inode') == stat.st_ino
+                        if not unchanged:
+                            index[checksum] = {
+                                'size': stat.st_size,
+                                'mtime_ns': stat.st_mtime_ns,
+                                'ctime_ns': stat.st_ctime_ns,
+                                'inode': stat.st_ino,
+                            }
+                            index_changed = True
+                    except OSError as error:
+                        logger.warning('Unable to verify managed EPUB %s: %s',
+                                       entry.path, error)
+                        continue
+                    if checksum in existing:
+                        continue
+                    library_items[next_id] = LibraryItem(
+                        next_id, entry.path, checksum)
+                    existing.add(checksum)
+                    next_id += 1
+            if index_changed:
+                self._save_managed_index(index)
+        except OSError:
+            return
+
+    def setManagedLibraryConsent(self, consent):
+        # type: (LibraryController, bool) -> None
+        consent = bool(consent)
+        if consent == self.managed_library_consent:
+            return
+        self.managed_library_consent = consent
+        if consent:
+            self.indexManagedLibrary(self._library_items)
+            return
+        managed_root = os.path.realpath(self.managed_library_path) \
+            if self.managed_library_path else None
+        managed_ids = [idn for idn, item in self._library_items.items()
+                       if managed_root is not None and
+                       _is_within(item.path, managed_root)]
+        for idn in managed_ids:
+            self._library_items.pop(idn, None)
+            if self.books is not None:
+                self.books.pop(idn, None)
+
+    def instantiateBooks(self, include_managed=True):
+        # type: (LibraryController, bool) -> None
         self.books = {}
+        if not include_managed and self._library_items:
+            self.loadSaveFile()
         for idn, item in self._library_items.items():
-            book = BookWrapper(item, self.load(item))
+            if not include_managed and _MANAGED_BOOK_FILENAME.fullmatch(
+                    item.checksum + '.epub'):
+                continue
+            save_data = _validate_save(self.load(item))
+            book = BookWrapper(item, save_data)
             self.books[idn] = book
+
+    def managedBookLoadData(self):
+        # type: (LibraryController) -> list[tuple[LibraryItem, SaveData | None]]
+        if not self.managed_library_consent:
+            return []
+        if self.save_file_contents is None:
+            self.loadSaveFile()
+        save = self.save_file_contents or {}
+        return [(item, _validate_save(deepcopy(save.get(item.checksum))))
+                for item in self._library_items.values()
+                if _MANAGED_BOOK_FILENAME.fullmatch(item.checksum + '.epub')]
+
+    def installManagedBooks(self, books):
+        # type: (LibraryController, dict[int, BookWrapper]) -> list[BookWrapper]
+        if self.books is None:
+            self.books = {}
+        if self.save_file_contents is None:
+            self.loadSaveFile()
+        existing = {book.checksum for book in self.books.values()}
+        installed = []
+        for idn, book in books.items():
+            if not book.valid:
+                self._library_items.pop(idn, None)
+            elif book.checksum in existing:
+                self._library_items.pop(idn, None)
+            else:
+                current = self.save_file_contents.get(book.checksum) \
+                    if self.save_file_contents else None
+                current = _validate_save(current)
+                if current is not None:
+                    book.save_data = current
+                    book.updateProgress(current['progress'])
+                self.books[idn] = book
+                existing.add(book.checksum)
+                installed.append(book)
+        return installed
+
+    def addManagedBooks(self, managed_books, validated_checksums=None,
+                        loaded_books=None):
+        # type: (LibraryController, dict[str, dict[str, object]], set[str] | None, dict[str, object] | None) -> list[BookWrapper]
+        if self.books is None or not self.managed_library_path or \
+                not self.managed_library_consent:
+            return []
+        existing = {book.checksum for book in self.books.values()}
+        next_id = max(self._library_items, default=-1) + 1
+        added = []
+        for checksum, metadata in managed_books.items():
+            if checksum in existing or not _MANAGED_BOOK_FILENAME.fullmatch(
+                    checksum + '.epub'):
+                continue
+            if not isinstance(metadata, dict) or metadata.get('digest') != checksum:
+                continue
+            path = os.path.join(self.managed_library_path, checksum + '.epub')
+            try:
+                stat = os.stat(path)
+                if stat.st_size > MAX_MANAGED_BOOK_BYTES or \
+                        stat.st_size != metadata.get('size'):
+                    logger.warning('Ignoring invalid managed EPUB: %s', path)
+                    continue
+                if checksum not in (validated_checksums or ()) and \
+                        (_file_sha256(path) != checksum or
+                         not _is_loadable_epub_file(path)):
+                    logger.warning('Ignoring invalid managed EPUB: %s', path)
+                    continue
+            except OSError as error:
+                logger.warning('Unable to verify managed EPUB %s: %s', path, error)
+                continue
+            item = LibraryItem(next_id, path, checksum)
+            loaded_book = (loaded_books or {}).get(checksum)
+            save_data = _validate_save(self.load(item))
+            book = BookWrapper(item, save_data, loaded_book,
+                               report_errors=False)
+            if not book.valid:
+                logger.warning('Ignoring invalid managed EPUB: %s', path)
+                continue
+            self._library_items[next_id] = item
+            self.books[next_id] = book
+            added.append(book)
+            existing.add(checksum)
+            next_id += 1
+        return added
 
     def setBook(self, book_id, book_view, switchView):
         # type: (LibraryController, int, BookView, pyqtBoundSignal) -> None
@@ -94,6 +345,30 @@ class LibraryController(object):
         switchView.emit(2)
         book_view.display.centreAroundCursor()
 
+    def applyMergedSave(self, merged_save):
+        # type: (LibraryController, Save) -> set[str]
+        if self.save_file_contents is None:
+            self.loadSaveFile()
+        assert self.save_file_contents is not None
+        changed = set()
+        for key, data in merged_save.items():
+            valid_data = _validate_save(data)
+            if valid_data is None:
+                continue
+            current = self.save_file_contents.get(key)
+            current_key = _save_position_key(current)
+            if current_key is None or current_key < _save_position_key(valid_data):
+                self.save_file_contents[key] = valid_data
+                changed.add(key)
+        if self.books is None:
+            return changed
+        for book in self.books.values():
+            data = _validate_save(self.save_file_contents.get(book.checksum))
+            if data is not None:
+                book.save_data = data
+                book.updateProgress(data['progress'])
+        return changed
+
     def save(self, book, data):
         # type: (LibraryController, BookWrapper, SaveData) -> bool
         book.save_data = data
@@ -106,10 +381,18 @@ class LibraryController(object):
         else:
             save = self.save_file_contents = {key: data}
 
+        if self._save_file_preserved:
+            logger.warning('Leaving unsupported save file untouched.')
+            if callable(self.on_save):
+                self.on_save(key, dict(data))
+            return False
+
+        saved = True
         try:
             with open(self.save_abs_path, 'w', encoding='utf-8') as f:
                 json.dump(save, f, indent=2)
-        except OSError as e:
+        except (OSError, ValueError, TypeError) as e:
+            saved = False
             s = 'Unable to save progress to disk.'
             if e is FileNotFoundError:
                 s += f' Unable to find user_dir {self._user_dir}.'
@@ -118,8 +401,9 @@ class LibraryController(object):
             msg.setDetailedText(f'Path: {self.save_abs_path}\n\n'
                                 f'{traceback.format_exc()}')
             msg.exec()
-            return False
-        return True
+        if callable(self.on_save):
+            self.on_save(key, dict(data))
+        return saved
 
     def migrateV1Save(self, save):
         # type: (LibraryController, Save) -> Save
@@ -161,24 +445,33 @@ class LibraryController(object):
 
     def loadSaveFile(self):
         # type: (LibraryController) -> Save
+        self._save_file_preserved = False
         if os.path.exists(self.save_abs_path):
             logger.info(f'Read save: {self.save_abs_path}')
             try:
                 with open(self.save_abs_path, 'r') as f:
                     save = json.load(f)  # type: Save
-            except OSError as e:
+            except (OSError, ValueError, TypeError, RecursionError) as e:
                 s = 'Unable to read save file.'
                 logger.error(f"{s}\n{e}", exc_info=True)
                 msg = QMessageBox(QMessageBox.Icon.Warning, 'retype', s)
                 msg.setDetailedText(f'Path: {self.save_abs_path}\n\n'
                                     f'{traceback.format_exc()}')
                 msg.exec()
+                # Keep the unreadable legacy copy for recovery; callers can
+                # continue with an empty in-memory library state.
+                self._save_file_preserved = True
+                save = {}
         else:
             logger.debug(
                 f'Save path {self.save_abs_path} not found.\n'
                 'This is normal if the save file has not been created yet.')
             save = {}
 
+        if not isinstance(save, dict):
+            logger.warning('Save file is not an object; preserving it and using empty progress.')
+            self._save_file_preserved = True
+            save = {}
         save = self.migrateV1Save(save)
         self.save_file_contents = save
         return save
@@ -208,14 +501,18 @@ class LibraryItem:
 
 
 class BookWrapper(object):
-    def __init__(self, library_item, save_data=None):
-        # type: (BookWrapper, LibraryItem, SaveData | None) -> None
+    def __init__(self, library_item, save_data=None, loaded_book=None,
+                 report_errors=True):
+        # type: (BookWrapper, LibraryItem, SaveData | None, object | None, bool) -> None
         self.valid = False
         self._library_item = library_item
         self.path = library_item.path
         self.idn = library_item.idn
         self.checksum = library_item.checksum
-        self._book = self._readEpub()
+        self._book = loaded_book if loaded_book is not None else self._readEpub(
+            report_errors)
+        if loaded_book is not None:
+            self.valid = True
         self.title = self._book.title
         self._chapters = []  # type: list[Chapter]
         self._images = []  # type: list[epub.EpubImage]
@@ -228,20 +525,21 @@ class BookWrapper(object):
         self.progress = save_data['progress'] if save_data else 0.0
         self.progress_subscribers = []  # type: list[Callable[[float], None]]
 
-    def _readEpub(self):
-        # type: (BookWrapper) -> epub.EpubBook
+    def _readEpub(self, report_errors=True):
+        # type: (BookWrapper, bool) -> epub.EpubBook
         ret = None
         try:
             ret = epub.read_epub(self.path, options={'ignore_ncx': True})
             self.valid = True
-        except (LookupError, OSError) as e:
+        except Exception as e:
             s = (f'Unable to read epub {self.idn}:\n{self.path}.\n\n'
                  'This is not fatal, but the book will not be loaded.')
             logger.error(f"{s}\n{e}", exc_info=True)
-            msg = QMessageBox(QMessageBox.Icon.Warning, 'retype', s)
-            msg.setDetailedText(f'Path: {self.path}\n\n'
-                                f'{traceback.format_exc()}')
-            msg.exec()
+            if report_errors:
+                msg = QMessageBox(QMessageBox.Icon.Warning, 'retype', s)
+                msg.setDetailedText(f'Path: {self.path}\n\n'
+                                    f'{traceback.format_exc()}')
+                msg.exec()
         return ret or epub.EpubBook()
 
     def _parseChaptersContent(self, chapters):

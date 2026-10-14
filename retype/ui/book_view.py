@@ -756,7 +756,7 @@ class BookView(QWidget):
         self.resetSessionStatistics()
 
         if self.autosave is None:
-            self.autosave = Autosave(self._console)
+            self.autosave = Autosave(self._console, parent=self)
             self.autosave.save.connect(self.maybeSave)
 
         complete = book.progress == 100
