@@ -74,6 +74,21 @@ class TestCustomisation:
 
         assert SafeConfig(str(tmp_path))['load_chords_on_startup'] is True
 
+    def test_ignore_capital_letters_default_and_persistence(self, tmp_path):
+        dialog = _setup()
+        key = 'ignore_capital_letters'
+
+        assert default_config[key] is False
+        assert dialog.selectors[key].isChecked() is False
+        dialog.selectors[key].set_(True)
+        assert dialog.config_edited[key] is True
+
+        config = SafeConfig(str(tmp_path))
+        config.raw[key] = True
+        config.save()
+
+        assert SafeConfig(str(tmp_path))[key] is True
+
     def test_auto_newline_check_uncheck(self):
         dialog = CustomisationDialog(default_config, FakeWindow(),
                                      None, None, None)

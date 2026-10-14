@@ -77,7 +77,8 @@ Config = TypedDict(
     {'user_dir': str, 'library_paths': list[str], 'icon_set': str,
      'prompt': str, 'console_font': str, 'sdict': SDict, 'rdict': RDict,
      'bookview': BookViewSettings, 'window': Geometry, 'auto_newline': bool,
-     'adaptive_chord_lessons': bool, 'adaptive_chord_lesson_limit': int,
+     'ignore_capital_letters': bool, 'adaptive_chord_lessons': bool,
+     'adaptive_chord_lesson_limit': int,
      'load_chords_on_startup': bool, 'steno': StenoSettings,
      'hide_sysconsole': bool},
     total=False)
@@ -86,7 +87,8 @@ Config = TypedDict(
 class ConfigKeyTypes:
     str = Literal['user_dir', 'icon_set', 'prompt', 'console_font']
     bool = Literal['adaptive_chord_lessons', 'auto_newline',
-                    'hide_sysconsole', 'load_chords_on_startup']
+                    'hide_sysconsole', 'ignore_capital_letters',
+                    'load_chords_on_startup']
     int = Literal['adaptive_chord_lesson_limit']
     liststr = Literal['library_paths']
     SDict = Literal['sdict']

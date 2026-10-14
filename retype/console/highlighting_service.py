@@ -7,27 +7,34 @@ from retype.extras.space import nrspacerstrip, endsinn
 logger = logging.getLogger(__name__)
 
 
-def compareStrings(str1, str2):
-    # type: (str | UserString, str | UserString) -> int
-    """Compare strings `str1' and `str2', returning index at which they stop
- matching"""
+def compareStrings(str1, str2, ignore_capital_letters=False):
+    # type: (str | UserString, str | UserString, bool) -> int
+    """Compare strings, returning the index at which they stop matching."""
     length_of_shorter_str = min([len(str1), len(str2)])
     for i, a, b in zip(range(length_of_shorter_str), str1, str2):
-        if a != b:
-            # Found character that doesn’t match; return index at which the
-            #  strings stopped matching
-            return i
+        if a == b:
+            continue
+        if ignore_capital_letters:
+            possibilities = getattr(b, 'possibilities', [str(b)])
+            if any(a.casefold() == possibility.casefold()
+                   for possibility in possibilities):
+                continue
+        # Found character that doesn’t match; return index at which the
+        # strings stopped matching.
+        return i
     # Full match up to end of shorter string
     return length_of_shorter_str
 
 
 class HighlightingService(object):
-    def __init__(self, console, book_view, auto_newline=True):
-        # type: (HighlightingService, Console, BookView, bool) -> None
+    def __init__(self, console, book_view, auto_newline=True,
+                 ignore_capital_letters=False):
+        # type: (HighlightingService, Console, BookView, bool, bool) -> None
         self._console = console
         self.book_view = book_view
         self._console.textChanged.connect(self._handleHighlighting)
         self.setAutoNewline(auto_newline)
+        self.setIgnoreCapitalLetters(ignore_capital_letters)
         self.wrong = False
         self.wrong_start = None  # type: int | None
         self.wrong_end = None  # type: int | None
@@ -54,7 +61,8 @@ class HighlightingService(object):
             return
 
         # Cursor position in the line
-        end_correctness_index = compareStrings(text, v.current_line)
+        end_correctness_index = compareStrings(
+            text, v.current_line, self.ignore_capital_letters)
         v.cursor_pos = v.persistent_pos + end_correctness_index
 
         self._handleMistakes(v, text, end_correctness_index)
@@ -66,10 +74,16 @@ class HighlightingService(object):
     def _maybeAdvance(self, v, text, require_enter=False):
         # type: (HighlightingService, BookView, str, bool) -> None
         # Next line / chapter, skipping trailing spaces if present
-        if text == v.current_line or text == nrspacerstrip(v.current_line):
+        if (self._stringsMatch(text, v.current_line) or
+                self._stringsMatch(text, nrspacerstrip(v.current_line))):
             if require_enter and endsinn(v.current_line):
                 return
             self.advanceLine()
+
+    def _stringsMatch(self, typed, expected):
+        # type: (HighlightingService, str, str | UserString) -> bool
+        return len(typed) == len(expected) and compareStrings(
+            typed, expected, self.ignore_capital_letters) == len(expected)
 
     def _handleMistakes(self, v, text, end_correctness_index):
         # type: (HighlightingService, BookView, str, int) -> None
@@ -180,6 +194,10 @@ error: {}'.format(v.line_pos, len(v.tobetyped_list), e))
                 pass
         else:
             self._console.submitted.connect(self.handleSubmit)
+
+    def setIgnoreCapitalLetters(self, ignore_capital_letters):
+        # type: (HighlightingService, bool) -> None
+        self.ignore_capital_letters = ignore_capital_letters
 
     def handleSubmit(self, text):
         # type: (HighlightingService, str) -> None

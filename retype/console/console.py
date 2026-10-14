@@ -84,14 +84,15 @@ class Console(LineEdit):
                      loadBook,  # type: pyqtBoundSignal
                      customise,  # type: pyqtBoundSignal
                      about,  # type: pyqtBoundSignal
-                     auto_newline  # type: bool
+                     auto_newline,  # type: bool
+                     ignore_capital_letters=False  # type: bool
                      ):
         # type: (...) -> None
         self.command_service = CommandService(
             self, book_view, switchView, loadBook, self._prompt, customise,
             about)
         self.highlighting_service = HighlightingService(
-            self, book_view, auto_newline)
+            self, book_view, auto_newline, ignore_capital_letters)
 
     def _handleReturnPressed(self):
         # type: (Console) -> None

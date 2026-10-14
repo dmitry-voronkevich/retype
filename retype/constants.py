@@ -77,6 +77,7 @@ default_config = {
         "save_splitters_on_quit": True
     },
     "auto_newline": True,
+    "ignore_capital_letters": False,
     "adaptive_chord_lessons": True,
     "adaptive_chord_lesson_limit": 5,
     "load_chords_on_startup": True,

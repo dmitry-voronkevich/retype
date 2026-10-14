@@ -59,6 +59,15 @@ state. The table is refreshed from current loaded chords and mastery progress
 each time the dialog is shown, including when an existing dialog is reopened;
 pending manual changes remain pending while the measured progress is refreshed.
 
+Typing
+------
+
+Ignore capital letters when checking typed text
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+When enabled, uppercase and lowercase letters are accepted as the same
+character while typing. This option is disabled by default.
+
 Console
 -------
 
