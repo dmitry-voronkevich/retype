@@ -142,6 +142,32 @@ class TestHighlightingService:
         console.setText("next line")
         assert cursor.position() == 26
 
+    def test_capital_letters_are_case_sensitive_by_default(self):
+        (console, _, service, cursor) = _setup()
+
+        console.setText("S")
+
+        assert cursor.position() == 0
+        assert service.wrong is True
+
+    def test_capital_letters_can_be_ignored(self):
+        (console, _, service, cursor) = _setup()
+        service.setIgnoreCapitalLetters(True)
+
+        console.setText("SoMe")
+
+        assert cursor.position() == 4
+        assert service.wrong is False
+
+    def test_ignoring_capital_letters_advances_completed_line(self):
+        (console, _, service, cursor) = _setup()
+        service.setIgnoreCapitalLetters(True)
+
+        console.setText("SoMe TeSt TeXt")
+
+        assert cursor.position() == 15
+        assert service.wrong is False
+
     def test_skipEmptyLines(self):
         (console, _, service, cursor) = _setup(SAMPLE_CONTENT2)
 

@@ -329,7 +329,8 @@ class MainController(QObject):
                                   self.loadBookRequested,
                                   self.customisationDialogRequested,
                                   self.aboutDialogRequested,
-                                  self.config['auto_newline'])
+                                  self.config['auto_newline'],
+                                  self.config['ignore_capital_letters'])
 
     def _verifyUserDir(self):
         # type: (MainController) -> None
@@ -393,6 +394,7 @@ class MainController(QObject):
         hs = self.console.highlighting_service
         if hs:
             hs.setAutoNewline(config['auto_newline'])
+            hs.setIgnoreCapitalLetters(config['ignore_capital_letters'])
 
         # Update library’s user_dir
         self.library.user_dir = config['user_dir']

@@ -168,6 +168,7 @@ class CustomisationDialog(QDialog):
         catw.add("User interface", "Console", self._consoleSettings())
         catw.add("User interface", "Book View", self._bookviewSettings())
         catw.add("User interface", "Window geometry", self._windowSettings())
+        catw.add("Typing", "Text matching", self._typingSettings())
         catw.add("Behaviour", "Line splits", self._sdictSettings())
         catw.add("Behaviour", "Replacements", self._rdictSettings())
         catw.add("Games", "Learn Stenography", self._stenoSettings())
@@ -409,6 +410,21 @@ class CustomisationDialog(QDialog):
 
         pcon.setMinimumWidth(50)
         return pcon
+
+    def _typingSettings(self):
+        # type: (CustomisationDialog) -> QWidget
+        ptyping = QWidget()
+        lyt = QFormLayout(ptyping)
+        ignore_capital_letters = CheckBox(
+            "Ignore capital letters when checking typed text",
+            self.config_edited['ignore_capital_letters'])
+        ignore_capital_letters.changed.connect(
+            lambda value: self.update_('ignore_capital_letters', value))
+        self.selectors['ignore_capital_letters'] = ignore_capital_letters
+        lyt.addRow(ignore_capital_letters)
+        lyt.addRow(descl("When enabled, uppercase and lowercase letters are "
+                         "accepted as the same character."))
+        return ptyping
 
     def _sdictSettings(self):
         # type: (CustomisationDialog) -> QWidget
