@@ -1,0 +1,3038 @@
+"""Provider-neutral learning-state synchronization for ordinary folders.
+
+The sync protocol deliberately knows nothing about iCloud, accounts, or a
+network.  A provider merely makes a user-selected directory appear locally.
+Every installation owns one replica file, so an eventually-consistent provider
+never has to merge a shared ``save.json`` file.
+"""
+from __future__ import annotations
+
+from copy import deepcopy
+from dataclasses import dataclass, field
+from hashlib import md5, sha256
+import json
+import logging
+import os
+from pathlib import Path
+import re
+import shutil
+import tempfile
+import threading
+import time
+import zipfile
+from math import isfinite
+from typing import Mapping
+from uuid import UUID, uuid4
+
+from ebooklib import epub
+
+
+logger = logging.getLogger(__name__)
+
+SYNC_SCHEMA = 'retype-learning-sync-replica'
+COLLECTION_SCHEMA = 'retype-learning-sync-collection'
+BOOTSTRAP_SCHEMA = 'retype-local-sync-bootstrap'
+SYNC_VERSION = 1
+MAX_REPLICA_BYTES = 5 * 1024 * 1024
+MAX_DEFERRED_BYTES = MAX_REPLICA_BYTES
+MAX_DEFERRED_PARTS = 1024
+MAX_PUBLISHED_ANCESTRY = 1024
+MAX_HLC_FUTURE_MS = 24 * 60 * 60 * 1000
+MAX_HLC_COUNTER = 1_000_000
+MAX_MANAGED_BOOK_BYTES = 100 * 1024 * 1024
+MAX_MANAGED_LIBRARY_BYTES = 1024 * 1024 * 1024
+MAX_BACKUPS = 5
+VALID_SETTINGS = (
+    'sdict', 'rdict', 'auto_newline', 'adaptive_chord_lessons',
+    'adaptive_chord_lesson_limit', 'steno.kdict',
+)
+_BOOK_IDENTITY = re.compile(r'^(?:[0-9a-f]{32}|[0-9a-f]{64})$')
+_SHA256 = re.compile(r'^[0-9a-f]{64}$')
+
+
+class SyncError(RuntimeError):
+    """An expected sync/recovery condition, safe to show to the user."""
+
+
+class ValidationError(SyncError):
+    """An untrusted file does not satisfy the current protocol."""
+
+
+@dataclass(frozen=True, order=True)
+class HLC:
+    """Small serialisable hybrid logical clock used for deterministic LWW."""
+
+    wall_ms: int
+    counter: int
+
+    def to_data(self) -> dict[str, int]:
+        return {'wall_ms': self.wall_ms, 'counter': self.counter}
+
+    @classmethod
+    def from_data(cls, data: object) -> 'HLC':
+        if not isinstance(data, dict):
+            raise ValidationError('timestamp is not an object')
+        wall = data.get('wall_ms')
+        counter = data.get('counter')
+        if (not _is_int(wall) or wall < 0 or
+                wall > int(time.time() * 1000) + MAX_HLC_FUTURE_MS or
+                not _is_int(counter) or counter < 0 or
+                counter > MAX_HLC_COUNTER):
+            raise ValidationError('timestamp is malformed')
+        return cls(wall, counter)
+
+
+@dataclass
+class SyncStatus:
+    state: str = 'local-only'
+    message: str = 'Sync is off. Learning data is stored only on this device.'
+    last_checked: float | None = None
+    diagnostics: list[str] = field(default_factory=list)
+
+
+@dataclass
+class SyncResult:
+    status: SyncStatus
+    save: dict[str, dict[str, object]] = field(default_factory=dict)
+    chord_counts: dict[str, int] = field(default_factory=dict)
+    chord_overrides: dict[str, bool] = field(default_factory=dict)
+    chord_override_registers: dict[str, dict[str, object]] = field(default_factory=dict)
+    settings: dict[str, object] = field(default_factory=dict)
+    settings_registers: dict[str, dict[str, object]] = field(default_factory=dict)
+    settings_revisions: dict[str, int] = field(default_factory=dict)
+    managed_books: dict[str, dict[str, object]] = field(default_factory=dict)
+    # Kept separate from ``save`` because legacy BookView accepts every save
+    # mapping key as an attribute.  V1 opens the furthest position, while this
+    # retained LWW value makes a later "recent position" recovery UX possible.
+    book_resumes: dict[str, dict[str, object]] = field(default_factory=dict)
+    managed_books_materialized: bool = False
+    legacy_materialized: bool = False
+    managed_books_ready: set[str] = field(default_factory=set)
+    managed_books_loaded: dict[str, object] = field(default_factory=dict)
+    chord_materialized: bool = False
+    chord_revision: int = 0
+
+
+def _is_int(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _valid_count_map(value: object) -> dict[str, int]:
+    if not isinstance(value, dict):
+        return {}
+    return {
+        key: count for key, count in value.items()
+        if isinstance(key, str) and key and _is_int(count) and count >= 0
+    }
+
+
+def _valid_override_map(value: object) -> dict[str, bool]:
+    if not isinstance(value, dict):
+        return {}
+    return {
+        key: mastered for key, mastered in value.items()
+        if isinstance(key, str) and key and isinstance(mastered, bool)
+    }
+
+
+def _valid_count_map_strict(value: object) -> bool:
+    return isinstance(value, dict) and all(
+        isinstance(key, str) and key and _is_int(count) and count >= 0
+        for key, count in value.items())
+
+
+def _valid_override_map_strict(value: object) -> bool:
+    return isinstance(value, dict) and all(
+        isinstance(key, str) and key and isinstance(mastered, bool)
+        for key, mastered in value.items())
+
+
+def _valid_settings_config(value: object) -> bool:
+    if not isinstance(value, dict):
+        return False
+    for name in VALID_SETTINGS:
+        if name == 'steno.kdict':
+            if 'steno' not in value:
+                continue
+            steno = value['steno']
+            if not isinstance(steno, dict):
+                return False
+            if 'kdict' in steno and not _validate_settings_value(
+                    name, steno['kdict']):
+                return False
+        elif name in value and not _validate_settings_value(name, value[name]):
+            return False
+    return True
+
+
+def _valid_override_register_map(value: object) -> dict[str, dict[str, object]]:
+    if not isinstance(value, dict):
+        return {}
+    return {
+        key: dict(register) for key, register in value.items()
+        if isinstance(key, str) and key and isinstance(register, dict) and
+        (register.get('value') is None or isinstance(register.get('value'), bool)) and
+        _register_stamp(register) is not None
+    }
+
+
+def _valid_settings_register_map(value: object) -> dict[str, dict[str, object]]:
+    if not isinstance(value, dict):
+        return {}
+    return {
+        key: dict(register) for key, register in value.items()
+        if isinstance(key, str) and key in VALID_SETTINGS and
+        isinstance(register, dict) and
+        _validate_settings_value(key, register.get('value')) and
+        _register_stamp(register) is not None
+    }
+
+
+def _valid_published_ancestry(value: object) -> dict[str, tuple[int, str | None]]:
+    if not isinstance(value, list):
+        return {}
+    result = {}
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        digest = item.get('payload_digest')
+        sequence = item.get('sequence')
+        predecessor = item.get('predecessor_digest')
+        if (not isinstance(digest, str) or not _SHA256.fullmatch(digest) or
+                not _is_int(sequence) or sequence < 1 or
+                (predecessor is not None and
+                 (not isinstance(predecessor, str) or
+                  not _SHA256.fullmatch(predecessor)))):
+            continue
+        result[digest] = (sequence, predecessor)
+    if len(result) > MAX_PUBLISHED_ANCESTRY:
+        result = dict(sorted(
+            result.items(), key=lambda item: (item[1][0], item[0]),
+            reverse=True)[:MAX_PUBLISHED_ANCESTRY])
+    return result
+
+
+def _json_bytes(data: object) -> bytes:
+    try:
+        return json.dumps(data, sort_keys=True, separators=(',', ':'),
+                          ensure_ascii=False).encode('utf-8')
+    except UnicodeEncodeError as error:
+        raise ValidationError('JSON contains invalid Unicode') from error
+    except RecursionError as error:
+        raise ValidationError('JSON is too deeply nested') from error
+
+
+def _digest(data: object) -> str:
+    return sha256(_json_bytes(data)).hexdigest()
+
+
+def _local_chord_counts_digest(local_chord_counts: Mapping[str, int]) -> str:
+    return _digest(dict(local_chord_counts))
+
+
+def _valid_local_chord_counts(data: Mapping[str, object]) -> bool:
+    local_counts = data.get('local_chord_counts')
+    digest = data.get('local_chord_counts_digest')
+    return (_valid_count_map_strict(local_counts) and
+            isinstance(digest, str) and _SHA256.fullmatch(digest) is not None and
+            _local_chord_counts_digest(local_counts) == digest)
+
+
+def _safe_basename(value: object) -> str | None:
+    if not isinstance(value, str) or not value or len(value) > 512:
+        return None
+    name = os.path.basename(value)
+    if name != value or name in ('.', '..'):
+        return None
+    return name
+
+
+def _read_json(path: Path, maximum: int = MAX_REPLICA_BYTES) -> object:
+    try:
+        if path.stat().st_size > maximum:
+            raise ValidationError('file exceeds the size limit')
+        with path.open('r', encoding='utf-8') as file:
+            return json.load(file)
+    except ValidationError:
+        raise
+    except (OSError, ValueError, TypeError, RecursionError) as error:
+        raise ValidationError(str(error)) from error
+
+
+def atomic_write_json(path: Path, data: object, backup_dir: Path | None = None,
+                      max_backups: int = MAX_BACKUPS) -> None:
+    """Durably replace JSON in one filesystem directory.
+
+    The provider only observes a completed rename.  Previous bytes are copied
+    to a bounded *local* recovery directory before replacement, never into the
+    selected sync folder.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if backup_dir is not None and path.exists():
+        try:
+            backup_dir.mkdir(parents=True, exist_ok=True)
+            stamp = '{}-{}'.format(int(time.time() * 1000), uuid4().hex[:8])
+            backup = backup_dir / '{}.{}.bak'.format(path.name, stamp)
+            shutil.copy2(path, backup)
+            backups = sorted(backup_dir.glob(path.name + '.*.bak'),
+                             key=lambda item: item.stat().st_mtime,
+                             reverse=True)
+            for stale in backups[max_backups:]:
+                stale.unlink(missing_ok=True)
+        except OSError as error:
+            # A backup failure must not turn a healthy local write into a
+            # destructive truncate/write operation.  Continue with replace
+            # and leave a diagnostic in the normal log.
+            logger.warning('Could not create sync backup for %s: %s', path, error)
+
+    descriptor = None
+    temporary = None
+    try:
+        descriptor, temporary = tempfile.mkstemp(
+            prefix='.' + path.name + '.', suffix='.tmp', dir=str(path.parent))
+        with os.fdopen(descriptor, 'wb') as file:
+            descriptor = None
+            file.write(_json_bytes(data))
+            file.flush()
+            os.fsync(file.fileno())
+        os.replace(temporary, path)
+        temporary = None
+        try:
+            directory = os.open(str(path.parent), os.O_RDONLY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
+        except OSError:
+            # Not every platform/filesystem permits fsync on a directory.
+            pass
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        if temporary is not None:
+            try:
+                os.unlink(temporary)
+            except OSError:
+                pass
+
+
+def _atomic_write_bytes(path: Path, data: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor = None
+    temporary = None
+    try:
+        descriptor, temporary = tempfile.mkstemp(
+            prefix='.' + path.name + '.', suffix='.tmp', dir=str(path.parent))
+        with os.fdopen(descriptor, 'wb') as file:
+            descriptor = None
+            file.write(data)
+            file.flush()
+            os.fsync(file.fileno())
+        os.replace(temporary, path)
+        temporary = None
+        try:
+            directory = os.open(str(path.parent), os.O_RDONLY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
+        except OSError:
+            pass
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        if temporary is not None:
+            try:
+                os.unlink(temporary)
+            except OSError:
+                pass
+
+
+def _copy_atomic(source: Path, destination: Path,
+                 expected_digest: str | None = None,
+                 expected_size: int | None = None) -> None:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    descriptor = None
+    temporary = None
+    try:
+        descriptor, temporary = tempfile.mkstemp(
+            prefix='.' + destination.name + '.', suffix='.tmp',
+            dir=str(destination.parent))
+        with source.open('rb') as input_file, os.fdopen(descriptor, 'wb') as output:
+            descriptor = None
+            shutil.copyfileobj(input_file, output, length=1024 * 1024)
+            output.flush()
+            os.fsync(output.fileno())
+        temporary_path = Path(temporary)
+        if expected_size is not None and temporary_path.stat().st_size != expected_size:
+            raise OSError('copied file size does not match its metadata')
+        if expected_digest is not None and _file_sha256(temporary_path) != expected_digest:
+            raise OSError('copied file digest does not match its metadata')
+        os.replace(temporary, destination)
+        temporary = None
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        if temporary is not None:
+            try:
+                os.unlink(temporary)
+            except OSError:
+                pass
+
+
+def _file_md5(path: Path) -> str:
+    digest = md5()
+    with path.open('rb') as file:
+        for chunk in iter(lambda: file.read(1024 * 1024), b''):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _empty_payload() -> dict[str, object]:
+    return {
+        'books': {},
+        'chords': {'counts': {}, 'overrides': {}},
+        'settings': {},
+        'managed_books': {},
+    }
+
+
+def _progress_key(data: Mapping[str, object]) -> tuple[float, int, int]:
+    """Order a legacy save by overall progress before chapter-local offset."""
+    return (float(data['progress']), int(data['chapter_pos']),
+            int(data['persistent_pos']))
+
+
+def _validate_save(data: object) -> dict[str, object] | None:
+    if not isinstance(data, dict):
+        return None
+    persistent = data.get('persistent_pos')
+    chapter = data.get('chapter_pos')
+    progress = data.get('progress')
+    if (not _is_int(persistent) or persistent < 0 or not _is_int(chapter) or
+            chapter < 0 or not isinstance(progress, (int, float)) or
+            isinstance(progress, bool) or progress < 0 or progress > 100):
+        return None
+    try:
+        progress_value = float(progress)
+    except (OverflowError, ValueError):
+        return None
+    if not isfinite(progress_value):
+        return None
+    out: dict[str, object] = {
+        'persistent_pos': persistent,
+        'chapter_pos': chapter,
+        'progress': progress_value,
+    }
+    friendly = _safe_basename(data.get('friendly_name'))
+    if friendly is not None:
+        out['friendly_name'] = friendly
+    return out
+
+
+def _validate_settings_value(name: str, value: object) -> bool:
+    if name == 'auto_newline' or name == 'adaptive_chord_lessons':
+        return isinstance(value, bool)
+    if name == 'adaptive_chord_lesson_limit':
+        return _is_int(value) and 1 <= value <= 99
+    if name == 'sdict':
+        return isinstance(value, dict) and all(
+            isinstance(key, str) and isinstance(item, dict) and
+            isinstance(item.get('keep'), bool) for key, item in value.items())
+    if name == 'rdict':
+        return isinstance(value, dict) and all(
+            isinstance(key, str) and isinstance(item, list) and
+            all(isinstance(part, str) for part in item)
+            for key, item in value.items())
+    if name == 'steno.kdict':
+        return isinstance(value, dict) and all(
+            isinstance(key, str) and isinstance(item, list) and
+            all(isinstance(part, str) for part in item)
+            for key, item in value.items())
+    return False
+
+
+def learning_settings_from_config(config: Mapping[str, object]) -> dict[str, object]:
+    """Return only typed, portable learning preferences from a mixed config."""
+    result = {}
+    for name in VALID_SETTINGS:
+        if name == 'steno.kdict':
+            steno = config.get('steno')
+            value = steno.get('kdict') if isinstance(steno, dict) else None
+        else:
+            value = config.get(name)
+        if _validate_settings_value(name, value):
+            result[name] = deepcopy(value)
+    return result
+
+
+def apply_learning_settings(config: Mapping[str, object],
+                            settings: Mapping[str, object]) -> dict[str, object]:
+    """Apply the allowlisted settings without ever touching local-only keys."""
+    result = deepcopy(dict(config))
+    for name, value in settings.items():
+        if name not in VALID_SETTINGS or not _validate_settings_value(name, value):
+            continue
+        if name == 'steno.kdict':
+            steno = result.get('steno')
+            if not isinstance(steno, dict):
+                steno = {}
+                result['steno'] = steno
+            steno['kdict'] = deepcopy(value)
+        else:
+            result[name] = deepcopy(value)
+    return result
+
+
+def _register_stamp(value: object) -> tuple[HLC, str] | None:
+    if not isinstance(value, dict):
+        return None
+    try:
+        stamp = HLC.from_data(value.get('hlc'))
+    except ValidationError:
+        return None
+    replica_id = value.get('replica_id')
+    if not _valid_uuid(replica_id):
+        return None
+    return stamp, replica_id
+
+
+def _valid_uuid(value: object) -> bool:
+    if not isinstance(value, str):
+        return False
+    try:
+        UUID(value)
+    except (ValueError, AttributeError):
+        return False
+    return True
+
+
+def validate_envelope(data: object, collection_id: str | None = None) -> dict[str, object]:
+    """Validate an untrusted replica before it can influence local state."""
+    if not isinstance(data, dict):
+        raise ValidationError('replica is not a JSON object')
+    if data.get('schema') != SYNC_SCHEMA or data.get('version') != SYNC_VERSION:
+        raise ValidationError('unsupported replica schema/version')
+    if not _valid_uuid(data.get('collection_id')):
+        raise ValidationError('replica has no valid collection id')
+    if collection_id is not None and data['collection_id'] != collection_id:
+        raise ValidationError('replica belongs to another collection')
+    if not _valid_uuid(data.get('replica_id')):
+        raise ValidationError('replica has no valid replica id')
+    if not _is_int(data.get('sequence')) or data['sequence'] < 1:
+        raise ValidationError('replica sequence is invalid')
+    HLC.from_data(data.get('hlc'))
+    predecessor = data.get('predecessor_digest')
+    if predecessor is not None and (not isinstance(predecessor, str) or
+                                   not _SHA256.fullmatch(predecessor)):
+        raise ValidationError('replica predecessor digest is invalid')
+    payload = data.get('payload')
+    digest = data.get('payload_digest')
+    local_counts = data.get('local_chord_counts')
+    local_counts_digest = data.get('local_chord_counts_digest')
+    if not isinstance(payload, dict) or not isinstance(digest, str) or \
+            not _SHA256.fullmatch(digest) or _digest(payload) != digest:
+        raise ValidationError('replica payload digest does not match')
+    if local_counts is not None and not _valid_count_map_strict(local_counts):
+        raise ValidationError('local chord counts are malformed')
+    if local_counts_digest is not None and \
+            (local_counts is None or not isinstance(local_counts_digest, str) or
+             not _SHA256.fullmatch(local_counts_digest) or
+             _local_chord_counts_digest(local_counts) != local_counts_digest):
+        raise ValidationError('local chord counts digest does not match')
+    _validate_payload(payload)
+    return data
+
+
+def _validate_payload(payload: Mapping[str, object]) -> None:
+    books = payload.get('books', {})
+    if not isinstance(books, dict):
+        raise ValidationError('books is malformed')
+    for identity, entry in books.items():
+        if not isinstance(identity, str) or not _BOOK_IDENTITY.fullmatch(identity) or \
+                not isinstance(entry, dict) or _validate_save(entry) is None:
+            raise ValidationError('book progress is malformed')
+        last = entry.get('last_resume')
+        if last is not None:
+            if not isinstance(last, dict) or _validate_save(last) is None or \
+                    _register_stamp(last) is None:
+                raise ValidationError('book resume marker is malformed')
+
+    chords = payload.get('chords', {})
+    if not isinstance(chords, dict):
+        raise ValidationError('chords is malformed')
+    counts = chords.get('counts', {})
+    overrides = chords.get('overrides', {})
+    if not isinstance(counts, dict) or not isinstance(overrides, dict):
+        raise ValidationError('chord data is malformed')
+    for key, count in counts.items():
+        if not isinstance(key, str) or not key or not _is_int(count) or count < 0:
+            raise ValidationError('chord count is malformed')
+    for key, register in overrides.items():
+        value = register.get('value') if isinstance(register, dict) else None
+        if not isinstance(key, str) or not key or not isinstance(register, dict) or \
+                (value is not None and not isinstance(value, bool)) or \
+                _register_stamp(register) is None:
+            raise ValidationError('chord override is malformed')
+
+    settings = payload.get('settings', {})
+    if not isinstance(settings, dict):
+        raise ValidationError('settings is malformed')
+    for key, register in settings.items():
+        if not isinstance(key, str) or key not in VALID_SETTINGS or \
+                not isinstance(register, dict) or \
+                not _validate_settings_value(key, register.get('value')) or \
+                _register_stamp(register) is None:
+            raise ValidationError('learning setting is malformed')
+
+    applied_deferred = payload.get('_applied_deferred', [])
+    if not isinstance(applied_deferred, list) or any(
+            not isinstance(item, str) or not _valid_uuid(item)
+            for item in applied_deferred):
+        raise ValidationError('deferred application markers are malformed')
+
+    books_meta = payload.get('managed_books', {})
+    if not isinstance(books_meta, dict):
+        raise ValidationError('managed books is malformed')
+    for digest, metadata in books_meta.items():
+        if not isinstance(digest, str) or not _SHA256.fullmatch(digest) or \
+                not _validate_book_metadata(digest, metadata):
+            raise ValidationError('managed book metadata is malformed')
+
+
+def _validate_book_metadata(digest: str, metadata: object) -> bool:
+    if not isinstance(metadata, dict):
+        return False
+    return (metadata.get('schema') == 1 and metadata.get('digest') == digest and
+            _safe_basename(metadata.get('original_filename')) is not None and
+            isinstance(metadata.get('title'), str) and
+            len(metadata['title']) <= 512 and _is_int(metadata.get('size')) and
+            0 < metadata['size'] <= MAX_MANAGED_BOOK_BYTES)
+
+
+def merge_replicas(replicas: list[Mapping[str, object]]) -> SyncResult:
+    """Merge complete envelopes; reductions are commutative and idempotent."""
+    # A folder provider can briefly expose duplicate/conflict-copy files.  One
+    # component per replica identity is counted at most once.  Equal sequence
+    # conflicts are deterministic here; a local owner additionally performs
+    # the stronger replica-fork recovery in ``_publish``.
+    unique: dict[str, Mapping[str, object]] = {}
+    for envelope in replicas:
+        replica_id = str(envelope['replica_id'])
+        previous = unique.get(replica_id)
+        if previous is None or int(envelope['sequence']) > int(previous['sequence']) or \
+                (int(envelope['sequence']) == int(previous['sequence']) and
+                 str(envelope['payload_digest']) > str(previous['payload_digest'])):
+            unique[replica_id] = envelope
+
+    book_candidates: dict[str, list[tuple[dict[str, object], HLC, str]]] = {}
+    resume_candidates: dict[str, list[tuple[dict[str, object], HLC, str]]] = {}
+    chord_counts: dict[str, int] = {}
+    chord_registers: dict[str, tuple[HLC, str, object]] = {}
+    setting_registers: dict[str, tuple[HLC, str, object]] = {}
+    managed: dict[str, dict[str, object]] = {}
+
+    for envelope in unique.values():
+        replica_id = str(envelope['replica_id'])
+        payload = envelope['payload']
+        assert isinstance(payload, dict)
+        envelope_stamp = HLC.from_data(envelope['hlc'])
+        books = payload.get('books', {})
+        assert isinstance(books, dict)
+        for identity, item in books.items():
+            assert isinstance(identity, str) and isinstance(item, dict)
+            candidate = _validate_save(item)
+            if candidate is not None:
+                # The envelope timestamp is a deterministic tie breaker for
+                # legacy-style maximum position entries.
+                book_candidates.setdefault(identity, []).append(
+                    (candidate, envelope_stamp, replica_id))
+            last = item.get('last_resume')
+            if isinstance(last, dict):
+                last_save = _validate_save(last)
+                stamp_data = _register_stamp(last)
+                if last_save is not None and stamp_data is not None:
+                    stamp, author = stamp_data
+                    resume_candidates.setdefault(identity, []).append(
+                        (last_save, stamp, author))
+
+        chords = payload.get('chords', {})
+        assert isinstance(chords, dict)
+        counts = chords.get('counts', {})
+        overrides = chords.get('overrides', {})
+        assert isinstance(counts, dict) and isinstance(overrides, dict)
+        for key, count in counts.items():
+            assert isinstance(key, str) and _is_int(count)
+            # One scalar belongs to one replica.  Sum one contribution from
+            # each independently owned replica (a G-counter reduction).
+            chord_counts[key] = chord_counts.get(key, 0) + count
+        for key, register in overrides.items():
+            assert isinstance(key, str) and isinstance(register, dict)
+            stamp_data = _register_stamp(register)
+            assert stamp_data is not None
+            stamp, author = stamp_data
+            candidate = (stamp, author, register.get('value'))
+            if key not in chord_registers or candidate[:2] > chord_registers[key][:2]:
+                chord_registers[key] = candidate
+
+        settings = payload.get('settings', {})
+        assert isinstance(settings, dict)
+        for key, register in settings.items():
+            assert isinstance(key, str) and isinstance(register, dict)
+            stamp_data = _register_stamp(register)
+            assert stamp_data is not None
+            stamp, author = stamp_data
+            candidate = (stamp, author, register.get('value'))
+            if key not in setting_registers or candidate[:2] > setting_registers[key][:2]:
+                setting_registers[key] = candidate
+
+        metas = payload.get('managed_books', {})
+        assert isinstance(metas, dict)
+        for digest, metadata in metas.items():
+            assert isinstance(digest, str) and isinstance(metadata, dict)
+            # Identical digests must have identical bytes; deterministic
+            # metadata selection prevents filename/title races changing data.
+            prior = managed.get(digest)
+            if prior is None or _json_bytes(metadata) < _json_bytes(prior):
+                managed[digest] = deepcopy(metadata)
+
+    save = {}
+    book_resumes = {}
+    for identity, candidates in book_candidates.items():
+        # Furthest *overall* progress wins. ``persistent_pos`` is only an
+        # offset inside one chapter, so it is deliberately the final tie-break.
+        chosen, _, _ = max(candidates, key=lambda value: (
+            _progress_key(value[0]), value[1], value[2]))
+        save[identity] = chosen
+    for identity, candidates in resume_candidates.items():
+        resume, _, _ = max(candidates, key=lambda value: (value[1], value[2]))
+        book_resumes[identity] = resume
+
+    overrides = {
+        key: value for key, (_, _, value) in chord_registers.items()
+        if isinstance(value, bool)
+    }
+    override_registers = {
+        key: {'value': value, 'hlc': stamp.to_data(), 'replica_id': author}
+        for key, (stamp, author, value) in chord_registers.items()
+    }
+    settings = {key: deepcopy(value) for key, (_, _, value)
+                in setting_registers.items()}
+    settings_registers = {
+        key: {'value': value, 'hlc': stamp.to_data(), 'replica_id': author}
+        for key, (stamp, author, value) in setting_registers.items()
+    }
+    return SyncResult(status=SyncStatus(), save=save,
+                      chord_counts=chord_counts, chord_overrides=overrides,
+                      chord_override_registers=override_registers,
+                      settings=settings, settings_registers=settings_registers,
+                      managed_books=managed,
+                      book_resumes=book_resumes)
+
+
+class LearningSync:
+    """Own the local replica and synchronise it through an ordinary folder.
+
+    Public mutation methods are intentionally cheap and only update a local
+    pending replica.  ``sync_now`` is the I/O-heavy operation a controller can
+    run in a worker thread.
+    """
+
+    def __init__(self, local_root: str | Path, legacy_dir: str | Path):
+        self.local_root = Path(local_root)
+        self.legacy_dir = Path(legacy_dir)
+        self.bootstrap_path = self.local_root / 'local-bootstrap.json'
+        self.pending_path = self.local_root / 'pending-sync-replica.json'
+        self.published_path = self.local_root / 'last-published-sync-replica.json'
+        self.published_ancestry_path = self.local_root / 'published-sync-ancestry.json'
+        self.materialized_recovery_path = self.local_root / 'last-materialized-sync-state.json'
+        self.legacy_reconciliation_path = self.local_root / 'legacy-reconciliation-needed.json'
+        self.deferred_path = self.local_root / 'deferred-sync-mutations.json'
+        self.deferred_parts_dir = self.local_root / 'deferred-sync-mutations.parts'
+        self.recovery_dir = self.local_root / 'recovery' / 'sync'
+        self.managed_library_dir = self.local_root / 'managed-books'
+        self._loaded_managed_books: dict[str, object] = {}
+        self._lock = threading.RLock()
+        # UI callbacks must never wait on a provider-folder scan. A callback
+        # that arrives while the worker owns ``_lock`` is replayed before the
+        # next scan/publish instead.
+        self._deferred_lock = threading.Lock()
+        self._deferred: list[tuple[str, str, str, tuple[object, ...]]] = []
+        self._deferred_recovery_pending: set[Path] = set()
+        self._deferred_recovery_cleanup: set[Path] = set()
+        self._finalizing_counts_baseline: dict[str, int] | None = None
+        self._sync_callback_counts_baseline: dict[str, int] | None = None
+        self._sync_callback_overrides_baseline: dict[str, bool] | None = None
+        self._post_sync_counts_baseline: dict[str, int] | None = None
+        self._post_sync_overrides_baseline: dict[str, bool] | None = None
+        self._sync_application_guard = False
+        self._bootstrap_recovered = False
+        self.status = SyncStatus()
+        self._bootstrap = self._load_bootstrap()
+        self._load_materialized_recovery()
+        self._payload: dict[str, object] = _empty_payload()
+        self._sequence = 0
+        self._predecessor: str | None = None
+        self._published_predecessor: str | None = None
+        self._published_ancestry = self._load_published_ancestry()
+        self._clock = HLC(0, 0)
+        self._dirty = False
+        self._pending_touch_durable = False
+        self._legacy_capture_needed = False
+        self._load_legacy_reconciliation_marker()
+        self._settings_revisions: dict[str, int] = {}
+        self._chord_revision = 0
+        baseline = self._bootstrap.get('last_materialized')
+        baseline_counts = baseline.get('chord_counts') \
+            if isinstance(baseline, dict) else None
+        baseline_overrides = baseline.get('chord_overrides') \
+            if isinstance(baseline, dict) else None
+        baseline_override_registers = baseline.get('chord_override_registers') \
+            if isinstance(baseline, dict) else None
+        self._materialized_counts = _valid_count_map(baseline_counts)
+        self._materialized_overrides = _valid_override_map(baseline_overrides)
+        self._materialized_override_registers = _valid_override_register_map(
+            baseline_override_registers)
+        baseline_setting_registers = baseline.get('settings_registers') \
+            if isinstance(baseline, dict) else None
+        self._materialized_settings_registers = _valid_settings_register_map(
+            baseline_setting_registers)
+        self._durable_chord_baseline = _valid_count_map(
+            self._bootstrap.get('local_chord_counts'))
+        if isinstance(baseline, dict):
+            self._durable_chord_baseline.update(_valid_count_map(
+                baseline.get('local_chord_counts')))
+        self._durable_chord_baseline.update(self._read_legacy_chord_counts())
+        self._materialized_settings_before_commit = None
+        self._local_chord_counts = _valid_count_map(
+            self._bootstrap.get('local_chord_counts'))
+        self._load_published()
+        self._initialize_materialized_count_baseline()
+        self._load_pending()
+        self._load_deferred()
+        self._prune_deferred_markers()
+
+    @property
+    def enabled(self) -> bool:
+        sync = self._bootstrap.get('sync')
+        return isinstance(sync, dict) and sync.get('enabled') is True
+
+    @property
+    def replica_id(self) -> str:
+        return str(self._bootstrap['replica_id'])
+
+    @property
+    def collection_id(self) -> str | None:
+        sync = self._bootstrap.get('sync')
+        value = sync.get('collection_id') if isinstance(sync, dict) else None
+        return value if _valid_uuid(value) else None
+
+    @property
+    def sync_root(self) -> Path | None:
+        sync = self._bootstrap.get('sync')
+        value = sync.get('root') if isinstance(sync, dict) else None
+        return Path(value) if isinstance(value, str) and value else None
+
+    @property
+    def chord_revision(self) -> int:
+        return self._chord_revision
+
+    @property
+    def managed_library_consent(self) -> bool:
+        sync = self._bootstrap.get('sync')
+        return bool(sync.get('managed_library_consent')) if isinstance(sync, dict) else False
+
+    def _load_bootstrap(self) -> dict[str, object]:
+        if not self.bootstrap_path.exists():
+            return {
+                'schema': BOOTSTRAP_SCHEMA,
+                'version': SYNC_VERSION,
+                'replica_id': str(uuid4()),
+                'sync': {'enabled': False, 'managed_library_consent': False},
+                'legacy_migrated': False,
+            }
+        try:
+            data = _read_json(self.bootstrap_path)
+            sync = data.get('sync') if isinstance(data, dict) else None
+            valid_sync = isinstance(sync, dict) and \
+                (('enabled' not in sync) or isinstance(sync['enabled'], bool)) and \
+                (('root' not in sync) or isinstance(sync['root'], str)) and \
+                (('collection_id' not in sync) or _valid_uuid(sync['collection_id'])) and \
+                (('managed_library_consent' not in sync) or
+                 isinstance(sync['managed_library_consent'], bool))
+            if (isinstance(data, dict) and data.get('schema') == BOOTSTRAP_SCHEMA
+                    and data.get('version') == SYNC_VERSION and
+                    _valid_uuid(data.get('replica_id')) and valid_sync and
+                    (('legacy_migrated' not in data) or
+                     isinstance(data['legacy_migrated'], bool)) and
+                    (('last_materialized' not in data) or
+                     isinstance(data['last_materialized'], dict)) and
+                    (('local_chord_counts' not in data) or
+                     isinstance(data['local_chord_counts'], dict))):
+                return data
+        except ValidationError as error:
+            self._bootstrap_recovered = True
+            self._recover_candidate(
+                self.bootstrap_path,
+                'local sync bootstrap could not be read: {}'.format(error))
+        else:
+            self._bootstrap_recovered = True
+            self._recover_candidate(
+                self.bootstrap_path, 'local sync bootstrap is malformed')
+        return {
+            'schema': BOOTSTRAP_SCHEMA,
+            'version': SYNC_VERSION,
+            'replica_id': str(uuid4()),
+            'sync': {'enabled': False, 'managed_library_consent': False},
+            'legacy_migrated': False,
+        }
+
+    def _save_bootstrap(self) -> None:
+        atomic_write_json(self.bootstrap_path, self._bootstrap,
+                          self.recovery_dir / 'bootstrap')
+
+    def _load_published_ancestry(self) -> dict[str, tuple[int, str | None]]:
+        if not self.published_ancestry_path.exists():
+            return _valid_published_ancestry(
+                self._bootstrap.get('published_ancestry'))
+        try:
+            data = _read_json(self.published_ancestry_path)
+            if not isinstance(data, dict) or \
+                    data.get('collection_id') != self.collection_id:
+                raise ValidationError('published sync ancestry belongs to another collection')
+            if data.get('replica_id') != self.replica_id:
+                raise ValidationError('published sync ancestry belongs to another replica')
+            return _valid_published_ancestry(data.get('ancestry'))
+        except ValidationError as error:
+            self._recover_candidate(
+                self.published_ancestry_path,
+                'published sync ancestry could not be read: {}'.format(error))
+            return {}
+
+    def _load_legacy_reconciliation_marker(self) -> None:
+        if not self.legacy_reconciliation_path.exists():
+            return
+        try:
+            data = _read_json(self.legacy_reconciliation_path)
+            if not isinstance(data, dict) or \
+                    data.get('collection_id') != self.collection_id:
+                raise ValidationError('legacy reconciliation marker is malformed')
+            self._legacy_capture_needed = True
+        except ValidationError as error:
+            self._recover_candidate(
+                self.legacy_reconciliation_path,
+                'legacy reconciliation marker could not be read: {}'.format(error))
+
+    def _persist_legacy_reconciliation_marker(self) -> None:
+        collection_id = self.collection_id
+        if collection_id is None:
+            return
+        try:
+            atomic_write_json(self.legacy_reconciliation_path, {
+                'collection_id': collection_id,
+            }, self.recovery_dir / 'legacy-reconciliation')
+        except OSError as error:
+            self._diagnose(
+                'Legacy reconciliation marker could not be written: {}'.format(error))
+
+    def _clear_legacy_reconciliation_marker(self) -> None:
+        try:
+            self.legacy_reconciliation_path.unlink(missing_ok=True)
+            self._legacy_capture_needed = False
+        except OSError as error:
+            self._diagnose(
+                'Legacy reconciliation marker could not be cleared: {}'.format(error))
+
+    def _load_materialized_recovery(self) -> None:
+        if not self.materialized_recovery_path.exists():
+            return
+        try:
+            data = _read_json(self.materialized_recovery_path)
+            if not isinstance(data, dict) or not all(
+                    isinstance(data.get(key), dict) for key in (
+                        'chord_counts', 'chord_overrides',
+                        'chord_override_registers', 'settings')):
+                raise ValidationError('materialized sync state is malformed')
+            if data.get('collection_id') != self.collection_id or \
+                    not _valid_uuid(data.get('collection_id')):
+                raise ValidationError('materialized sync state belongs to another collection')
+            settings = data['settings']
+            if any(key not in VALID_SETTINGS or
+                   not _validate_settings_value(key, value)
+                   for key, value in settings.items()):
+                raise ValidationError('materialized sync settings are malformed')
+            setting_registers = data.get('settings_registers', {})
+            if not isinstance(setting_registers, dict) or \
+                    len(_valid_settings_register_map(setting_registers)) != \
+                    len(setting_registers):
+                raise ValidationError('materialized sync setting registers are malformed')
+            local_counts = data.get('local_chord_counts', {})
+            if not isinstance(local_counts, dict) or \
+                    len(_valid_count_map(local_counts)) != len(local_counts):
+                raise ValidationError('materialized sync local counts are malformed')
+            self._bootstrap['last_materialized'] = data
+            self._bootstrap['local_chord_counts'] = dict(local_counts)
+        except ValidationError as error:
+            self._recover_candidate(
+                self.materialized_recovery_path,
+                'materialized sync state could not be read: {}'.format(error))
+
+    def _record_published_ancestry(self, data: Mapping[str, object]) -> None:
+        digest = data.get('payload_digest')
+        sequence = data.get('sequence')
+        predecessor = data.get('predecessor_digest')
+        if isinstance(digest, str) and _SHA256.fullmatch(digest) and \
+                _is_int(sequence) and sequence >= 1 and \
+                (predecessor is None or isinstance(predecessor, str)):
+            self._published_ancestry[digest] = (sequence, predecessor)
+            if len(self._published_ancestry) > MAX_PUBLISHED_ANCESTRY:
+                self._published_ancestry = dict(sorted(
+                    self._published_ancestry.items(),
+                    key=lambda item: (item[1][0], item[0]),
+                    reverse=True)[:MAX_PUBLISHED_ANCESTRY])
+
+    def _install_published(
+            self, data: Mapping[str, object],
+            trusted_local_counts: Mapping[str, int] | None = None) -> None:
+        self._payload = deepcopy(data['payload'])  # type: ignore[arg-type]
+        local_counts = _valid_count_map(trusted_local_counts)
+        for key, count in local_counts.items():
+            self._local_chord_counts[key] = max(
+                self._local_chord_counts.get(key, 0), count)
+            self._durable_chord_baseline[key] = max(
+                self._durable_chord_baseline.get(key, 0), count)
+        self._bootstrap['local_chord_counts'] = dict(self._local_chord_counts)
+        self._sequence = int(data['sequence'])
+        self._predecessor = str(data['payload_digest'])
+        predecessor = data.get('predecessor_digest')
+        self._published_predecessor = predecessor if isinstance(predecessor, str) else None
+        self._clock = HLC.from_data(data['hlc'])
+
+    def _read_published_candidate(self, path: Path,
+                                  collection: str) -> dict[str, object] | None:
+        if not path.exists():
+            return None
+        try:
+            data = validate_envelope(_read_json(path), collection)
+            if data['replica_id'] != self.replica_id:
+                raise ValidationError('published replica file ownership is invalid')
+            return data
+        except ValidationError as error:
+            self._recover_candidate(
+                path,
+                'published local sync data could not be read: {}'.format(error))
+            return None
+
+    def _remember_published_envelope(self, data: Mapping[str, object]) -> None:
+        persisted = deepcopy(dict(data))
+        persisted['local_chord_counts'] = dict(self._local_chord_counts)
+        persisted['local_chord_counts_digest'] = _local_chord_counts_digest(
+            self._local_chord_counts)
+        atomic_write_json(self.published_path, persisted,
+                          self.recovery_dir / 'published')
+        self._record_published_ancestry(persisted)
+        ancestry = [
+            {'payload_digest': digest, 'sequence': sequence,
+             'predecessor_digest': predecessor}
+            for digest, (sequence, predecessor) in
+            sorted(self._published_ancestry.items(),
+                   key=lambda item: (item[1][0], item[0]))]
+        atomic_write_json(self.published_ancestry_path, {
+            'collection_id': self.collection_id,
+            'replica_id': self.replica_id,
+            'ancestry': ancestry,
+        }, self.recovery_dir / 'published-ancestry')
+
+    def _load_published(self) -> None:
+        root = self.sync_root
+        collection = self.collection_id
+        if collection is None:
+            return
+        local = self._read_published_candidate(self.published_path, collection)
+        provider = None
+        if root is not None:
+            provider = self._read_published_candidate(
+                root / 'replicas' / (self.replica_id + '.json'), collection)
+        selected = local
+        if provider is not None and local is None:
+            selected = provider
+        elif provider is not None and local is not None:
+            provider_sequence = int(provider['sequence'])
+            local_sequence = int(local['sequence'])
+            if provider_sequence > local_sequence:
+                extends_local = (
+                    provider.get('predecessor_digest') == local.get('payload_digest'))
+                if extends_local:
+                    selected = provider
+                else:
+                    self._diagnose(
+                        'The provider replica conflicts with the last local publication.')
+                    self._recover_candidate(
+                        root / 'replicas' / (self.replica_id + '.json'),
+                        'provider replica does not extend the last local publication')
+            elif provider_sequence < local_sequence:
+                self._diagnose('The provider replica is stale; retaining the last local publication.')
+            elif provider['payload_digest'] != local['payload_digest']:
+                self._diagnose('The provider replica conflicts with the last local publication.')
+        if selected is None:
+            return
+        trusted_local_counts = dict(self._local_chord_counts)
+        for key, count in self._durable_chord_baseline.items():
+            trusted_local_counts[key] = max(trusted_local_counts.get(key, 0), count)
+        if selected is local and _valid_local_chord_counts(local):
+            for key, count in _valid_count_map(local['local_chord_counts']).items():
+                trusted_local_counts[key] = max(trusted_local_counts.get(key, 0), count)
+        self._install_published(selected, trusted_local_counts)
+        self._record_published_ancestry(selected)
+        if provider is selected and local is not selected:
+            try:
+                self._remember_published_envelope(selected)
+            except OSError as error:
+                self._diagnose(
+                    'Last published sync state could not be saved: {}'.format(error))
+
+    def _load_pending(self) -> None:
+        if not self.pending_path.exists():
+            return
+        try:
+            data = _read_json(self.pending_path)
+            collection = self.collection_id
+            if collection is not None:
+                data = validate_envelope(data, collection)
+                if data['replica_id'] == self.replica_id and \
+                        int(data['sequence']) >= self._sequence:
+                    payload = data['payload']
+                    pending_chords = payload.get('chords', {}) \
+                        if isinstance(payload, dict) else {}
+                    pending_counts = pending_chords.get('counts', {}) \
+                        if isinstance(pending_chords, dict) else {}
+                    pending_counts = _valid_count_map(pending_counts)
+                    if pending_counts and not _valid_local_chord_counts(data):
+                        self._recover_candidate(
+                            self.pending_path,
+                            'pending chord state has no validated cumulative baseline')
+                        return
+                    pending_local_counts = (_valid_count_map(
+                        data.get('local_chord_counts'))
+                        if _valid_local_chord_counts(data) else {})
+                    for key, count in pending_local_counts.items():
+                        self._local_chord_counts[key] = max(
+                            self._local_chord_counts.get(key, 0), count)
+                    self._payload = deepcopy(payload)  # type: ignore[arg-type]
+                    self._sequence = int(data['sequence'])
+                    self._predecessor = data.get('predecessor_digest')  # type: ignore[assignment]
+                    self._clock = HLC.from_data(data['hlc'])
+                    self._dirty = True
+        except ValidationError as error:
+            self._recover_candidate(
+                self.pending_path,
+                'pending local sync data could not be read: {}'.format(error))
+
+    def _deferred_record(self, event: tuple[str, str, str, tuple[object, ...]]) -> list[object]:
+        collection, event_id, kind, args = event
+        return [collection, event_id, kind, list(args)]
+
+    def _read_deferred_events(self, data: object, collection: str | None,
+                              legacy: bool = False) -> list[tuple[str, str, str, tuple[object, ...]]]:
+        events = data.get('events') if isinstance(data, dict) else None
+        if not isinstance(events, list):
+            raise ValidationError('deferred sync mutations are malformed')
+        loaded = []
+        for raw in events:
+            if legacy:
+                if not isinstance(raw, list) or len(raw) != 2:
+                    raise ValidationError('deferred sync mutations are malformed')
+                event_collection = collection or ''
+                event_id = str(uuid4())
+                kind, args = raw
+            else:
+                if not isinstance(raw, list) or len(raw) != 4:
+                    raise ValidationError('deferred sync mutations are malformed')
+                event_collection, event_id, kind, args = raw
+            if not isinstance(event_collection, str) or not isinstance(event_id, str) or \
+                    not _valid_uuid(event_id) or not isinstance(kind, str) or \
+                    kind not in ('book', 'chords', 'settings') or \
+                    not isinstance(args, list) or len(args) not in (2, 3, 4) or \
+                    (len(args) in (3, 4) and kind != 'chords'):
+                raise ValidationError('deferred sync mutations are malformed')
+            if kind == 'book' and (not isinstance(args[0], str) or
+                                   not _BOOK_IDENTITY.fullmatch(args[0]) or
+                                   _validate_save(args[1]) is None):
+                raise ValidationError('deferred book mutation is malformed')
+            if kind == 'chords' and (
+                    not _valid_count_map_strict(args[0]) or
+                    not _valid_override_map_strict(args[1])):
+                raise ValidationError('deferred chord mutation is malformed')
+            if kind == 'settings' and (
+                    not _valid_settings_config(args[0]) or
+                    not _valid_settings_config(args[1])):
+                raise ValidationError('deferred settings mutation is malformed')
+            if kind == 'chords' and len(args) in (3, 4):
+                baseline = args[2]
+                if not _valid_count_map_strict(baseline):
+                    raise ValidationError('deferred chord baseline is malformed')
+                if len(args) == 4 and not _valid_override_map_strict(args[3]):
+                    raise ValidationError('deferred chord override baseline is malformed')
+            elif len(args) != 2:
+                raise ValidationError('deferred sync mutation is malformed')
+            loaded.append((event_collection, event_id, kind, tuple(args)))
+        return loaded
+
+    def _deferred_part_path(self, generation: str, index: int) -> Path:
+        if not isinstance(generation, str) or not re.fullmatch(
+                r'[A-Za-z0-9_-]{1,128}', generation):
+            raise ValidationError('deferred sync generation is malformed')
+        return self.deferred_parts_dir / '{}-{:08d}.json'.format(
+            generation, index)
+
+    def _read_deferred_generation(self, generation: str, count: int) -> list[tuple[str, str, str, tuple[object, ...]]]:
+        if not isinstance(generation, str) or not generation or not _is_int(count) or \
+                count < 1 or count > MAX_DEFERRED_PARTS:
+            raise ValidationError('deferred sync generation is malformed')
+        new_paths = [self._deferred_part_path(generation, index)
+                     for index in range(count)]
+        if all(path.exists() for path in new_paths):
+            paths = new_paths
+        else:
+            paths = [self.deferred_parts_dir / '{:08d}.json'.format(index)
+                     for index in range(count)]
+        loaded = []
+        for index, path in enumerate(paths):
+            data = _read_json(path, MAX_DEFERRED_BYTES)
+            if not isinstance(data, dict) or data.get('generation') != generation or \
+                    data.get('index') != index or data.get('count') != count:
+                raise ValidationError('deferred sync generation is incomplete')
+            loaded.extend(self._read_deferred_events(data, self.collection_id))
+        return loaded
+
+    def _complete_deferred_generations(self) -> tuple[
+            list[tuple[str, list[tuple[str, str, str, tuple[object, ...]]]]],
+            set[Path]]:
+        groups: dict[str, dict[int, tuple[int, object, Path]]] = {}
+        generation_paths: dict[str, set[Path]] = {}
+        invalid_generations: set[str] = set()
+        invalid_paths: set[Path] = set()
+        if not self.deferred_parts_dir.is_dir():
+            return [], set()
+        for path in sorted(self.deferred_parts_dir.glob('*.json')):
+            try:
+                data = _read_json(path, MAX_DEFERRED_BYTES)
+                if not isinstance(data, dict):
+                    if re.fullmatch(r'[A-Za-z0-9_-]{1,128}-\d{8}\.json',
+                                    path.name):
+                        invalid_paths.add(path)
+                    continue
+                generation = data.get('generation')
+                index = data.get('index')
+                count = data.get('count')
+                if isinstance(generation, str):
+                    generation_paths.setdefault(generation, set()).add(path)
+                if generation is None and index is None and count is None:
+                    continue
+                if not isinstance(generation, str) or not _is_int(index) or \
+                        not _is_int(count) or index < 0 or count < 1 or \
+                        count > MAX_DEFERRED_PARTS or index >= count:
+                    if isinstance(generation, str):
+                        invalid_generations.add(generation)
+                    else:
+                        invalid_paths.add(path)
+                    continue
+                groups.setdefault(generation, {})[index] = (count, data, path)
+            except ValidationError:
+                if re.fullmatch(r'[A-Za-z0-9_-]{1,128}-\d{8}\.json',
+                                path.name):
+                    invalid_paths.add(path)
+        for generation in invalid_generations:
+            invalid_paths.update(generation_paths.get(generation, set()))
+        complete = []
+        for generation, parts in groups.items():
+            group_paths = {part[2] for part in parts.values()}
+            counts = {part[0] for part in parts.values()}
+            count = next(iter(counts)) if len(counts) == 1 else 0
+            if count < 1 or len(parts) != count or set(parts) != set(range(count)):
+                invalid_paths.update(group_paths)
+                continue
+            try:
+                events = []
+                for index in range(count):
+                    events.extend(self._read_deferred_events(
+                        parts[index][1], self.collection_id))
+                complete.append((generation, events))
+            except ValidationError:
+                invalid_paths.update(group_paths)
+        unrecovered = set()
+        recovered = set()
+        for path in sorted(invalid_paths):
+            if self._recover_candidate(
+                    path, 'deferred sync generation is malformed'):
+                recovered.add(path)
+            else:
+                unrecovered.add(path)
+        self._deferred_recovery_cleanup.update(recovered)
+        return complete, unrecovered
+
+    def _load_deferred(self) -> None:
+        pointer_exists = self.deferred_path.exists()
+        if not pointer_exists and not self.deferred_parts_dir.exists():
+            return
+        pointer_data = None
+        pointer_generation = None
+        pointer_usable = False
+        pointer_recovery_succeeded = True
+        if pointer_exists:
+            try:
+                pointer_data = _read_json(self.deferred_path, MAX_DEFERRED_BYTES)
+                if not isinstance(pointer_data, dict):
+                    raise ValidationError('deferred sync pointer is malformed')
+                pointer_generation = pointer_data.get('generation')
+                if pointer_generation is not None and not isinstance(pointer_generation, str):
+                    raise ValidationError('deferred sync generation is malformed')
+                if 'count' in pointer_data and not _is_int(pointer_data.get('count')):
+                    raise ValidationError('deferred sync generation is malformed')
+                pointer_usable = True
+            except (OSError, SyncError, ValidationError) as error:
+                pointer_recovery_succeeded = self._recover_candidate(
+                    self.deferred_path,
+                    'deferred sync pointer could not be read: {}'.format(error))
+
+        try:
+            candidates, unrecovered = self._complete_deferred_generations()
+            self._deferred_recovery_pending.update(unrecovered)
+            legacy = pointer_usable and isinstance(pointer_data, dict) and \
+                'count' not in pointer_data
+            if pointer_usable and isinstance(pointer_data, dict):
+                if _is_int(pointer_data.get('count')):
+                    if not any(generation == pointer_generation
+                               for generation, _ in candidates):
+                        try:
+                            candidates.append((pointer_generation or '',
+                                              self._read_deferred_generation(
+                                                  pointer_generation,
+                                                  pointer_data['count'])))
+                        except ValidationError:
+                            pass
+                else:
+                    try:
+                        candidates.append((pointer_generation or '',
+                                          self._read_deferred_events(
+                                              pointer_data, self.collection_id, legacy)))
+                        if pointer_generation is not None:
+                            for path in sorted(self.deferred_parts_dir.glob('*.json')):
+                                part = _read_json(path, MAX_DEFERRED_BYTES)
+                                if not isinstance(part, dict) or \
+                                        part.get('generation') != pointer_generation or \
+                                        'count' in part:
+                                    continue
+                                candidates[-1][1].extend(self._read_deferred_events(
+                                    part, self.collection_id))
+                    except ValidationError:
+                        pass
+            if not candidates:
+                raise ValidationError('deferred sync mutations are incomplete')
+            selected_generation, loaded = max(
+                candidates,
+                key=lambda item: (len(item[0]) > 21 and item[0][:20].isdigit(),
+                                  item[0]))
+            with self._deferred_lock:
+                self._deferred = loaded
+            if pointer_recovery_succeeded and (
+                    not pointer_usable or not pointer_exists or legacy or
+                    selected_generation != pointer_generation or
+                    self._deferred_recovery_cleanup):
+                try:
+                    with self._deferred_lock:
+                        self._persist_deferred_locked()
+                except (OSError, SyncError) as error:
+                    self._diagnose(
+                        'Deferred sync mutations could not be rewritten: {}'.format(error))
+        except (OSError, SyncError, ValidationError) as error:
+            self._diagnose(
+                'Deferred sync mutations could not be recovered: {}'.format(error))
+
+    def _persist_deferred_locked(self) -> None:
+        if not self._deferred:
+            self.deferred_path.unlink(missing_ok=True)
+            if self.deferred_parts_dir.exists():
+                for path in self.deferred_parts_dir.glob('*.json'):
+                    if path not in self._deferred_recovery_pending:
+                        path.unlink(missing_ok=True)
+                if not any(self.deferred_parts_dir.glob('*.json')):
+                    self.deferred_parts_dir.rmdir()
+            self._deferred_recovery_cleanup.clear()
+            return
+
+        generation = '{:020d}-{}'.format(time.time_ns(), uuid4().hex)
+        chunks: list[list[list[object]]] = [[]]
+        for event in self._deferred:
+            record = self._deferred_record(event)
+            candidate = chunks[-1] + [record]
+            if len(_json_bytes({'generation': generation, 'index': 0,
+                                'count': MAX_DEFERRED_BYTES,
+                                'events': candidate})) > MAX_DEFERRED_BYTES:
+                if not chunks[-1]:
+                    raise SyncError('a deferred sync mutation exceeds the size limit')
+                chunks.append([record])
+            else:
+                chunks[-1] = candidate
+        count = len(chunks)
+        if count > MAX_DEFERRED_PARTS:
+            raise SyncError('deferred sync mutations exceed the part limit')
+        serialized_size = len(_json_bytes({
+            'generation': generation, 'count': count}))
+        for index, chunk in enumerate(chunks):
+            part = {'generation': generation, 'index': index,
+                    'count': count, 'events': chunk}
+            part_size = len(_json_bytes(part))
+            if part_size > MAX_DEFERRED_BYTES:
+                raise SyncError('a deferred sync mutation exceeds the size limit')
+            serialized_size += part_size
+        if serialized_size > MAX_DEFERRED_BYTES:
+            raise SyncError('deferred sync mutations exceed the size limit')
+
+        self.deferred_parts_dir.mkdir(parents=True, exist_ok=True)
+        current_parts = set()
+        for index, chunk in enumerate(chunks):
+            path = self._deferred_part_path(generation, index)
+            current_parts.add(path)
+            atomic_write_json(
+                path, {'generation': generation, 'index': index, 'count': count,
+                       'events': chunk}, self.recovery_dir / 'deferred')
+        atomic_write_json(
+            self.deferred_path,
+            {'generation': generation, 'count': count},
+            self.recovery_dir / 'deferred')
+        for path in self.deferred_parts_dir.glob('*.json'):
+            if path not in current_parts and path not in self._deferred_recovery_pending:
+                path.unlink(missing_ok=True)
+        self._deferred_recovery_cleanup.clear()
+
+    def _now(self) -> HLC:
+        now = int(time.time() * 1000)
+        if now > self._clock.wall_ms:
+            self._clock = HLC(now, 0)
+        elif self._clock.counter >= MAX_HLC_COUNTER:
+            next_wall = self._clock.wall_ms + 1
+            if next_wall > now + MAX_HLC_FUTURE_MS:
+                self._clock = HLC(now, 0)
+            else:
+                self._clock = HLC(next_wall, 0)
+        else:
+            self._clock = HLC(self._clock.wall_ms, self._clock.counter + 1)
+        return self._clock
+
+    def _observe(self, stamp: HLC) -> None:
+        if stamp.wall_ms > self._clock.wall_ms:
+            self._clock = HLC(stamp.wall_ms, stamp.counter)
+        elif stamp.wall_ms == self._clock.wall_ms:
+            self._clock = HLC(stamp.wall_ms, max(stamp.counter, self._clock.counter))
+
+    def _envelope(self) -> dict[str, object]:
+        if self.collection_id is None:
+            raise SyncError('no sync collection is configured')
+        if self._sequence < 1:
+            self._sequence = 1
+        stamp = self._clock if self._clock.wall_ms else self._now()
+        return {
+            'schema': SYNC_SCHEMA,
+            'version': SYNC_VERSION,
+            'collection_id': self.collection_id,
+            'replica_id': self.replica_id,
+            'sequence': self._sequence,
+            'local_chord_counts': dict(self._local_chord_counts),
+            'hlc': stamp.to_data(),
+            'predecessor_digest': self._predecessor,
+            'payload_digest': _digest(self._payload),
+            'local_chord_counts_digest': _local_chord_counts_digest(
+                self._local_chord_counts),
+            'payload': deepcopy(self._payload),
+        }
+
+    def _touch(self) -> None:
+        self._pending_touch_durable = False
+        self._now()
+        self._sequence += 1
+        self._dirty = True
+        if self.enabled:
+            try:
+                envelope = self._envelope()
+                if len(_json_bytes(envelope)) > MAX_REPLICA_BYTES:
+                    raise OSError('local learning state exceeds the 5 MiB replica limit')
+                atomic_write_json(self.pending_path, envelope,
+                                  self.recovery_dir / 'pending')
+                self._pending_touch_durable = True
+                self._bootstrap['local_chord_counts'] = dict(self._local_chord_counts)
+                self._save_bootstrap()
+            except (OSError, ValidationError) as error:
+                self._diagnose(
+                    'Local pending sync state could not be written: {}'.format(error))
+                self.status = SyncStatus(
+                    'waiting', 'Local sync state could not be saved; retrying.',
+                    time.time(), list(self.status.diagnostics))
+                if isinstance(error, ValidationError):
+                    raise OSError(str(error)) from error
+                raise
+
+    def _touch_or_defer(self, kind: str, *args: object,
+                        deferred_id: str | None = None,
+                        deferred_baseline: Mapping[str, int] | None = None,
+                        deferred_override_baseline: Mapping[str, bool] | None = None) -> bool:
+        try:
+            self._touch()
+            return True
+        except OSError:
+            if self._pending_touch_durable:
+                return True
+            if deferred_id is not None:
+                raise
+            if self._defer(kind, *args, deferred_baseline=deferred_baseline,
+                            deferred_override_baseline=deferred_override_baseline):
+                return False
+            if self._last_materialized():
+                self._legacy_capture_needed = True
+                self._persist_legacy_reconciliation_marker()
+                return False
+            try:
+                self._bootstrap['legacy_migrated'] = False
+                self._save_bootstrap()
+            except OSError as error:
+                self._diagnose(
+                    'Local sync recovery state could not be written: {}'.format(error))
+            return False
+
+    def _diagnose(self, message: str) -> None:
+        logger.warning('Learning sync: %s', message)
+        self.status.diagnostics.append(message)
+        self.status.diagnostics = self.status.diagnostics[-20:]
+
+    def _reconcile_after_deferred_failure(self) -> None:
+        if self._last_materialized():
+            self._legacy_capture_needed = True
+            self._persist_legacy_reconciliation_marker()
+            return
+        try:
+            self._bootstrap['legacy_migrated'] = False
+            self._save_bootstrap()
+        except OSError as error:
+            self._diagnose(
+                'Local sync recovery state could not be written: {}'.format(error))
+
+    def _defer(self, kind: str, *args: object,
+               deferred_baseline: Mapping[str, int] | None = None,
+               deferred_override_baseline: Mapping[str, bool] | None = None) -> bool:
+        event_args = args
+        with self._deferred_lock:
+            if kind == 'chords':
+                baseline = dict(deferred_baseline) if deferred_baseline is not None else None
+                if baseline is None and self._sync_callback_counts_baseline is not None:
+                    baseline = dict(self._sync_callback_counts_baseline)
+                if baseline is None and self._finalizing_counts_baseline is not None:
+                    baseline = dict(self._finalizing_counts_baseline)
+                override_baseline = (
+                    dict(deferred_override_baseline)
+                    if deferred_override_baseline is not None else None)
+                if override_baseline is None and \
+                        self._sync_callback_overrides_baseline is not None:
+                    override_baseline = dict(self._sync_callback_overrides_baseline)
+                progress = args[0] if args and isinstance(args[0], dict) else {}
+                if self._finalizing_counts_baseline is not None:
+                    for key, total in progress.items():
+                        if isinstance(key, str) and key and _is_int(total) and total >= 0:
+                            if baseline is not None and total < baseline.get(key, 0):
+                                baseline[key] = max(0, total - 1)
+                            self._finalizing_counts_baseline[key] = max(
+                                self._finalizing_counts_baseline.get(key, 0), total)
+                if self._sync_callback_counts_baseline is not None:
+                    for key, total in progress.items():
+                        if isinstance(key, str) and key and _is_int(total) and total >= 0:
+                            self._sync_callback_counts_baseline[key] = max(
+                                self._sync_callback_counts_baseline.get(key, 0), total)
+                current_overrides = args[1] if len(args) > 1 and \
+                    isinstance(args[1], dict) else {}
+                if self._sync_callback_overrides_baseline is not None:
+                    self._sync_callback_overrides_baseline = {
+                        key: value for key, value in current_overrides.items()
+                        if isinstance(key, str) and key and isinstance(value, bool)
+                    }
+                if baseline is not None:
+                    event_args = args + (baseline,)
+                if override_baseline is not None:
+                    if baseline is None:
+                        event_args = args + ({}, override_baseline)
+                    else:
+                        event_args = event_args + (override_baseline,)
+            event = (self.collection_id or '', str(uuid4()), kind, event_args)
+            self._deferred.append(event)
+            try:
+                self._persist_deferred_locked()
+                return True
+            except (OSError, SyncError) as error:
+                logger.warning('Deferred sync mutation could not be persisted: %s', error)
+                return False
+
+    def _prune_deferred_markers(self) -> None:
+        markers = self._payload.get('_applied_deferred')
+        if not isinstance(markers, list):
+            return
+        with self._deferred_lock:
+            active = {event[1] for event in self._deferred}
+        retained = [marker for marker in markers if marker in active]
+        if retained == markers:
+            return
+        if retained:
+            self._payload['_applied_deferred'] = retained
+        else:
+            self._payload.pop('_applied_deferred', None)
+        if self.enabled:
+            try:
+                self._touch()
+            except OSError as error:
+                self._diagnose(
+                    'Stale deferred markers could not be cleared: {}'.format(error))
+
+    def _deferred_marker_present(self, event_id: str) -> bool:
+        markers = self._payload.get('_applied_deferred', [])
+        return isinstance(markers, list) and event_id in markers
+
+    def _mark_deferred_applied(self, event_id: str) -> None:
+        markers = self._payload.setdefault('_applied_deferred', [])
+        if isinstance(markers, list) and event_id not in markers:
+            markers.append(event_id)
+
+    def _forget_deferred_marker(self, event_id: str) -> None:
+        markers = self._payload.get('_applied_deferred')
+        if isinstance(markers, list) and event_id in markers:
+            markers.remove(event_id)
+            if not markers:
+                self._payload.pop('_applied_deferred', None)
+            self._touch()
+
+    def _apply_deferred(self) -> None:
+        while True:
+            with self._deferred_lock:
+                if not self._deferred:
+                    return
+                event = self._deferred[0]
+            collection, event_id, kind, args = event
+            if collection == (self.collection_id or ''):
+                if kind == 'book':
+                    self.record_book(str(args[0]), args[1], _deferred_id=event_id)  # type: ignore[arg-type]
+                elif kind == 'chords':
+                    baseline = args[2] if len(args) >= 3 else None
+                    override_baseline = args[3] if len(args) == 4 else None
+                    self.record_chords(
+                        args[0], args[1], _deferred_id=event_id,
+                        _deferred_baseline=baseline,
+                        _deferred_override_baseline=override_baseline)  # type: ignore[arg-type]
+                elif kind == 'settings':
+                    self.record_settings(args[0], args[1], _deferred_id=event_id)  # type: ignore[arg-type]
+            with self._deferred_lock:
+                if self._deferred and self._deferred[0] == event:
+                    self._deferred.pop(0)
+                    self._persist_deferred_locked()
+            self._forget_deferred_marker(event_id)
+
+    def enable_sync_application_guard(self) -> None:
+        self._sync_application_guard = True
+
+    def acknowledge_sync_application(self) -> None:
+        with self._lock:
+            self._post_sync_counts_baseline = None
+            self._post_sync_overrides_baseline = None
+
+    @property
+    def has_deferred_changes(self) -> bool:
+        with self._deferred_lock:
+            return bool(self._deferred)
+
+    def _recover_candidate(self, path: Path, reason: str) -> bool:
+        recovered = True
+        descriptor = None
+        temporary = None
+        try:
+            self.recovery_dir.mkdir(parents=True, exist_ok=True)
+            descriptor, temporary = tempfile.mkstemp(
+                prefix='.' + path.name + '.', dir=str(self.recovery_dir))
+            digest = sha256()
+            copied = 0
+            truncated = False
+            with path.open('rb') as source, os.fdopen(descriptor, 'wb') as target:
+                descriptor = None
+                while copied < MAX_REPLICA_BYTES:
+                    chunk = source.read(min(1024 * 1024,
+                                           MAX_REPLICA_BYTES - copied))
+                    if not chunk:
+                        break
+                    target.write(chunk)
+                    digest.update(chunk)
+                    copied += len(chunk)
+                if copied == MAX_REPLICA_BYTES and source.read(1):
+                    truncated = True
+                target.flush()
+                os.fsync(target.fileno())
+            suffix = '.truncated' if truncated else ''
+            name = '{}.{}{}.rejected'.format(
+                path.name, digest.hexdigest()[:12], suffix)
+            os.replace(temporary, self.recovery_dir / name)
+            temporary = None
+            if truncated:
+                self._diagnose('{} was truncated to the recovery size limit.'.format(
+                    path.name))
+        except OSError as error:
+            recovered = False
+            self._diagnose('{} could not be preserved: {}'.format(path.name, error))
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+            if temporary is not None:
+                try:
+                    os.unlink(temporary)
+                except OSError:
+                    pass
+        self._diagnose('{}: {}'.format(path.name, reason))
+        return recovered
+
+    def _recover_deferred_state(self, reason: str) -> bool:
+        paths = []
+        if self.deferred_path.exists():
+            paths.append(self.deferred_path)
+        if self.deferred_parts_dir.is_dir():
+            paths.extend(sorted(self.deferred_parts_dir.glob('*.json')))
+        return all(self._recover_candidate(path, reason) for path in paths)
+
+    def configure(self, sync_root: str | Path,
+                  managed_library_consent: bool = False) -> SyncStatus:
+        """Opt in to a user-selected directory without deleting anything."""
+        root = Path(sync_root).expanduser()
+        transition_committed = False
+        previous_state = None
+        with self._lock:
+            try:
+                root.mkdir(parents=True, exist_ok=True)
+                if not root.is_dir():
+                    raise SyncError('the selected path is not a folder')
+                manifest_path = root / 'retype-sync.json'
+                if manifest_path.exists():
+                    manifest = _read_json(manifest_path)
+                    if not isinstance(manifest, dict) or \
+                            manifest.get('schema') != COLLECTION_SCHEMA or \
+                            manifest.get('version') != SYNC_VERSION or \
+                            not _valid_uuid(manifest.get('collection_id')):
+                        raise SyncError('the selected folder has an unsupported retype collection')
+                    collection_id = str(manifest['collection_id'])
+                else:
+                    collection_id = str(uuid4())
+                    atomic_write_json(manifest_path, {
+                        'schema': COLLECTION_SCHEMA,
+                        'version': SYNC_VERSION,
+                        'collection_id': collection_id,
+                    }, self.recovery_dir / 'manifest')
+                previous_collection = self.collection_id
+                if previous_collection != collection_id:
+                    previous_state = (
+                        deepcopy(self._bootstrap), deepcopy(self._payload),
+                        self._sequence, self._predecessor,
+                        self._published_predecessor,
+                        deepcopy(self._published_ancestry),
+                        deepcopy(self._materialized_counts),
+                        deepcopy(self._materialized_overrides),
+                        deepcopy(self._materialized_override_registers),
+                        deepcopy(self._materialized_settings_registers),
+                        deepcopy(self._materialized_settings_before_commit),
+                        deepcopy(self._post_sync_counts_baseline),
+                        deepcopy(self._post_sync_overrides_baseline),
+                        deepcopy(self._local_chord_counts), self._dirty,
+                        self._legacy_capture_needed,
+                        self._pending_touch_durable,
+                        set(self._deferred_recovery_pending),
+                        set(self._deferred_recovery_cleanup))
+                    if self._deferred:
+                        with self._deferred_lock:
+                            try:
+                                self._persist_deferred_locked()
+                            except (OSError, SyncError) as error:
+                                raise SyncError(
+                                    'deferred sync state could not be preserved while switching sync collections') from error
+                    if self.pending_path.exists() and not self._recover_candidate(
+                            self.pending_path,
+                            'pending state was retained while switching sync collections'):
+                        raise SyncError(
+                            'pending sync state could not be preserved while switching sync collections')
+                    if (self.deferred_path.exists() or self.deferred_parts_dir.is_dir()) and \
+                            not self._recover_deferred_state(
+                                'deferred state was retained while switching sync collections'):
+                        raise SyncError(
+                            'deferred sync state could not be preserved while switching sync collections')
+                    # A different folder is a different collection, not an
+                    # opportunity to reuse old G-counter components.
+                    self._payload = _empty_payload()
+                    self._sequence = 0
+                    self._predecessor = None
+                    self._published_predecessor = None
+                    self._published_ancestry = {}
+                    self._materialized_counts = {}
+                    self._materialized_overrides = {}
+                    self._materialized_override_registers = {}
+                    self._materialized_settings_registers = {}
+                    self._materialized_settings_before_commit = None
+                    self._post_sync_counts_baseline = None
+                    self._post_sync_overrides_baseline = None
+                    self._local_chord_counts = {}
+                    self._bootstrap.pop('last_materialized', None)
+                    self._bootstrap.pop('local_chord_counts', None)
+                    self._bootstrap.pop('published_ancestry', None)
+                    self._bootstrap['legacy_migrated'] = False
+                    self._legacy_capture_needed = False
+                self._bootstrap['sync'] = {
+                    'enabled': True,
+                    'root': str(root),
+                    'collection_id': collection_id,
+                    'managed_library_consent': bool(managed_library_consent),
+                }
+                self._save_bootstrap()
+                if previous_collection != collection_id:
+                    transition_committed = True
+                    with self._deferred_lock:
+                        self._deferred.clear()
+                        self._persist_deferred_locked()
+                    self.pending_path.unlink(missing_ok=True)
+                self._prune_deferred_markers()
+                if previous_collection == collection_id and \
+                        self._bootstrap.get('legacy_migrated') is True:
+                    self._capture_local_only_changes()
+                    self._legacy_capture_needed = False
+                else:
+                    self._migrate_legacy_once()
+                self.status = SyncStatus('ready',
+                    'Local changes are queued for the selected sync folder.')
+                return self.status
+            except (OSError, SyncError, ValidationError) as error:
+                if previous_state is not None and not transition_committed:
+                    (self._bootstrap, self._payload, self._sequence,
+                     self._predecessor, self._published_predecessor,
+                     self._published_ancestry,
+                     self._materialized_counts, self._materialized_overrides,
+                     self._materialized_override_registers,
+                     self._materialized_settings_registers,
+                     self._materialized_settings_before_commit,
+                     self._post_sync_counts_baseline,
+                     self._post_sync_overrides_baseline,
+                     self._local_chord_counts, self._dirty,
+                     self._legacy_capture_needed,
+                     self._pending_touch_durable,
+                     self._deferred_recovery_pending,
+                     self._deferred_recovery_cleanup) = previous_state
+                self.status = SyncStatus('waiting',
+                    'Waiting for the selected sync folder: {}'.format(error))
+                return self.status
+
+    def set_managed_library_consent(self, consent: bool) -> SyncStatus:
+        # type: (LearningSync, bool) -> SyncStatus
+        with self._lock:
+            sync = self._bootstrap.get('sync')
+            if not isinstance(sync, dict) or not self.enabled:
+                return self.status
+            previous_consent = bool(sync.get('managed_library_consent'))
+            sync['managed_library_consent'] = bool(consent)
+            if not consent:
+                self.status.message = (
+                    'Managed books are unavailable until managed-library consent is enabled.')
+            try:
+                self._save_bootstrap()
+            except OSError as error:
+                sync['managed_library_consent'] = previous_consent
+                self._diagnose(
+                    'Local sync settings could not be saved: {}'.format(error))
+                self.status = SyncStatus(
+                    'waiting', 'Local sync settings could not be saved; retrying.',
+                    time.time(), list(self.status.diagnostics))
+            return self.status
+
+    def disable(self) -> SyncStatus:
+        """Return to local-only operation and intentionally retain folder data."""
+        with self._lock:
+            sync = self._bootstrap.setdefault('sync', {})
+            assert isinstance(sync, dict)
+            previous_enabled = sync.get('enabled')
+            sync['enabled'] = False
+            try:
+                self._save_bootstrap()
+            except OSError as error:
+                if previous_enabled is None:
+                    sync.pop('enabled', None)
+                else:
+                    sync['enabled'] = previous_enabled
+                self._diagnose(
+                    'Local sync settings could not be saved: {}'.format(error))
+                self.status = SyncStatus(
+                    'waiting', 'Local sync settings could not be saved; retrying.',
+                    time.time(), list(self.status.diagnostics))
+                return self.status
+            self._post_sync_counts_baseline = None
+            self._post_sync_overrides_baseline = None
+            self.status = SyncStatus()
+            return self.status
+
+    def set_legacy_dir(self, directory: str | Path) -> None:
+        with self._lock:
+            directory = Path(directory)
+            self._legacy_capture_needed = self._legacy_capture_needed or \
+                directory != self.legacy_dir
+            self.legacy_dir = directory
+
+    def _migrate_legacy_once(self) -> None:
+        if self._bootstrap.get('legacy_migrated') is True:
+            return
+        self._import_legacy_state()
+        self._bootstrap['legacy_migrated'] = True
+        self._save_bootstrap()
+
+    def _last_materialized(self) -> dict[str, object]:
+        data = self._bootstrap.get('last_materialized')
+        return data if isinstance(data, dict) else {}
+
+    def settings_baseline(self) -> dict[str, object]:
+        baseline = self._last_materialized().get('settings')
+        if isinstance(baseline, dict):
+            return deepcopy(baseline)
+        registers = self._payload.get('settings', {})
+        if not isinstance(registers, dict):
+            return {}
+        return {
+            key: deepcopy(register.get('value'))
+            for key, register in registers.items()
+            if key in VALID_SETTINGS and isinstance(register, dict) and
+            _validate_settings_value(key, register.get('value'))
+        }
+
+    def _legacy_save_entries(self, raw_save: object):
+        if not isinstance(raw_save, dict):
+            return
+        for identity, item in raw_save.items():
+            if not isinstance(identity, str) or not isinstance(item, dict):
+                continue
+            resolved_identity = identity
+            if identity.lower().endswith('.epub'):
+                try:
+                    if not os.path.isfile(identity):
+                        continue
+                    resolved_identity = _file_md5(Path(identity))
+                except OSError as error:
+                    self._diagnose('Legacy progress file could not be hashed: {}'.format(error))
+                    continue
+            if _BOOK_IDENTITY.fullmatch(resolved_identity):
+                valid = _validate_save(item)
+                if valid is not None:
+                    yield resolved_identity, valid
+
+    def _capture_local_only_changes(self) -> None:
+        """Queue changes made while sync was disabled without re-counting it."""
+        baseline = self._last_materialized()
+        baseline_counts = _valid_count_map(baseline.get('chord_counts', {}))
+        baseline_overrides = _valid_override_map(baseline.get('chord_overrides', {}))
+        baseline_settings = baseline.get('settings', {})
+        self._materialized_counts = {
+            **baseline_counts, **self._materialized_counts}
+        self._materialized_overrides = {
+            **baseline_overrides, **self._materialized_overrides}
+
+        chord_path = self.legacy_dir / 'chord-mastery.json'
+        try:
+            raw = _read_json(chord_path)
+            if isinstance(raw, dict):
+                progress = raw.get('progress', {})
+                overrides = raw.get('manual_overrides', {})
+                self.record_chords(progress if isinstance(progress, dict) else {},
+                                   overrides if isinstance(overrides, dict) else {})
+        except ValidationError as error:
+            if chord_path.exists():
+                self._diagnose('Local-only chord changes could not be queued: {}'.format(error))
+
+        config_path = self.legacy_dir / 'config.json'
+        try:
+            config = _read_json(config_path)
+            if isinstance(config, dict):
+                previous = apply_learning_settings({}, baseline_settings) \
+                    if isinstance(baseline_settings, dict) else {}
+                self.record_settings(config, previous)
+        except ValidationError as error:
+            if config_path.exists():
+                self._diagnose('Local-only learning settings could not be queued: {}'.format(error))
+
+        save_path = self.legacy_dir / 'save.json'
+        try:
+            raw_save = _read_json(save_path)
+            if isinstance(raw_save, dict):
+                for identity, value in self._legacy_save_entries(raw_save):
+                    prior = self._payload.get('books', {})
+                    prior_value = prior.get(identity) if isinstance(prior, dict) else None
+                    if _validate_save(prior_value) is None or \
+                            _progress_key(value) > _progress_key(prior_value):
+                        self.record_book(identity, value)
+        except ValidationError as error:
+            if save_path.exists():
+                self._diagnose('Local-only book progress could not be queued: {}'.format(error))
+
+    def _import_legacy_state(self) -> None:
+        books = self._payload.setdefault('books', {})
+        chords = self._payload.setdefault('chords', {'counts': {}, 'overrides': {}})
+        settings = self._payload.setdefault('settings', {})
+        if not isinstance(books, dict) or not isinstance(chords, dict) or \
+                not isinstance(settings, dict):
+            raise SyncError('local pending state is malformed')
+        counts = chords.setdefault('counts', {})
+        overrides = chords.setdefault('overrides', {})
+        if not isinstance(counts, dict) or not isinstance(overrides, dict):
+            raise SyncError('local chord state is malformed')
+
+        save_path = self.legacy_dir / 'save.json'
+        try:
+            raw_save = _read_json(save_path)
+            if isinstance(raw_save, dict):
+                for identity, valid in self._legacy_save_entries(raw_save):
+                    prior = books.get(identity)
+                    if _validate_save(prior) is None or \
+                            _progress_key(valid) > _progress_key(prior):
+                        books[identity] = valid
+        except ValidationError as error:
+            if save_path.exists():
+                self._diagnose('Legacy progress was not imported: {}'.format(error))
+
+        chord_path = self.legacy_dir / 'chord-mastery.json'
+        try:
+            raw_chords = _read_json(chord_path)
+            if isinstance(raw_chords, dict) and isinstance(raw_chords.get('progress'), dict):
+                for key, count in raw_chords['progress'].items():
+                    if isinstance(key, str) and key and _is_int(count) and count >= 0:
+                        counts[key] = max(int(counts.get(key, 0)), count)
+                raw_overrides = raw_chords.get('manual_overrides', {})
+                if isinstance(raw_overrides, dict):
+                    for key, value in raw_overrides.items():
+                        if isinstance(key, str) and key and isinstance(value, bool):
+                            stamp = self._now()
+                            overrides[key] = {
+                                'value': value, 'hlc': stamp.to_data(),
+                                'replica_id': self.replica_id,
+                            }
+        except ValidationError as error:
+            if chord_path.exists():
+                self._diagnose('Legacy chord progress was not imported: {}'.format(error))
+
+        config_path = self.legacy_dir / 'config.json'
+        try:
+            config = _read_json(config_path)
+            if isinstance(config, dict):
+                for key, value in learning_settings_from_config(config).items():
+                    stamp = self._now()
+                    settings[key] = {'value': value, 'hlc': stamp.to_data(),
+                                     'replica_id': self.replica_id}
+        except ValidationError as error:
+            if config_path.exists():
+                self._diagnose('Legacy learning settings were not imported: {}'.format(error))
+        self._initialize_materialized_count_baseline(include_payload_counts=True)
+        self._touch()
+
+    def _initialize_materialized_count_baseline(
+            self, include_payload_counts: bool = False) -> None:
+        baselines = []
+        last = self._last_materialized()
+        baselines.append(_valid_count_map(last.get('chord_counts', {})))
+        baselines.append(self._read_legacy_chord_counts())
+        if include_payload_counts:
+            chords = self._payload.get('chords', {})
+            counts = chords.get('counts', {}) if isinstance(chords, dict) else {}
+            if isinstance(counts, dict):
+                baselines.append(_valid_count_map(counts))
+        for baseline in baselines:
+            for key, count in baseline.items():
+                if isinstance(key, str) and key and _is_int(count) and count >= 0:
+                    self._local_chord_counts[key] = max(
+                        self._local_chord_counts.get(key, 0), count)
+
+    def _read_legacy_chord_counts(self) -> dict[str, int]:
+        path = self.legacy_dir / 'chord-mastery.json'
+        try:
+            data = _read_json(path)
+        except ValidationError:
+            return {}
+        if not isinstance(data, dict) or not isinstance(data.get('progress'), dict):
+            return {}
+        return _valid_count_map(data['progress'])
+
+    def deferred_settings(self) -> dict[str, object]:
+        pending: dict[str, object] = {}
+        collection = self.collection_id or ''
+        with self._deferred_lock:
+            events = list(self._deferred)
+        for event_collection, _, kind, args in events:
+            if event_collection != collection or kind != 'settings' or len(args) < 2:
+                continue
+            current = args[0]
+            previous = args[1]
+            if not isinstance(current, Mapping) or not isinstance(previous, Mapping):
+                continue
+            values = learning_settings_from_config(current)
+            before = learning_settings_from_config(previous)
+            for key, value in values.items():
+                if value != before.get(key):
+                    pending[key] = deepcopy(value)
+        return pending
+
+    def record_book(self, identity: str, data: Mapping[str, object],
+                    _deferred_id: str | None = None) -> None:
+        if not _BOOK_IDENTITY.fullmatch(identity):
+            return
+        valid = _validate_save(dict(data))
+        if valid is None:
+            return
+        if not self._lock.acquire(blocking=False):
+            if not self._defer('book', identity, dict(data)):
+                self._reconcile_after_deferred_failure()
+            return
+        try:
+            if not self.enabled:
+                return
+            if _deferred_id is not None and self._deferred_marker_present(_deferred_id):
+                return
+            books = self._payload.setdefault('books', {})
+            assert isinstance(books, dict)
+            prior = books.get(identity)
+            if isinstance(prior, dict):
+                prior_valid = _validate_save(prior)
+                if prior_valid and _progress_key(prior_valid) > _progress_key(valid):
+                    # Preserve a locally reached furthest position while still
+                    # recording a timestamped last-resume point for diagnostics.
+                    valid = prior_valid
+            stamp = self._now()
+            valid['last_resume'] = dict(data)
+            valid['last_resume']['hlc'] = stamp.to_data()
+            valid['last_resume']['replica_id'] = self.replica_id
+            # Last resume has the same strict scalar validation plus metadata.
+            if _validate_save(valid['last_resume']) is None:
+                valid.pop('last_resume', None)
+            books[identity] = valid
+            if _deferred_id is not None:
+                self._mark_deferred_applied(_deferred_id)
+            self._touch_or_defer('book', identity, dict(data),
+                                  deferred_id=_deferred_id)
+        finally:
+            self._lock.release()
+
+    def record_chords(self, progress: Mapping[str, int],
+                      overrides: Mapping[str, bool],
+                      _deferred_id: str | None = None,
+                      _deferred_baseline: Mapping[str, int] | None = None,
+                      _deferred_override_baseline: Mapping[str, bool] | None = None) -> None:
+        if _deferred_id is None and self._sync_application_guard and \
+                self.enabled and self._post_sync_counts_baseline is not None:
+            self._chord_revision += 1
+            baseline = dict(self._post_sync_counts_baseline)
+            for key, total in progress.items():
+                if isinstance(key, str) and key and _is_int(total) and total >= 0 and \
+                        total > baseline.get(key, 0) + 1 and \
+                        self._materialized_counts.get(key, 0) >= total:
+                    baseline[key] = self._materialized_counts[key]
+            if not self._defer(
+                    'chords', dict(progress), dict(overrides),
+                    deferred_baseline=baseline,
+                    deferred_override_baseline=self._post_sync_overrides_baseline):
+                self._reconcile_after_deferred_failure()
+            for key, total in progress.items():
+                if isinstance(key, str) and key and _is_int(total) and total >= 0:
+                    self._post_sync_counts_baseline[key] = max(
+                        self._post_sync_counts_baseline.get(key, 0), total)
+            self._post_sync_overrides_baseline = {
+                key: value for key, value in overrides.items()
+                if isinstance(key, str) and key and isinstance(value, bool)
+            }
+            return
+        if not self._lock.acquire(blocking=False):
+            if self.enabled:
+                self._chord_revision += 1
+            if not self._defer(
+                    'chords', dict(progress), dict(overrides),
+                    deferred_baseline=(_deferred_baseline if _deferred_baseline is not None
+                                        else self._sync_callback_counts_baseline
+                                        if self._sync_callback_counts_baseline is not None
+                                        else self._local_chord_counts),
+                    deferred_override_baseline=(
+                        _deferred_override_baseline
+                        if _deferred_override_baseline is not None else
+                        self._sync_callback_overrides_baseline
+                        if self._sync_callback_overrides_baseline is not None else
+                        self._materialized_overrides)):
+                self._reconcile_after_deferred_failure()
+            return
+        try:
+            if not self.enabled:
+                return
+            self._chord_revision += 1
+            if _deferred_id is not None and self._deferred_marker_present(_deferred_id):
+                return
+            chords = self._payload.setdefault('chords', {'counts': {}, 'overrides': {}})
+            assert isinstance(chords, dict)
+            contributions = chords.setdefault('counts', {})
+            registers = chords.setdefault('overrides', {})
+            assert isinstance(contributions, dict) and isinstance(registers, dict)
+            before_contributions = dict(contributions)
+            before_registers = deepcopy(registers)
+            before_materialized_counts = dict(self._materialized_counts)
+            before_local_chord_counts = dict(self._local_chord_counts)
+            before_materialized_overrides = dict(self._materialized_overrides)
+            before_bootstrap_local_counts = self._bootstrap.get('local_chord_counts')
+            callback_override_baseline = (
+                dict(_deferred_override_baseline)
+                if _deferred_override_baseline is not None else
+                before_materialized_overrides)
+            callback_baseline = {
+                key: max(self._materialized_counts.get(key, 0),
+                         self._local_chord_counts.get(key, 0))
+                for key in progress
+                if isinstance(key, str) and key}
+            changed = False
+            for key, total in progress.items():
+                if not isinstance(key, str) or not key or not _is_int(total) or total < 0:
+                    continue
+                old_total = (_deferred_baseline.get(key, 0)
+                             if _deferred_baseline is not None else max(
+                                 self._materialized_counts.get(key, 0),
+                                 self._local_chord_counts.get(key, 0)))
+                delta = total - old_total
+                if delta > 0:
+                    contributions[key] = int(contributions.get(key, 0)) + delta
+                    changed = True
+                # Subsequent local callbacks carry a global total. Remember
+                # this observation so each newly recorded use contributes one,
+                # rather than repeatedly adding all local uses since a scan.
+                self._materialized_counts[key] = max(
+                    self._materialized_counts.get(key, 0), total)
+                self._local_chord_counts[key] = max(
+                    self._local_chord_counts.get(key, 0), total)
+            current = {key: value for key, value in overrides.items()
+                       if isinstance(key, str) and key and isinstance(value, bool)}
+            for key in set(current) | set(callback_override_baseline):
+                value = current.get(key)
+                was_present = key in callback_override_baseline
+                is_present = key in current
+                if was_present == is_present and \
+                        callback_override_baseline.get(key) == value:
+                    continue
+                stamp = self._now()
+                registers[key] = {'value': value, 'hlc': stamp.to_data(),
+                                  'replica_id': self.replica_id}
+                if value is None:
+                    self._materialized_overrides.pop(key, None)
+                else:
+                    self._materialized_overrides[key] = value
+                changed = True
+            if _deferred_id is not None:
+                self._mark_deferred_applied(_deferred_id)
+                changed = True
+            if changed:
+                saved = self._touch_or_defer(
+                    'chords', dict(progress), dict(overrides),
+                    deferred_id=_deferred_id,
+                    deferred_baseline=(
+                        self._sync_callback_counts_baseline
+                        if self._sync_callback_counts_baseline is not None
+                        else callback_baseline),
+                    deferred_override_baseline=callback_override_baseline)
+                if not saved and _deferred_id is None:
+                    chords['counts'] = before_contributions
+                    chords['overrides'] = before_registers
+                    self._materialized_counts = before_materialized_counts
+                    self._local_chord_counts = before_local_chord_counts
+                    self._materialized_overrides = before_materialized_overrides
+                    if before_bootstrap_local_counts is None:
+                        self._bootstrap.pop('local_chord_counts', None)
+                    else:
+                        self._bootstrap['local_chord_counts'] = before_bootstrap_local_counts
+        finally:
+            self._lock.release()
+
+    def record_settings(self, config: Mapping[str, object],
+                        previous: Mapping[str, object],
+                        _deferred_id: str | None = None) -> None:
+        if not self._lock.acquire(blocking=False):
+            if self.enabled:
+                values = learning_settings_from_config(config)
+                before = learning_settings_from_config(previous)
+                for key, value in values.items():
+                    if value != before.get(key):
+                        self._settings_revisions[key] = \
+                            self._settings_revisions.get(key, 0) + 1
+            if not self._defer('settings', deepcopy(dict(config)),
+                               deepcopy(dict(previous))):
+                self._reconcile_after_deferred_failure()
+            return
+        try:
+            if not self.enabled:
+                return
+            if _deferred_id is not None and self._deferred_marker_present(_deferred_id):
+                return
+            values = learning_settings_from_config(config)
+            before = learning_settings_from_config(previous)
+            registers = self._payload.setdefault('settings', {})
+            assert isinstance(registers, dict)
+            changed = False
+            for key, value in values.items():
+                if value == before.get(key):
+                    continue
+                stamp = self._now()
+                registers[key] = {'value': value, 'hlc': stamp.to_data(),
+                                  'replica_id': self.replica_id}
+                self._settings_revisions[key] = \
+                    self._settings_revisions.get(key, 0) + 1
+                changed = True
+            if _deferred_id is not None:
+                self._mark_deferred_applied(_deferred_id)
+                changed = True
+            if changed:
+                self._touch_or_defer('settings', deepcopy(dict(config)),
+                                      deepcopy(dict(previous)),
+                                      deferred_id=_deferred_id)
+        finally:
+            self._lock.release()
+
+    def _collection_manifest(self, root: Path) -> str:
+        manifest = _read_json(root / 'retype-sync.json')
+        if not isinstance(manifest, dict) or manifest.get('schema') != COLLECTION_SCHEMA or \
+                manifest.get('version') != SYNC_VERSION or \
+                not _valid_uuid(manifest.get('collection_id')):
+            raise SyncError('the sync folder collection manifest is unavailable or invalid')
+        return str(manifest['collection_id'])
+
+    def sync_now(self) -> SyncResult:
+        """Publish the local replica then merge all valid visible replicas."""
+        with self._lock:
+            self._finalizing_counts_baseline = None
+            try:
+                self._apply_deferred()
+                if not self.enabled:
+                    self.status = SyncStatus()
+                    return SyncResult(self.status)
+                self._post_sync_counts_baseline = None
+                self._post_sync_overrides_baseline = None
+                self._sync_callback_counts_baseline = dict(self._local_chord_counts)
+                self._sync_callback_overrides_baseline = dict(
+                    self._materialized_overrides)
+                root = self.sync_root
+                collection = self.collection_id
+                if root is None or collection is None:
+                    self.status = SyncStatus('waiting', 'Waiting for sync configuration.')
+                    return SyncResult(self.status)
+                if not root.is_dir():
+                    raise SyncError('the selected folder is unavailable')
+                if self._bootstrap.get('legacy_migrated') is True and \
+                        self._bootstrap.get('last_materialized') is not None:
+                    self._capture_local_only_changes()
+                    self._legacy_capture_needed = False
+                elif self._legacy_capture_needed and \
+                        self._bootstrap.get('last_materialized') is not None:
+                    self._capture_local_only_changes()
+                    self._legacy_capture_needed = False
+                if self._collection_manifest(root) != collection:
+                    raise SyncError('the selected folder belongs to a different collection')
+                replicas_dir = root / 'replicas'
+                replicas_dir.mkdir(parents=True, exist_ok=True)
+                self._migrate_legacy_once()
+                self._publish(replicas_dir)
+                replicas = self._scan_replicas(replicas_dir, collection)
+                result = merge_replicas(replicas)
+                self._retain_materialized_chord_state(result)
+                self._retain_materialized_settings(result)
+                while self.has_deferred_changes:
+                    self._apply_deferred()
+                    self._publish(replicas_dir)
+                    replicas = self._scan_replicas(replicas_dir, collection)
+                    result = merge_replicas(replicas)
+                    self._retain_materialized_chord_state(result)
+                    self._retain_materialized_settings(result)
+                with self._deferred_lock:
+                    self._finalizing_counts_baseline = dict(self._materialized_counts)
+                legacy_materialized = self._materialize_legacy_state(result)
+                if legacy_materialized:
+                    self._remember_local_chord_baseline(result)
+                result.managed_books_ready = self._materialize_managed_books(
+                    root, result)
+                result.managed_books_materialized = bool(result.managed_books_ready)
+                while self.has_deferred_changes:
+                    self._apply_deferred()
+                    self._publish(replicas_dir)
+                    replicas = self._scan_replicas(replicas_dir, collection)
+                    result = merge_replicas(replicas)
+                    self._retain_materialized_chord_state(result)
+                    self._retain_materialized_settings(result)
+                    legacy_materialized = self._materialize_legacy_state(result)
+                    if legacy_materialized:
+                        self._remember_local_chord_baseline(result)
+                    result.managed_books_ready = self._materialize_managed_books(
+                        root, result)
+                    result.managed_books_materialized = bool(result.managed_books_ready)
+                with self._deferred_lock:
+                    baseline = dict(self._materialized_counts)
+                    self._finalizing_counts_baseline = dict(baseline)
+                    pending_chords = [
+                        args[0] for collection_id, _, kind, args in self._deferred
+                        if collection_id == (self.collection_id or '') and
+                        kind == 'chords' and args and isinstance(args[0], dict)]
+                    for progress in pending_chords:
+                        for key, total in progress.items():
+                            if isinstance(key, str) and key and _is_int(total) and total >= 0:
+                                self._finalizing_counts_baseline[key] = max(
+                                    self._finalizing_counts_baseline.get(key, 0), total)
+                    self._retain_materialized_chord_state(result)
+                    self._retain_materialized_settings(result)
+                if legacy_materialized:
+                    self._remember_materialized(result)
+                    result.legacy_materialized = True
+                    if not self._legacy_capture_needed:
+                        self._clear_legacy_reconciliation_marker()
+                managed_limit_exceeded = result.managed_books and \
+                    sum(int(metadata['size']) for metadata in
+                        result.managed_books.values()) > MAX_MANAGED_LIBRARY_BYTES
+                managed_materialized = (
+                    not self.managed_library_consent or
+                    not result.managed_books or managed_limit_exceeded or
+                    set(result.managed_books).issubset(result.managed_books_ready))
+                if legacy_materialized and managed_materialized and \
+                        not self._legacy_capture_needed:
+                    result.status = SyncStatus(
+                        'synced',
+                        'Local changes are saved in the selected sync folder.',
+                        time.time(), list(self.status.diagnostics))
+                else:
+                    result.status = SyncStatus(
+                        'waiting',
+                        'Merged learning state could not be materialized locally; retrying.',
+                        time.time(), list(self.status.diagnostics))
+                self.status = result.status
+                if result.status.diagnostics:
+                    result.status.message = (
+                        'Sync completed with recovery notices. Show recovery '
+                        'diagnostics for details.')
+                result.settings_revisions = {
+                    key: self._settings_revisions.get(key, 0)
+                    for key in result.settings
+                }
+                result.chord_revision = self._chord_revision
+                if self._sync_application_guard:
+                    self._post_sync_counts_baseline = dict(
+                        self._sync_callback_counts_baseline or
+                        self._local_chord_counts)
+                    self._post_sync_overrides_baseline = dict(
+                        self._sync_callback_overrides_baseline or
+                        self._materialized_overrides)
+                self._sync_callback_counts_baseline = None
+                self._sync_callback_overrides_baseline = None
+                return result
+            except (OSError, SyncError, ValidationError) as error:
+                self._sync_callback_counts_baseline = None
+                self._sync_callback_overrides_baseline = None
+                self._post_sync_counts_baseline = None
+                self._post_sync_overrides_baseline = None
+                self.status = SyncStatus('waiting',
+                    'Waiting for the selected sync folder: {}'.format(error),
+                    time.time(), list(self.status.diagnostics))
+                return SyncResult(self.status)
+
+    def _publish(self, replicas_dir: Path) -> None:
+        target = replicas_dir / (self.replica_id + '.json')
+        envelope = self._envelope()
+        if len(_json_bytes(envelope)) > MAX_REPLICA_BYTES:
+            raise SyncError('local learning state exceeds the 5 MiB replica limit')
+        local_digest = str(envelope['payload_digest'])
+        existing = None
+        if target.exists():
+            try:
+                existing = validate_envelope(_read_json(target), self.collection_id)
+            except ValidationError as error:
+                if not self._recover_candidate(target, str(error)):
+                    raise SyncError(
+                        'malformed replica could not be preserved for recovery') from error
+        if existing is not None:
+            if existing['replica_id'] != self.replica_id:
+                raise SyncError('replica file ownership is invalid')
+            existing_digest = str(existing['payload_digest'])
+            if existing['sequence'] == envelope['sequence'] and existing_digest != local_digest:
+                self._handle_replica_fork(existing, envelope)
+                raise SyncError('replica identity conflict requires recovery')
+            if int(existing['sequence']) > int(envelope['sequence']):
+                self._handle_replica_fork(existing, envelope)
+                raise SyncError('replica identity conflict requires recovery')
+            if existing_digest == local_digest and \
+                    existing['sequence'] == envelope['sequence']:
+                self._remember_published_envelope(envelope)
+                self._predecessor = local_digest
+                predecessor = envelope.get('predecessor_digest')
+                self._published_predecessor = predecessor if isinstance(predecessor, str) else None
+                self._dirty = False
+                self.pending_path.unlink(missing_ok=True)
+                return
+            if int(existing['sequence']) < int(envelope['sequence']):
+                known = self._published_ancestry.get(existing_digest)
+                known_ancestor = known is not None and \
+                    known == (int(existing['sequence']),
+                              existing.get('predecessor_digest'))
+                direct_ancestor = existing_digest in (
+                    envelope.get('predecessor_digest'),
+                    self._published_predecessor)
+                if not known_ancestor and not direct_ancestor:
+                    oldest_sequence = min(
+                        (item[0] for item in self._published_ancestry.values()),
+                        default=0)
+                    if oldest_sequence and int(existing['sequence']) < oldest_sequence:
+                        if not self._recover_candidate(
+                                target,
+                                'provider replica is older than the retained ancestry window'):
+                            raise SyncError(
+                                'stale provider replica could not be preserved for recovery')
+                    else:
+                        self._handle_replica_fork(existing, envelope)
+                        raise SyncError('replica identity conflict requires recovery')
+        atomic_write_json(target, envelope, self.recovery_dir / 'replicas')
+        self._remember_published_envelope(envelope)
+        self._predecessor = local_digest
+        predecessor = envelope.get('predecessor_digest')
+        self._published_predecessor = predecessor if isinstance(predecessor, str) else None
+        self._dirty = False
+        self.pending_path.unlink(missing_ok=True)
+
+    def _handle_replica_fork(self, remote: Mapping[str, object],
+                             local: Mapping[str, object]) -> None:
+        self.recovery_dir.mkdir(parents=True, exist_ok=True)
+        atomic_write_json(self.recovery_dir / ('replica-fork-{}.json'.format(
+            int(time.time() * 1000))), {'remote': remote, 'local': local})
+        old = self.replica_id
+        self._bootstrap['replica_id'] = str(uuid4())
+        self._payload = _empty_payload()
+        self._sequence = 0
+        self._predecessor = None
+        self._published_predecessor = None
+        self._published_ancestry = {}
+        self._bootstrap.pop('published_ancestry', None)
+        self._dirty = False
+        self._save_bootstrap()
+        try:
+            self.published_ancestry_path.unlink(missing_ok=True)
+        except OSError as error:
+            self._diagnose(
+                'Published sync ancestry could not be cleared: {}'.format(error))
+            raise SyncError('published sync ancestry could not be cleared') from error
+        self._diagnose('Replica {} was duplicated. A new identity was created; '
+                       'the divergent state is in recovery diagnostics.'.format(old))
+
+    def _scan_replicas(self, directory: Path, collection: str) -> list[dict[str, object]]:
+        replicas = []
+        for path in sorted(directory.glob('*.json')):
+            try:
+                envelope = validate_envelope(_read_json(path), collection)
+                self._observe(HLC.from_data(envelope['hlc']))
+                replicas.append(envelope)
+            except ValidationError as error:
+                self._recover_candidate(path, str(error))
+        return replicas
+
+    def _retain_materialized_settings(self, result: SyncResult) -> None:
+        baseline = self._last_materialized().get('settings')
+        retained = {
+            key: deepcopy(value) for key, value in baseline.items()
+            if key in VALID_SETTINGS and _validate_settings_value(key, value)
+        } if isinstance(baseline, dict) else {}
+        registers = dict(self._materialized_settings_registers)
+        for key, register in registers.items():
+            if key in VALID_SETTINGS and isinstance(register, dict) and \
+                    _validate_settings_value(key, register.get('value')):
+                retained[key] = deepcopy(register['value'])
+        for key, register in result.settings_registers.items():
+            if key not in VALID_SETTINGS or not isinstance(register, dict) or \
+                    not _validate_settings_value(key, register.get('value')):
+                continue
+            current = registers.get(key)
+            current_stamp = _register_stamp(current)
+            incoming_stamp = _register_stamp(register)
+            if current_stamp is not None and incoming_stamp is not None and \
+                    incoming_stamp <= current_stamp:
+                continue
+            registers[key] = deepcopy(register)
+            retained[key] = deepcopy(register['value'])
+        for key, value in result.settings.items():
+            if key not in retained and key in VALID_SETTINGS and \
+                    _validate_settings_value(key, value) and key not in registers:
+                retained[key] = deepcopy(value)
+        self._materialized_settings_registers = registers
+        result.settings = retained
+        result.settings_registers = deepcopy(registers)
+
+    def _retain_materialized_chord_state(self, result: SyncResult) -> None:
+        counts = dict(self._materialized_counts)
+        for key, count in result.chord_counts.items():
+            counts[key] = max(counts.get(key, 0), count)
+        self._materialized_counts = counts
+        result.chord_counts = dict(counts)
+
+        registers = dict(self._materialized_override_registers)
+        for key, register in result.chord_override_registers.items():
+            current_stamp = _register_stamp(register)
+            previous = registers.get(key)
+            previous_stamp = _register_stamp(previous)
+            if current_stamp is not None and (
+                    previous_stamp is None or current_stamp > previous_stamp):
+                registers[key] = deepcopy(register)
+        self._materialized_override_registers = registers
+        overrides = {
+            key: register['value'] for key, register in registers.items()
+            if isinstance(register.get('value'), bool)
+        }
+        overrides.update({
+            key: value for key, value in self._materialized_overrides.items()
+            if key not in registers
+        })
+        self._materialized_overrides = overrides
+        result.chord_override_registers = deepcopy(registers)
+        result.chord_overrides = dict(overrides)
+
+    def _remember_local_chord_baseline(self, result: SyncResult) -> None:
+        for key, count in result.chord_counts.items():
+            self._local_chord_counts[key] = max(
+                self._local_chord_counts.get(key, 0), count)
+        self._bootstrap['local_chord_counts'] = dict(self._local_chord_counts)
+        try:
+            self._save_bootstrap()
+        except OSError:
+            previous = self._last_materialized()
+            recovery = {
+                'collection_id': self.collection_id,
+                'chord_counts': deepcopy(previous.get('chord_counts', {})),
+                'chord_overrides': deepcopy(previous.get('chord_overrides', {})),
+                'chord_override_registers': deepcopy(
+                    previous.get('chord_override_registers', {})),
+                'settings': deepcopy(previous.get('settings', {})),
+                'settings_registers': deepcopy(
+                    previous.get('settings_registers', {})),
+                'local_chord_counts': dict(self._local_chord_counts),
+            }
+            try:
+                atomic_write_json(self.materialized_recovery_path, recovery,
+                                  self.recovery_dir / 'materialized')
+            except OSError as error:
+                self._diagnose(
+                    'Materialized sync recovery could not be written: {}'.format(error))
+            raise
+
+    def _remember_materialized(self, result: SyncResult) -> None:
+        previous = self._last_materialized()
+        managed_books = {
+            digest: deepcopy(metadata) for digest, metadata in
+            result.managed_books.items()
+            if _validate_book_metadata(digest, metadata)
+        }
+        previous_managed = previous.get('managed_books')
+        if isinstance(previous_managed, dict):
+            for digest, metadata in previous_managed.items():
+                if digest not in managed_books and \
+                        _validate_book_metadata(digest, metadata):
+                    managed_books[digest] = deepcopy(metadata)
+        self._materialized_settings_before_commit = (
+            deepcopy(previous.get('settings', {})),
+            deepcopy(previous.get('settings_registers', {})))
+        for key, count in result.chord_counts.items():
+            self._local_chord_counts[key] = max(
+                self._local_chord_counts.get(key, 0), count)
+        settings = dict(result.settings)
+        if isinstance(previous.get('settings'), dict):
+            for key, value in previous['settings'].items():
+                if key not in settings and key in VALID_SETTINGS and \
+                        _validate_settings_value(key, value):
+                    settings[key] = deepcopy(value)
+        result.settings = settings
+        state = {
+            'collection_id': self.collection_id,
+            'chord_counts': dict(result.chord_counts),
+            'chord_overrides': dict(result.chord_overrides),
+            'chord_override_registers': deepcopy(result.chord_override_registers),
+            'settings': deepcopy(settings),
+            'settings_registers': deepcopy(self._materialized_settings_registers),
+            'managed_books': managed_books,
+            'local_chord_counts': dict(self._local_chord_counts),
+        }
+        atomic_write_json(self.materialized_recovery_path, state,
+                          self.recovery_dir / 'materialized')
+        self._bootstrap['last_materialized'] = state
+        self._bootstrap['local_chord_counts'] = dict(self._local_chord_counts)
+        try:
+            self._save_bootstrap()
+        except OSError:
+            raise
+        else:
+            self.materialized_recovery_path.unlink(missing_ok=True)
+
+    def rollback_materialized_settings(self) -> None:
+        with self._lock:
+            if self._materialized_settings_before_commit is None:
+                return
+            settings, registers = self._materialized_settings_before_commit
+            state = deepcopy(self._last_materialized())
+            state['collection_id'] = self.collection_id
+            state['settings'] = deepcopy(settings)
+            state['settings_registers'] = deepcopy(registers)
+            state['local_chord_counts'] = dict(self._local_chord_counts)
+            self._materialized_settings_registers = _valid_settings_register_map(registers)
+            self._bootstrap['last_materialized'] = state
+            self._bootstrap['local_chord_counts'] = dict(self._local_chord_counts)
+            try:
+                atomic_write_json(self.materialized_recovery_path, state,
+                                  self.recovery_dir / 'materialized')
+                self._save_bootstrap()
+            except OSError as error:
+                self._diagnose(
+                    'Materialized sync settings could not be rolled back: {}'.format(error))
+                return
+            self.materialized_recovery_path.unlink(missing_ok=True)
+            self._materialized_settings_before_commit = None
+
+    def _materialize_legacy_state(self, result: SyncResult) -> bool:
+        """Keep existing local consumers working from a merged cache.
+
+        These files are a materialisation, not the protocol and never get
+        uploaded directly.  Unknown legacy save entries remain local so an
+        older/path-based entry is not silently discarded.
+        """
+        success = True
+        result.chord_materialized = False
+        try:
+            self.legacy_dir.mkdir(parents=True, exist_ok=True)
+            save_path = self.legacy_dir / 'save.json'
+            save_valid = True
+            try:
+                current = _read_json(save_path)
+            except ValidationError as error:
+                current = {}
+                save_valid = not save_path.exists()
+                success = success and save_valid
+                self._diagnose('Existing local progress was left untouched: {}'.format(error))
+            if save_path.exists() and not isinstance(current, dict):
+                save_valid = False
+                success = False
+            materialized = dict(current) if isinstance(current, dict) else {}
+            for identity, data in result.save.items():
+                current_data = materialized.get(identity)
+                if _validate_save(current_data) is None or \
+                        _progress_key(data) > _progress_key(current_data):
+                    materialized[identity] = deepcopy(data)
+            if save_valid and (result.save or save_path.exists()):
+                atomic_write_json(save_path, materialized,
+                                  self.recovery_dir / 'materialized')
+
+            chord_path = self.legacy_dir / 'chord-mastery.json'
+            chord_valid = True
+            try:
+                chord_current = _read_json(chord_path)
+            except ValidationError as error:
+                chord_current = {}
+                chord_valid = not chord_path.exists()
+                success = success and chord_valid
+                self._diagnose('Existing local chord progress was left untouched: {}'.format(error))
+            if not isinstance(chord_current, dict):
+                chord_data = {}
+                chord_valid = False
+                success = False
+            else:
+                chord_data = dict(chord_current)
+            if isinstance(chord_current, dict) and chord_path.exists() and \
+                    chord_data.get('version') not in (1, 2):
+                chord_valid = False
+                success = False
+                self._diagnose('Existing local chord progress has an unsupported format and was left untouched.')
+            raw_progress = chord_data.get('progress', {})
+            if chord_path.exists() and ('progress' not in chord_data or
+                                         not isinstance(raw_progress, dict)):
+                chord_valid = False
+                success = False
+                self._diagnose('Existing local chord progress has an unsupported format and was left untouched.')
+            raw_overrides = chord_data.get('manual_overrides', {})
+            if chord_path.exists() and (
+                    not isinstance(raw_overrides, dict) or any(
+                        not isinstance(key, str) or not key or
+                        not isinstance(value, bool)
+                        for key, value in raw_overrides.items())):
+                chord_valid = False
+                success = False
+                self._diagnose('Existing local chord progress has an unsupported format and was left untouched.')
+            progress = dict(raw_progress) if isinstance(raw_progress, dict) else {}
+            for key, count in result.chord_counts.items():
+                current_count = progress.get(key)
+                if not _is_int(current_count) or count > current_count:
+                    progress[key] = count
+            if chord_valid and (result.chord_counts or result.chord_overrides or chord_path.exists()):
+                chord_data['version'] = 2
+                chord_data['progress'] = progress
+                if result.chord_overrides:
+                    chord_data['manual_overrides'] = dict(result.chord_overrides)
+                else:
+                    chord_data.pop('manual_overrides', None)
+                atomic_write_json(chord_path, chord_data,
+                                  self.recovery_dir / 'materialized')
+            result.chord_materialized = chord_valid
+        except OSError as error:
+            success = False
+            self._diagnose('Merged learning data could not be materialized locally: {}'.format(error))
+        return success
+
+    def _materialize_managed_books(self, root: Path, result: SyncResult) -> set[str]:
+        previous_managed = self._last_materialized().get('managed_books')
+        if isinstance(previous_managed, dict):
+            for digest, metadata in previous_managed.items():
+                if digest not in result.managed_books and \
+                        _validate_book_metadata(digest, metadata):
+                    result.managed_books[digest] = deepcopy(metadata)
+        if not self.managed_library_consent:
+            if result.managed_books:
+                self._diagnose('Managed books are unavailable until managed-library consent is enabled.')
+            return set()
+        total = sum(int(meta['size']) for meta in result.managed_books.values())
+        if total > MAX_MANAGED_LIBRARY_BYTES:
+            self._diagnose('Managed library exceeds the configured 1 GiB limit.')
+            return set()
+        ready = set()
+        for digest, metadata in result.managed_books.items():
+            source = root / 'books' / 'sha256' / (digest + '.epub')
+            destination = self.managed_library_dir / (digest + '.epub')
+            try:
+                if not source.exists():
+                    self._diagnose('Managed book {} is missing; its progress is retained.'.format(
+                        metadata['original_filename']))
+                    continue
+                if source.stat().st_size != metadata['size'] or _file_sha256(source) != digest:
+                    self._recover_candidate(source, 'managed book hash or size mismatch')
+                    continue
+                if not _is_loadable_epub_file(source):
+                    self._recover_candidate(source, 'managed book is not a valid EPUB')
+                    continue
+                if not destination.exists() or destination.stat().st_size != metadata['size'] or \
+                        _file_sha256(destination) != digest:
+                    _copy_atomic(source, destination, digest, int(metadata['size']))
+                try:
+                    loaded = _load_epub(destination)
+                except Exception:
+                    self._recover_candidate(destination, 'managed book could not be loaded')
+                    continue
+                result.managed_books_loaded[digest] = loaded
+                ready.add(digest)
+            except OSError as error:
+                self._diagnose('Managed book {} is unavailable: {}'.format(
+                    metadata['original_filename'], error))
+        return ready
+
+    def import_book(self, source: str | Path, title: str | None = None) -> dict[str, object]:
+        """Explicitly copy one user-selected EPUB into the managed library."""
+        path = Path(source)
+        with self._lock:
+            created_paths = []
+            digest = None
+            managed = None
+            before_payload = deepcopy(self._payload)
+            before_sequence = self._sequence
+            before_predecessor = self._predecessor
+            before_clock = self._clock
+            before_dirty = self._dirty
+            before_pending_touch_durable = self._pending_touch_durable
+            before_pending_exists = self.pending_path.exists()
+            missing = object()
+            previous_metadata = missing
+            try:
+                if not self.enabled:
+                    raise SyncError('turn on sync before importing a managed book')
+                if not self.managed_library_consent:
+                    raise SyncError('managed-library consent is required before copying books')
+                if path.suffix.lower() != '.epub' or not path.is_file():
+                    raise SyncError('select a readable EPUB file')
+                try:
+                    from retype.resource_handler import getLibraryPath
+                    bundled = Path(getLibraryPath()).resolve()
+                    if os.path.commonpath((str(path.resolve()), str(bundled))) == str(bundled):
+                        raise SyncError('bundled EPUBs are already available and are never uploaded')
+                except ValueError:
+                    pass
+                try:
+                    is_epub_archive = _is_epub_file(path)
+                except OSError as error:
+                    raise SyncError('the selected EPUB cannot be read: {}'.format(error)) from error
+                if not is_epub_archive or not _is_loadable_epub_file(path):
+                    raise SyncError('the selected EPUB is corrupt or unsupported')
+                size = path.stat().st_size
+                if size <= 0 or size > MAX_MANAGED_BOOK_BYTES:
+                    raise SyncError('a managed EPUB must be at most 100 MiB')
+                root = self.sync_root
+                if root is None or not root.is_dir():
+                    raise SyncError('the selected sync folder is unavailable')
+                digest = _file_sha256(path)
+                managed = self._payload.setdefault('managed_books', {})
+                assert isinstance(managed, dict)
+                previous_metadata = managed.get(digest, missing)
+                visible = merge_replicas([self._envelope()]).managed_books
+                replicas_dir = root / 'replicas'
+                if replicas_dir.is_dir() and self.collection_id is not None:
+                    visible.update(merge_replicas(
+                        self._scan_replicas(replicas_dir, self.collection_id)).managed_books)
+                all_books = {}
+                previous_managed = self._last_materialized().get('managed_books')
+                if isinstance(previous_managed, dict):
+                    all_books.update({key: value for key, value in previous_managed.items()
+                                      if _validate_book_metadata(key, value)})
+                all_books.update(visible)
+                all_books.update({key: value for key, value in managed.items()
+                                  if isinstance(key, str) and isinstance(value, dict)})
+                existing_total = sum(int(meta['size']) for key, meta in all_books.items()
+                                     if key != digest and _validate_book_metadata(key, meta))
+                if existing_total + size > MAX_MANAGED_LIBRARY_BYTES:
+                    raise SyncError('managed library limit is 1 GiB')
+                metadata = {
+                    'schema': 1,
+                    'digest': digest,
+                    'original_filename': path.name,
+                    'title': title if isinstance(title, str) and title else path.stem,
+                    'size': size,
+                }
+                if not _validate_book_metadata(digest, metadata):
+                    raise SyncError('the managed EPUB metadata is invalid')
+                destination = root / 'books' / 'sha256' / (digest + '.epub')
+                manifest = root / 'books' / 'sha256' / (digest + '.json')
+                if destination.exists() and (destination.stat().st_size != size or
+                                             _file_sha256(destination) != digest):
+                    self._recover_candidate(destination, 'existing managed book does not match digest')
+                    raise SyncError('the selected folder contains a rejected book with this digest')
+                if not destination.exists():
+                    created_paths.append(destination)
+                    _copy_atomic(path, destination, digest, size)
+                previous_manifest_bytes = None
+                if manifest.exists():
+                    previous_manifest_bytes = manifest.read_bytes()
+                else:
+                    created_paths.append(manifest)
+                atomic_write_json(manifest, metadata, self.recovery_dir / 'books')
+                local_copy = self.managed_library_dir / (digest + '.epub')
+                replaced_local_copy = False
+                if not local_copy.exists() or local_copy.stat().st_size != size or \
+                        _file_sha256(local_copy) != digest:
+                    if not local_copy.exists():
+                        created_paths.append(local_copy)
+                    else:
+                        replaced_local_copy = True
+                    _copy_atomic(path, local_copy, digest, size)
+                if not _is_epub_file(local_copy):
+                    raise SyncError('the managed EPUB could not be loaded after copying')
+                try:
+                    loaded_book = _load_epub(local_copy)
+                except Exception as error:
+                    raise SyncError(
+                        'the managed EPUB could not be loaded after copying') from error
+                previous_editions = [item for key, item in managed.items()
+                                     if key != digest and isinstance(item, dict) and
+                                     item.get('original_filename') == path.name]
+                managed[digest] = metadata
+                self._touch()
+                self._loaded_managed_books[digest] = loaded_book
+                if previous_editions:
+                    self._diagnose('Imported {} as a separate edition; progress is not '
+                                   'mapped between changed EPUB bytes.'.format(path.name))
+                return metadata
+            except (SyncError, OSError) as error:
+                for created in reversed(created_paths):
+                    try:
+                        created.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+                if 'local_copy' in locals() and 'replaced_local_copy' in locals() and \
+                        replaced_local_copy:
+                    try:
+                        local_copy.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+                if 'previous_manifest_bytes' in locals() and \
+                        previous_manifest_bytes is not None:
+                    try:
+                        _atomic_write_bytes(manifest, previous_manifest_bytes)
+                    except OSError as rollback_error:
+                        self._diagnose(
+                            'Failed managed EPUB import could not restore its manifest: {}'.format(
+                                rollback_error))
+                if managed is not None and digest is not None:
+                    if previous_metadata is missing:
+                        managed.pop(digest, None)
+                    else:
+                        managed[digest] = previous_metadata
+                self._payload = before_payload
+                self._sequence = before_sequence
+                self._predecessor = before_predecessor
+                self._clock = before_clock
+                self._dirty = before_dirty
+                self._pending_touch_durable = before_pending_touch_durable
+                if digest is not None:
+                    self._loaded_managed_books.pop(digest, None)
+                try:
+                    if before_pending_exists:
+                        atomic_write_json(
+                            self.pending_path, self._envelope(),
+                            self.recovery_dir / 'pending')
+                    else:
+                        self.pending_path.unlink(missing_ok=True)
+                except (OSError, SyncError) as rollback_error:
+                    self._diagnose(
+                        'Failed managed EPUB import left pending state requiring recovery: {}'.format(
+                            rollback_error))
+                    if self.pending_path.exists() and self._recover_candidate(
+                            self.pending_path,
+                            'failed managed EPUB import pending state'):
+                        try:
+                            self.pending_path.unlink(missing_ok=True)
+                        except OSError as cleanup_error:
+                            self._diagnose(
+                                'Failed managed EPUB import pending state could not be removed: {}'.format(
+                                    cleanup_error))
+                if isinstance(error, SyncError):
+                    raise
+                raise SyncError('managed EPUB import failed: {}'.format(error)) from error
+
+    def take_loaded_managed_book(self, digest: str):
+        return self._loaded_managed_books.pop(digest, None)
+
+    def diagnostics_text(self) -> str:
+        with self._lock:
+            lines = [self.status.message]
+            lines.extend(self.status.diagnostics)
+            return '\n'.join(lines)
+
+
+def _is_epub_file(path: Path) -> bool:
+    if not zipfile.is_zipfile(path):
+        return False
+    try:
+        with zipfile.ZipFile(path) as archive:
+            info = archive.getinfo('mimetype')
+            return info.compress_type == zipfile.ZIP_STORED and \
+                archive.read(info) == b'application/epub+zip'
+    except (KeyError, OSError, RuntimeError, NotImplementedError,
+            zipfile.BadZipFile):
+        return False
+
+
+def _load_epub(path: Path):
+    return epub.read_epub(str(path), options={'ignore_ncx': True})
+
+
+def _is_loadable_epub_file(path: Path) -> bool:
+    if not _is_epub_file(path):
+        return False
+    try:
+        _load_epub(path)
+    except Exception:
+        return False
+    return True
+
+
+def _file_sha256(path: Path) -> str:
+    digest = sha256()
+    with path.open('rb') as file:
+        for chunk in iter(lambda: file.read(1024 * 1024), b''):
+            digest.update(chunk)
+    return digest.hexdigest()

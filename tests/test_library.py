@@ -1,4 +1,7 @@
 import sys
+from hashlib import sha256
+import zipfile
+from pathlib import Path
 from unittest.mock import patch, ANY
 from PyQt5.Qt import QApplication
 
@@ -26,6 +29,89 @@ def _setup():
     data = {"test": "data"}
     save = {"dummykey": {"test": "data"}}
     return library, book, data, save
+
+
+def test_oversized_managed_books_are_not_indexed(tmp_path):
+    managed = tmp_path / 'managed-books'
+    managed.mkdir()
+    content = b'too large'
+    checksum = sha256(content).hexdigest()
+    (managed / (checksum + '.epub')).write_bytes(content)
+
+    with patch('retype.controllers.library.MAX_MANAGED_BOOK_BYTES', len(content) - 1):
+        library = LibraryController('', [], str(managed))
+
+    assert library._library_items == {}
+
+
+def test_managed_books_are_indexed_from_content_addressed_filenames(tmp_path):
+    managed = tmp_path / 'managed-books'
+    managed.mkdir()
+    path = managed / 'book.epub'
+    with zipfile.ZipFile(path, 'w') as archive:
+        archive.writestr('mimetype', 'application/epub+zip', compress_type=zipfile.ZIP_STORED)
+        archive.writestr('content.txt', 'local book')
+    checksum = sha256(path.read_bytes()).hexdigest()
+    managed_path = managed / (checksum + '.epub')
+    path.rename(managed_path)
+    (managed / ('a' * 64 + '.epub')).write_bytes(b'altered')
+    (managed / 'not-a-managed-book.epub').write_bytes(b'ignored')
+
+    library = LibraryController('', [], str(managed))
+
+    assert [(item.path, item.checksum) for item in library._library_items.values()] == [
+        (str(managed_path), checksum)]
+
+
+def test_symlinked_managed_books_respect_consent_on_index_and_revoke(tmp_path):
+    managed = tmp_path / 'managed-books'
+    managed.mkdir()
+    target = managed / 'source.epub'
+    with zipfile.ZipFile(target, 'w') as archive:
+        archive.writestr('mimetype', 'application/epub+zip', compress_type=zipfile.ZIP_STORED)
+    checksum = sha256(target.read_bytes()).hexdigest()
+    managed_path = managed / (checksum + '.epub')
+    target.rename(managed_path)
+    library_dir = tmp_path / 'library'
+    library_dir.mkdir()
+    (library_dir / 'alias.epub').symlink_to(managed_path)
+
+    library = LibraryController('', [str(library_dir)], str(managed),
+                                managed_library_consent=True)
+    assert [item.checksum for item in library._library_items.values()] == [checksum]
+
+    library.setManagedLibraryConsent(False)
+    assert library._library_items == {}
+
+
+def test_progress_sync_callback_runs_when_legacy_save_fails(tmp_path):
+    calls = []
+    library = LibraryController(str(tmp_path), [], on_save=lambda key, data:
+                                calls.append((key, data)))
+    book = FakeBookWrapper(FakeLibraryItem())
+    data = {'progress': 20, 'chapter_pos': 1, 'persistent_pos': 2}
+
+    with patch('builtins.open', side_effect=OSError('disk full')), \
+            patch('retype.controllers.library.QMessageBox'):
+        saved = library.save(book, data)
+
+    assert saved is False
+    assert calls == [(book.checksum, data)]
+
+
+def test_apply_merged_save_rejects_unsupported_entries():
+    library = LibraryController('', [])
+    malformed = {'chapter_pos': 0, 'persistent_pos': 0, 'progress': float('nan')}
+    library.save_file_contents = {'known': malformed}
+
+    changed = library.applyMergedSave({
+        'known': malformed,
+        'new': {'chapter_pos': 1, 'persistent_pos': 2, 'progress': 20},
+    })
+
+    assert changed == {'new'}
+    assert library.save_file_contents['known'] is malformed
+    assert library.save_file_contents['new']['progress'] == 20.0
 
 
 @patch('builtins.open')
