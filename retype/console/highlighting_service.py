@@ -1,4 +1,5 @@
 import logging
+from enum import Enum
 
 from typing import TYPE_CHECKING
 
@@ -7,21 +8,35 @@ from retype.extras.space import nrspacerstrip, endsinn
 logger = logging.getLogger(__name__)
 
 
+class CharacterMatch(Enum):
+    EXACT = 'exact'
+    CASE_ONLY = 'case_only'
+    DIFFERENT = 'different'
+
+
+def classifyCharacter(typed, expected, ignore_capital_letters=False):
+    # type: (str, str, bool) -> CharacterMatch
+    """Classify a typed character against an expected character."""
+    if typed == expected:
+        return CharacterMatch.EXACT
+    if ignore_capital_letters:
+        possibilities = getattr(expected, 'possibilities', [str(expected)])
+        if any(typed.casefold() == possibility.casefold()
+               for possibility in possibilities):
+            return CharacterMatch.CASE_ONLY
+    return CharacterMatch.DIFFERENT
+
+
 def compareStrings(str1, str2, ignore_capital_letters=False):
     # type: (str | UserString, str | UserString, bool) -> int
     """Compare strings, returning the index at which they stop matching."""
     length_of_shorter_str = min([len(str1), len(str2)])
-    for i, a, b in zip(range(length_of_shorter_str), str1, str2):
-        if a == b:
-            continue
-        if ignore_capital_letters:
-            possibilities = getattr(b, 'possibilities', [str(b)])
-            if any(a.casefold() == possibility.casefold()
-                   for possibility in possibilities):
-                continue
-        # Found character that doesn’t match; return index at which the
-        # strings stopped matching.
-        return i
+    for i, typed, expected in zip(range(length_of_shorter_str), str1, str2):
+        if classifyCharacter(typed, expected, ignore_capital_letters) == \
+                CharacterMatch.DIFFERENT:
+            # Found character that doesn’t match; return index at which the
+            # strings stopped matching.
+            return i
     # Full match up to end of shorter string
     return length_of_shorter_str
 
@@ -33,12 +48,12 @@ class HighlightingService(object):
         self._console = console
         self.book_view = book_view
         self._console.textChanged.connect(self._handleHighlighting)
-        self.setAutoNewline(auto_newline)
-        self.setIgnoreCapitalLetters(ignore_capital_letters)
         self.wrong = False
         self.wrong_start = None  # type: int | None
         self.wrong_end = None  # type: int | None
         self.wrong_text = ""
+        self.setAutoNewline(auto_newline)
+        self.setIgnoreCapitalLetters(ignore_capital_letters)
 
     def valid(self, v):
         # type: (HighlightingService, BookView) -> bool
@@ -95,10 +110,17 @@ class HighlightingService(object):
         #  entirely removed, then readded as necessary.
         if self.wrong_start is not None and self.wrong_end is not None:
             self._removeWrongText(v, self.wrong_start, self.wrong_end)
-        else:
-            self.wrong_start = v.persistent_pos + end_correctness_index
+        self.wrong_start = v.persistent_pos + end_correctness_index
 
         self.wrong_text = text[end_correctness_index:]
+        case_mismatch_spans = [
+            (v.persistent_pos + index, v.persistent_pos + index + 1)
+            for index, (typed, expected) in enumerate(
+                zip(text[:end_correctness_index], v.current_line))
+            if classifyCharacter(typed, expected,
+                                 self.ignore_capital_letters) == \
+            CharacterMatch.CASE_ONLY]
+        v.setCaseMistakeSpans(case_mismatch_spans)
 
         # If not (or no longer) wrong, reset wrong-tracking variables and
         #  silently follow the cursor pos.
@@ -197,7 +219,13 @@ error: {}'.format(v.line_pos, len(v.tobetyped_list), e))
 
     def setIgnoreCapitalLetters(self, ignore_capital_letters):
         # type: (HighlightingService, bool) -> None
+        previous = getattr(self, 'ignore_capital_letters', None)
         self.ignore_capital_letters = ignore_capital_letters
+        if previous is not None and previous != ignore_capital_letters:
+            if self.valid(self.book_view):
+                self._handleHighlighting(self._console.text())
+            else:
+                self.book_view.setCaseMistakeSpans([])
 
     def handleSubmit(self, text):
         # type: (HighlightingService, str) -> None

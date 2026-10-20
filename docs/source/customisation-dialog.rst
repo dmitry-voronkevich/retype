@@ -66,7 +66,9 @@ Ignore capital letters when checking typed text
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 When enabled, uppercase and lowercase letters are accepted as the same
-character while typing. This option is disabled by default.
+character while typing. A case-only mismatch is shown with a softer error
+colour, while a different letter keeps the stronger error treatment. This
+option is disabled by default.
 
 Console
 -------
