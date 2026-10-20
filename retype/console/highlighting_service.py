@@ -110,8 +110,7 @@ class HighlightingService(object):
         #  entirely removed, then readded as necessary.
         if self.wrong_start is not None and self.wrong_end is not None:
             self._removeWrongText(v, self.wrong_start, self.wrong_end)
-        else:
-            self.wrong_start = v.persistent_pos + end_correctness_index
+        self.wrong_start = v.persistent_pos + end_correctness_index
 
         self.wrong_text = text[end_correctness_index:]
         case_mismatch_spans = [

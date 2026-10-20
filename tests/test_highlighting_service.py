@@ -198,6 +198,20 @@ class TestHighlightingService:
         assert service.wrong is True
         assert self._background_at(v, 0) == '#ff0000'
 
+    def test_toggling_case_sensitivity_repositions_existing_mistake(self):
+        (console, _, service, _) = _setup("Abc")
+        service.setIgnoreCapitalLetters(True)
+
+        console.setText("aX")
+        assert service.wrong_start == 1
+        assert service.wrong_text == "X"
+
+        service.setIgnoreCapitalLetters(False)
+
+        assert service.wrong_start == 0
+        assert service.wrong_end == 2
+        assert service.wrong_text == "aX"
+
     def test_capital_letters_can_be_ignored(self):
         (console, _, service, cursor) = _setup()
         service.setIgnoreCapitalLetters(True)
