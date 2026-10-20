@@ -1,4 +1,5 @@
-from qt import QObject, pyqtSignal, QTextCursor, QTextCharFormat, QTextBrowser
+from qt import (QObject, pyqtSignal, QTextCursor, QTextCharFormat,
+                QTextBrowser, QColor)
 
 from retype.extras import splittext
 from retype.console import HighlightingService
@@ -60,6 +61,10 @@ class FakeBookView(QObject):
 
         self.highlight_format = QTextCharFormat()
         self.mistake_format = QTextCharFormat()
+        self.mistake_format.setBackground(QColor('red'))
+        self.case_mistake_format = QTextCharFormat()
+        self.case_mistake_format.setBackground(QColor('#ffd580'))
+        self._case_mistake_formats = {}
 
         self.cursor = QTextCursor(self.display.document())
         self.updateCursorPosition()
@@ -88,6 +93,21 @@ class FakeBookView(QObject):
     def onLastChapter(self):
         return False
 
+    def setCaseMistakeSpans(self, spans):
+        cursor = QTextCursor(self.display.document())
+        for position, source_format in self._case_mistake_formats.items():
+            cursor.setPosition(position)
+            cursor.setPosition(position + 1, QTextCursor.KeepAnchor)
+            cursor.setCharFormat(source_format)
+        self._case_mistake_formats = {}
+        for start, end in spans:
+            for position in range(start, end):
+                cursor.setPosition(position)
+                cursor.setPosition(position + 1, QTextCursor.KeepAnchor)
+                self._case_mistake_formats[position] = QTextCharFormat(
+                    cursor.charFormat())
+                cursor.mergeCharFormat(self.case_mistake_format)
+
     def updateCursorPosition(self):
         self.cursor.setPosition(self.cursor_pos)
 
@@ -104,6 +124,13 @@ def _setup(book_view_content=SAMPLE_CONTENT):
 
 
 class TestHighlightingService:
+    @staticmethod
+    def _background_at(book_view, position):
+        cursor = QTextCursor(book_view.display.document())
+        cursor.setPosition(position)
+        cursor.setPosition(position + 1, QTextCursor.KeepAnchor)
+        return cursor.charFormat().background().color().name()
+
     def test_handleHighlighting(self):
         (console, _, service, cursor) = _setup()
 
@@ -143,12 +170,33 @@ class TestHighlightingService:
         assert cursor.position() == 26
 
     def test_capital_letters_are_case_sensitive_by_default(self):
-        (console, _, service, cursor) = _setup()
+        (console, v, service, cursor) = _setup()
 
         console.setText("S")
 
         assert cursor.position() == 0
         assert service.wrong is True
+        assert self._background_at(v, 0) == '#ff0000'
+
+    def test_ignored_case_mismatch_is_minor_and_advances(self):
+        (console, v, service, cursor) = _setup()
+        service.setIgnoreCapitalLetters(True)
+
+        console.setText("S")
+
+        assert cursor.position() == 1
+        assert service.wrong is False
+        assert self._background_at(v, 0) == '#ffd580'
+
+    def test_ignored_case_keeps_different_letter_as_strong_mistake(self):
+        (console, v, service, cursor) = _setup()
+        service.setIgnoreCapitalLetters(True)
+
+        console.setText("x")
+
+        assert cursor.position() == 0
+        assert service.wrong is True
+        assert self._background_at(v, 0) == '#ff0000'
 
     def test_capital_letters_can_be_ignored(self):
         (console, _, service, cursor) = _setup()

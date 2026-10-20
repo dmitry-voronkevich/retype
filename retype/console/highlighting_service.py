@@ -1,4 +1,5 @@
 import logging
+from enum import Enum
 
 from typing import TYPE_CHECKING
 
@@ -7,21 +8,35 @@ from retype.extras.space import nrspacerstrip, endsinn
 logger = logging.getLogger(__name__)
 
 
+class CharacterMatch(Enum):
+    EXACT = 'exact'
+    CASE_ONLY = 'case_only'
+    DIFFERENT = 'different'
+
+
+def classifyCharacter(typed, expected, ignore_capital_letters=False):
+    # type: (str, str, bool) -> CharacterMatch
+    """Classify a typed character against an expected character."""
+    if typed == expected:
+        return CharacterMatch.EXACT
+    if ignore_capital_letters:
+        possibilities = getattr(expected, 'possibilities', [str(expected)])
+        if any(typed.casefold() == possibility.casefold()
+               for possibility in possibilities):
+            return CharacterMatch.CASE_ONLY
+    return CharacterMatch.DIFFERENT
+
+
 def compareStrings(str1, str2, ignore_capital_letters=False):
     # type: (str | UserString, str | UserString, bool) -> int
     """Compare strings, returning the index at which they stop matching."""
     length_of_shorter_str = min([len(str1), len(str2)])
-    for i, a, b in zip(range(length_of_shorter_str), str1, str2):
-        if a == b:
-            continue
-        if ignore_capital_letters:
-            possibilities = getattr(b, 'possibilities', [str(b)])
-            if any(a.casefold() == possibility.casefold()
-                   for possibility in possibilities):
-                continue
-        # Found character that doesn’t match; return index at which the
-        # strings stopped matching.
-        return i
+    for i, typed, expected in zip(range(length_of_shorter_str), str1, str2):
+        if classifyCharacter(typed, expected, ignore_capital_letters) == \
+                CharacterMatch.DIFFERENT:
+            # Found character that doesn’t match; return index at which the
+            # strings stopped matching.
+            return i
     # Full match up to end of shorter string
     return length_of_shorter_str
 
@@ -99,6 +114,14 @@ class HighlightingService(object):
             self.wrong_start = v.persistent_pos + end_correctness_index
 
         self.wrong_text = text[end_correctness_index:]
+        case_mismatch_spans = [
+            (v.persistent_pos + index, v.persistent_pos + index + 1)
+            for index, (typed, expected) in enumerate(
+                zip(text[:end_correctness_index], v.current_line))
+            if classifyCharacter(typed, expected,
+                                 self.ignore_capital_letters) == \
+            CharacterMatch.CASE_ONLY]
+        v.setCaseMistakeSpans(case_mismatch_spans)
 
         # If not (or no longer) wrong, reset wrong-tracking variables and
         #  silently follow the cursor pos.

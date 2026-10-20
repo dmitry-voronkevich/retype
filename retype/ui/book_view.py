@@ -182,6 +182,7 @@ class BookDisplay(QTextBrowser):
 @keymap('BookView.zoomOut', K([QKeySequence.StandardKey.ZoomOut]))
 @theme('BookView.Highlighting.Highlight', C(bg='#30ffff00'))
 @theme('BookView.Highlighting.Mistake', C(fg='white', bg='red'))
+@theme('BookView.Highlighting.CaseMistake', C(fg='black', bg='#ffd580'))
 @theme('BookView.Highlighting.Chordable', C(fg='#1a7f37'))
 class BookView(QWidget):
     def __init__(
@@ -219,7 +220,8 @@ class BookView(QWidget):
         self.chord_exposure = AdaptiveChordExposure(
             self.chord_progress, self.adaptive_chord_lesson_limit)
 
-        self.c_highlight, self.c_mistake, self.c_chordable = self._loadTheme()
+        (self.c_highlight, self.c_mistake, self.c_case_mistake,
+         self.c_chordable) = self._loadTheme()
 
         bookview_settings = bookview_settings or {}
         self.display = BookDisplay(
@@ -247,9 +249,12 @@ class BookView(QWidget):
         self.tobetyped_list = []  # type: list[str]
 
         self.mistake_format = QTextCharFormat()  # type: QTextCharFormat
+        self.case_mistake_format = QTextCharFormat()  # type: QTextCharFormat
+        self._case_mistake_formats = {}  # type: dict[int, QTextCharFormat]
         self.chord_format = QTextCharFormat()  # type: QTextCharFormat
 
         self.c_mistake.changed.connect(self.themeUpdate)
+        self.c_case_mistake.changed.connect(self.themeUpdate)
         self.c_chordable.changed.connect(self.themeUpdate)
         self.themeUpdate()
 
@@ -260,18 +265,26 @@ class BookView(QWidget):
         # type: (BookView) -> tuple[C, ...]
         return (Theme.get('BookView.Highlighting.Highlight'),
                 Theme.get('BookView.Highlighting.Mistake'),
+                Theme.get('BookView.Highlighting.CaseMistake'),
                 Theme.get('BookView.Highlighting.Chordable'))
 
     def themeUpdate(self):
         # type: (BookView) -> None
         self.mistake_format.setForeground(self.c_mistake.fg())
         self.mistake_format.setBackground(self.c_mistake.bg())
+        self.case_mistake_format.setForeground(self.c_case_mistake.fg())
+        self.case_mistake_format.setBackground(self.c_case_mistake.bg())
         # Chordable words get a subtle dotted underline in the accent colour,
         #  so they read as an "ambient map" without obscuring the text.
         self.chord_format.setUnderlineStyle(
             QTextCharFormat.UnderlineStyle.DotLine)
         self.chord_format.setUnderlineColor(self.c_chordable.fg())
         self.chord_format.setProperty(CHORD_HIGHLIGHT_PROPERTY, True)
+        for position in self._case_mistake_formats:
+            cursor = QTextCursor(self.display.document())
+            cursor.setPosition(position)
+            cursor.setPosition(position + 1, QTextCursor.KeepAnchor)
+            cursor.mergeCharFormat(self.case_mistake_format)
         # Re-apply to the currently displayed chapter so a live theme change
         #  (or chord reload) is reflected immediately.
         self.applyChordHighlighting()
@@ -491,6 +504,24 @@ class BookView(QWidget):
         self.mistake_cursor = QTextCursor(self.display.document())
         self.mistake_cursor.setPosition(self.cursor_pos)
 
+    def setCaseMistakeSpans(self, spans):
+        # type: (BookView, list[tuple[int, int]]) -> None
+        """Apply the minor-mistake format without changing typed progress."""
+        cursor = QTextCursor(self.display.document())
+        for position, source_format in self._case_mistake_formats.items():
+            cursor.setPosition(position)
+            cursor.setPosition(position + 1, QTextCursor.KeepAnchor)
+            cursor.setCharFormat(source_format)
+        self._case_mistake_formats = {}
+
+        for start, end in spans:
+            for position in range(start, end):
+                cursor.setPosition(position)
+                cursor.setPosition(position + 1, QTextCursor.KeepAnchor)
+                self._case_mistake_formats[position] = QTextCharFormat(
+                    cursor.charFormat())
+                cursor.mergeCharFormat(self.case_mistake_format)
+
     def updateCursorPosition(self, to_pos=None):
         # type: (BookView, int | None) -> None
         if self.cursor_pos is None:
@@ -629,6 +660,7 @@ class BookView(QWidget):
 
     def setSource(self, chapter):
         # type: (BookView, Chapter) -> None
+        self._case_mistake_formats = {}
         document = QTextDocument()
         document.setHtml(chapter['html'])
 
