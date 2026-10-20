@@ -222,7 +222,10 @@ error: {}'.format(v.line_pos, len(v.tobetyped_list), e))
         previous = getattr(self, 'ignore_capital_letters', None)
         self.ignore_capital_letters = ignore_capital_letters
         if previous is not None and previous != ignore_capital_letters:
-            self._handleHighlighting(self._console.text())
+            if self.valid(self.book_view):
+                self._handleHighlighting(self._console.text())
+            else:
+                self.book_view.setCaseMistakeSpans([])
 
     def handleSubmit(self, text):
         # type: (HighlightingService, str) -> None

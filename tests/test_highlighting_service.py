@@ -58,6 +58,7 @@ class FakeBookView(QObject):
             {'\n': {'keep': False}}, True, True, '\r')
         self._setLine(self.line_pos)
         self.progress = 0
+        self.visible = True
 
         self.highlight_format = QTextCharFormat()
         self.mistake_format = QTextCharFormat()
@@ -73,7 +74,7 @@ class FakeBookView(QObject):
         self.highlight_cursor = QTextCursor(self.display.document())
 
     def isVisible(self):
-        return True
+        return self.visible
 
     def _setLine(self, pos):
         self.current_line = self.tobetyped_list[pos]
@@ -211,6 +212,18 @@ class TestHighlightingService:
         assert service.wrong_start == 0
         assert service.wrong_end == 2
         assert service.wrong_text == "aX"
+
+    def test_toggling_case_sensitivity_clears_feedback_when_view_inactive(
+            self):
+        (console, v, service, _) = _setup("Abc")
+        service.setIgnoreCapitalLetters(True)
+        console.setText("a")
+        assert v._case_mistake_formats
+
+        v.visible = False
+        service.setIgnoreCapitalLetters(False)
+
+        assert v._case_mistake_formats == {}
 
     def test_capital_letters_can_be_ignored(self):
         (console, _, service, cursor) = _setup()
