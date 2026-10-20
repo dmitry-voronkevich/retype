@@ -48,12 +48,12 @@ class HighlightingService(object):
         self._console = console
         self.book_view = book_view
         self._console.textChanged.connect(self._handleHighlighting)
-        self.setAutoNewline(auto_newline)
-        self.setIgnoreCapitalLetters(ignore_capital_letters)
         self.wrong = False
         self.wrong_start = None  # type: int | None
         self.wrong_end = None  # type: int | None
         self.wrong_text = ""
+        self.setAutoNewline(auto_newline)
+        self.setIgnoreCapitalLetters(ignore_capital_letters)
 
     def valid(self, v):
         # type: (HighlightingService, BookView) -> bool
@@ -220,7 +220,10 @@ error: {}'.format(v.line_pos, len(v.tobetyped_list), e))
 
     def setIgnoreCapitalLetters(self, ignore_capital_letters):
         # type: (HighlightingService, bool) -> None
+        previous = getattr(self, 'ignore_capital_letters', None)
         self.ignore_capital_letters = ignore_capital_letters
+        if previous is not None and previous != ignore_capital_letters:
+            self._handleHighlighting(self._console.text())
 
     def handleSubmit(self, text):
         # type: (HighlightingService, str) -> None

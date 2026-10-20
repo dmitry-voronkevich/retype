@@ -124,6 +124,30 @@ def test_replacing_chords_and_chapters_refreshes_active_highlights(
     assert _hinted_words(book_view, second['plain'])[0] == 'two'
 
 
+def test_case_mistake_removal_preserves_chord_highlight(
+        make_controller, qtbot):
+    controller = make_controller()
+    controller.loadBookRequested.emit(0)
+    qtbot.wait(20)
+    book_view = controller.view()
+    chapter = _chapter('one')
+
+    book_view.setChords({})
+    _show_chapter(book_view, chapter)
+    highlighting_service = controller.console.highlighting_service
+    highlighting_service.setIgnoreCapitalLetters(True)
+    controller.console.setText('O')
+
+    book_view.setChords({'one': '1'})
+    controller.console.setText('')
+
+    cursor = QTextCursor(book_view.display.document())
+    cursor.setPosition(0)
+    cursor.setPosition(1, QTextCursor.MoveMode.KeepAnchor)
+    assert cursor.charFormat().underlineStyle() == \
+        QTextCharFormat.UnderlineStyle.DotLine
+
+
 def test_source_underlines_survive_chord_highlight_refresh(
         make_controller, qtbot):
     controller = make_controller()

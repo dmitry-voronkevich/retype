@@ -511,7 +511,14 @@ class BookView(QWidget):
         for position, source_format in self._case_mistake_formats.items():
             cursor.setPosition(position)
             cursor.setPosition(position + 1, QTextCursor.KeepAnchor)
-            cursor.setCharFormat(source_format)
+            current_format = cursor.charFormat()
+            for property_id in (QTextFormat.ForegroundBrush,
+                                QTextFormat.BackgroundBrush):
+                current_format.clearProperty(property_id)
+                if source_format.hasProperty(property_id):
+                    current_format.setProperty(
+                        property_id, source_format.property(property_id))
+            cursor.setCharFormat(current_format)
         self._case_mistake_formats = {}
 
         for start, end in spans:
