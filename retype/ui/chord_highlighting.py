@@ -23,14 +23,16 @@ class ChordHighlighting:
         self.starts = list(self.words)
         self.ends = [match.end() for match in self.words.values()]
         self.by_key = {}  # type: dict[str, list[int]]
-        self.qt_starts = {}  # type: dict[int, int]
+        self.ranges = {}  # type: dict[int, QTextCursor]
         source_end = qt_end = 0
         for start, match in self.words.items():
             # Book progress uses Python offsets; QTextCursor uses UTF-16.
             # WORD_RE tokens are ASCII, but intervening prose need not be.
             qt_start = qt_end + len(
                 self.text[source_end:start].encode('utf-16-le')) // 2
-            self.qt_starts[start] = qt_start
+            token_range = self._selection(
+                qt_start, qt_start + len(match.group()))
+            self.ranges[start] = token_range
             source_end, qt_end = match.end(), qt_start + len(match.group())
             self.by_key.setdefault(match.group().lower(), []).append(start)
         self.active_keys = set()  # type: set[str]
@@ -39,16 +41,14 @@ class ChordHighlighting:
         self.colors = None  # type: tuple[QColor, QColor] | None
         self.line_start = None  # type: int | None
         self.cursor = None  # type: int | None
+        self.temporary = None  # type: tuple[int, int] | None
 
     def _documentChanged(self, position, chars_removed, chars_added):
         # type: (int, int, int) -> None
-        delta = chars_added - chars_removed
-        if not delta:
-            return
-        boundary = position + chars_removed
-        for start, qt_start in self.qt_starts.items():
-            if qt_start >= boundary:
-                self.qt_starts[start] = qt_start + delta
+        if chars_removed:
+            self.temporary = None
+        if chars_added:
+            self.temporary = (position, position + chars_added)
 
     def refresh(self, chords, green, yellow):
         # type: (dict[str, object], QColor, QColor) -> None
@@ -105,18 +105,37 @@ class ChordHighlighting:
         cursor.setPosition(end, QTextCursor.KeepAnchor)
         return cursor
 
+    def _spans(self, start):
+        # type: (int) -> list[tuple[int, int]]
+        token = self.ranges[start]
+        token_start, token_end = token.selectionStart(), token.selectionEnd()
+        if self.temporary is None:
+            return [(token_start, token_end)]
+        temporary_start, temporary_end = self.temporary
+        if temporary_end <= token_start or temporary_start >= token_end:
+            return [(token_start, token_end)]
+        spans = []
+        if token_start < temporary_start:
+            spans.append((token_start, temporary_start))
+        if temporary_end < token_end:
+            spans.append((temporary_end, token_end))
+        return spans
+
+    def _positions(self, start):
+        # type: (int) -> list[int]
+        return [position for span_start, span_end in self._spans(start)
+                for position in range(span_start, span_end)]
+
     def _capture(self, start):
         # type: (int) -> None
-        qt_start = self.qt_starts[start]
         self.original[start] = [
             self._selection(position, position + 1).charFormat()
-            for position in range(qt_start,
-                                  qt_start + len(self.words[start].group()))]
+            for position in self._positions(start)]
 
     def _restore(self, start):
         # type: (int) -> None
-        for position, source in enumerate(self.original.pop(start),
-                                          self.qt_starts[start]):
+        for position, source in zip(self._positions(start),
+                                    self.original.pop(start)):
             cursor = self._selection(position, position + 1)
             current = cursor.charFormat()
             for prop in (QTextFormat.TextUnderlineStyle,
@@ -136,6 +155,5 @@ class ChordHighlighting:
         # completed non-chorded token uses the capitalization-mistake token.
         overlay.setUnderlineColor(self.colors[
             1 if self.outcomes.get(start) is False else 0])
-        qt_start = self.qt_starts[start]
-        self._selection(qt_start, qt_start + len(
-            self.words[start].group())).mergeCharFormat(overlay)
+        for span_start, span_end in self._spans(start):
+            self._selection(span_start, span_end).mergeCharFormat(overlay)

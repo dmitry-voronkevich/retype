@@ -310,6 +310,26 @@ def test_refreshes_rebase_underlines_around_wrong_text(
     assert _format(view, 4).underlineColor() == view.c_chordable.fg()
 
 
+def test_refresh_inside_wrong_word_preserves_tail_and_removal(
+        make_controller, qtbot, monkeypatch):
+    controller, view = _prepare_outcomes(
+        make_controller, qtbot, 'one two tail')
+    controller.console.setText('onX')
+    view.chord_highlighting.outcomes[0] = False
+
+    monkeypatch.setattr(view.c_chordable.fg, 'c', QColor('#123456'))
+    view.themeUpdate()
+
+    assert view.display.toPlainText() == 'onXe two tail'
+    for position in (0, 1, 3):
+        assert _format(view, position).underlineColor() == \
+            view.c_case_mistake.bg()
+
+    controller.console.setText('on')
+    assert view.display.toPlainText() == 'one two tail'
+    assert _format(view, 2).underlineColor() == view.c_case_mistake.bg()
+
+
 @pytest.mark.parametrize('ignore_case,expected_position', [(True, 4), (False, 0)])
 def test_case_only_input_never_becomes_a_green_success(
         make_controller, qtbot, monkeypatch, ignore_case, expected_position):
