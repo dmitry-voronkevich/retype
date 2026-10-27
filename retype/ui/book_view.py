@@ -9,8 +9,9 @@ from typing import TYPE_CHECKING
 from retype.extras import splittext, isspaceorempty, ManifoldStr
 from retype.ui.modeline import Modeline
 from retype.ui.chord_hint_bar import ChordHintBar
+from retype.ui.chord_highlighting import ChordHighlighting
 from retype.services.chord_detection import ValidatedChord
-from retype.services.chords import WORD_RE, chordable_spans
+from retype.services.chords import WORD_RE
 from retype.services import (AdaptiveChordExposure, Autosave,
                              ChordMasteryProgress, ChordMasteryTracker,
                              DEFAULT_LESSON_CHORD_LIMIT,
@@ -22,12 +23,6 @@ from retype.constants import default_font_family, default_font_size
 from retype.services.platform import platform_policy
 
 logger = logging.getLogger(__name__)
-
-# This distinguishes the temporary chord overlay from source and mistake
-# formatting when the active lesson changes.
-CHORD_HIGHLIGHT_PROPERTY = QTextFormat.UserProperty + 1
-CHORD_UNDERLINE_STYLE_PROPERTY = QTextFormat.UserProperty + 2
-CHORD_UNDERLINE_COLOR_PROPERTY = QTextFormat.UserProperty + 3
 
 
 @theme('BookView.BookDisplay',
@@ -251,7 +246,7 @@ class BookView(QWidget):
         self.mistake_format = QTextCharFormat()  # type: QTextCharFormat
         self.case_mistake_format = QTextCharFormat()  # type: QTextCharFormat
         self._case_mistake_formats = {}  # type: dict[int, QTextCharFormat]
-        self.chord_format = QTextCharFormat()  # type: QTextCharFormat
+        self.chord_highlighting = ChordHighlighting(self.display.document())
 
         self.c_mistake.changed.connect(self.themeUpdate)
         self.c_case_mistake.changed.connect(self.themeUpdate)
@@ -274,12 +269,6 @@ class BookView(QWidget):
         self.mistake_format.setBackground(self.c_mistake.bg())
         self.case_mistake_format.setForeground(self.c_case_mistake.fg())
         self.case_mistake_format.setBackground(self.c_case_mistake.bg())
-        # Chordable words get a subtle dotted underline in the accent colour,
-        #  so they read as an "ambient map" without obscuring the text.
-        self.chord_format.setUnderlineStyle(
-            QTextCharFormat.UnderlineStyle.DotLine)
-        self.chord_format.setUnderlineColor(self.c_chordable.fg())
-        self.chord_format.setProperty(CHORD_HIGHLIGHT_PROPERTY, True)
         for position in self._case_mistake_formats:
             cursor = QTextCursor(self.display.document())
             cursor.setPosition(position)
@@ -320,6 +309,8 @@ class BookView(QWidget):
             self._announceValidatedChordFeedback)
         self.stats_dock.validatedChordDetected.connect(
             self.chord_mastery.record)
+        self.stats_dock.validatedChordDetected.connect(
+            self._recordChordOutcome)
         self.stats_dock.validatedChordDetected.connect(
             self._recordChordProgress)
 
@@ -529,6 +520,16 @@ class BookView(QWidget):
                     cursor.charFormat())
                 cursor.mergeCharFormat(self.case_mistake_format)
 
+    def updateChordOutcomes(self):
+        # type: (BookView) -> None
+        if self.persistent_pos is not None and self.cursor_pos is not None:
+            self.chord_highlighting.updateCursor(
+                self.persistent_pos, self.cursor_pos)
+
+    def _recordChordOutcome(self, result):
+        # type: (BookView, object) -> None
+        self.chord_highlighting.record(result)
+
     def updateCursorPosition(self, to_pos=None):
         # type: (BookView, int | None) -> None
         if self.cursor_pos is None:
@@ -619,15 +620,20 @@ class BookView(QWidget):
             if snapshot.successful_uses == MIN_SUCCESSFUL_USES_FOR_MASTERY:
                 message_parts.append('Chord learned: {}'.format(
                     snapshot.dictionary_key))
-            uncovered = self._refreshChordExposure(
-                self._currentChapterText(), announce_new=True)
+            # Only crossing mastery can change lesson membership. Ordinary
+            # successes should not rescan the chapter or rebuild its overlay.
+            uncovered = ()
+            if snapshot.successful_uses == MIN_SUCCESSFUL_USES_FOR_MASTERY:
+                uncovered = self._refreshChordExposure(
+                    self._currentChapterText(), announce_new=True)
             if uncovered:
                 message_parts.append('New chord to learn: {}'.format(
                     uncovered[0]))
             if message_parts:
                 self._announceChordStatus(
                     '. '.join(message_parts), progression=True)
-            self.applyChordHighlighting()
+            if snapshot.successful_uses == MIN_SUCCESSFUL_USES_FOR_MASTERY:
+                self.applyChordHighlighting()
 
     def setChordProgress(self, progress):
         # type: (BookView, ChordMasteryProgress) -> None
@@ -678,81 +684,16 @@ class BookView(QWidget):
                                  QUrl(image['link']), pixmap)
 
         self.display.setDocument(document)
+        self.chord_highlighting = ChordHighlighting(document)
         self._refreshChordExposure(chapter.get('plain',
                                                document.toPlainText()))
         self.applyChordHighlighting()
 
-    def _clearChordHighlighting(self, document):
-        # type: (BookView, QTextDocument) -> None
-        """Remove only dotted underlines previously added for chord hints."""
-        spans = []  # type: list[tuple[int, int]]
-        block = document.begin()
-        while block.isValid():
-            fragments = block.begin()
-            while not fragments.atEnd():
-                fragment = fragments.fragment()
-                if fragment.isValid() and bool(fragment.charFormat().property(
-                        CHORD_HIGHLIGHT_PROPERTY)):
-                    spans.append((fragment.position(),
-                                  fragment.position() + fragment.length()))
-                fragments += 1
-            block = block.next()
-
-        if not spans:
-            return
-        cursor = QTextCursor(document)
-        cursor.beginEditBlock()
-        for start, end in spans:
-            for position in range(start, end):
-                cursor.setPosition(position)
-                cursor.setPosition(position + 1,
-                                   QTextCursor.MoveMode.KeepAnchor)
-                source_format = cursor.charFormat()
-                style = source_format.property(CHORD_UNDERLINE_STYLE_PROPERTY)
-                color = source_format.property(CHORD_UNDERLINE_COLOR_PROPERTY)
-                clear_format = QTextCharFormat()
-                clear_format.setProperty(CHORD_HIGHLIGHT_PROPERTY, False)
-                if style is not None:
-                    clear_format.setUnderlineStyle(style)
-                if color is not None:
-                    clear_format.setUnderlineColor(color)
-                cursor.mergeCharFormat(clear_format)
-        cursor.endEditBlock()
-
     def applyChordHighlighting(self):
         # type: (BookView) -> None
-        """Refresh dotted underlines for the current chord lesson.
-
-        Chord maps can change without replacing the chapter document. Clear
-        the previous presentation overlay first, leaving source and mistake
-        formatting untouched, then apply the active lesson's spans."""
-        display = getattr(self, 'display', None)
-        if display is None:
-            return
-        document = display.document()
-        if not isinstance(document, QTextDocument):
-            return
-        self._clearChordHighlighting(document)
-        if not self.chords:
-            return
-        spans = chordable_spans(document.toPlainText(), self.chords)
-        if not spans:
-            return
-        cursor = QTextCursor(document)
-        cursor.beginEditBlock()
-        for start, end in spans:
-            for position in range(start, end):
-                cursor.setPosition(position)
-                cursor.setPosition(position + 1,
-                                   QTextCursor.MoveMode.KeepAnchor)
-                source_format = cursor.charFormat()
-                overlay = QTextCharFormat(self.chord_format)
-                overlay.setProperty(CHORD_UNDERLINE_STYLE_PROPERTY,
-                                    source_format.underlineStyle())
-                overlay.setProperty(CHORD_UNDERLINE_COLOR_PROPERTY,
-                                    source_format.underlineColor())
-                cursor.mergeCharFormat(overlay)
-        cursor.endEditBlock()
+        """Diff lesson/theme changes; retain all unaffected token formats."""
+        self.chord_highlighting.refresh(
+            self.chords, self.c_chordable.fg(), self.c_case_mistake.bg())
 
     def anchorClicked(self, link):
         # type: (BookView, QUrl) -> None

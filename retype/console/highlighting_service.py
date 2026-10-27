@@ -110,6 +110,9 @@ class HighlightingService(object):
         #  entirely removed, then readded as necessary.
         if self.wrong_start is not None and self.wrong_end is not None:
             self._removeWrongText(v, self.wrong_start, self.wrong_end)
+        # The chapter is in source coordinates here: old mistake text is gone
+        # and new mistake text has not yet shifted any future word spans.
+        v.updateChordOutcomes()
         self.wrong_start = v.persistent_pos + end_correctness_index
 
         self.wrong_text = text[end_correctness_index:]
