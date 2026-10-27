@@ -104,6 +104,21 @@ final surviving word meets those conditions. Pastes, selection replacement,
 IME-like or programmatic edits, ambiguous timing resets, and uncorrected
 prefixes fail closed.
 
+Chordable words in the active lesson keep their dotted underlines. Once a
+word has been typed, its underline is green for a validated chord success and
+uses the capitalization-mistake yellow for a completed word without such a
+success. Untyped words retain their ambient green hint; non-chordable text is
+unchanged. Case-tolerant typing may advance past a capitalization mismatch,
+but it cannot turn that mismatch into a chord success. Backtracking into a
+word clears its previous outcome so retyping can establish a new one.
+Outcomes are local to the displayed chapter and are not saved or inferred
+from previously saved book progress.
+
+Word positions are indexed when the chapter is loaded. Typing updates only
+crossed word ends, and a validated event recolors only its word; lesson changes
+add or remove only the affected dictionary words. These updates do not
+rebuild the chapter's chord overlay on each keystroke.
+
 Detection messages remain visible for 1.2 seconds and are coalesced within a
 150-millisecond burst, so rapid events do not make the status bar unreadable.
 These are transient overlays: when they expire, the current sticky message is
