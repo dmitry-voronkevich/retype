@@ -1,7 +1,7 @@
 """Regression coverage for adaptive chord presentation refreshes."""
 
 import pytest
-from qt import QFont, QTextCharFormat, QTextCursor, Qt
+from qt import QColor, QFont, QTextCharFormat, QTextCursor, Qt
 
 from retype.services.chord_detection import ValidatedChord
 from retype.services.chord_mastery import MIN_SUCCESSFUL_USES_FOR_MASTERY
@@ -283,6 +283,27 @@ def test_backtracking_and_wrong_text_do_not_damage_other_underlines(
     assert view.display.toPlainText() == 'onXe two tail'
     # Future text is shifted by the inserted red mistake, not recolored.
     assert _format(view, 5).underlineColor() == view.c_chordable.fg()
+    controller.console.setText('one ')
+    assert view.display.toPlainText() == 'one two tail'
+    assert _format(view, 0).underlineColor() == view.c_case_mistake.bg()
+    assert _format(view, 4).underlineColor() == view.c_chordable.fg()
+
+
+def test_refreshes_rebase_underlines_around_wrong_text(
+        make_controller, qtbot, monkeypatch):
+    controller, view = _prepare_outcomes(
+        make_controller, qtbot, 'one two tail')
+    controller.console.setText('onX')
+
+    view.setChords({'one': '1'})
+    view.setChords({'one': '1', 'two': '2'})
+    view.setAdaptiveChordLessonLimit(1)
+    view.setAdaptiveChordLessons(True)
+    view.setAdaptiveChordLessons(False)
+    monkeypatch.setattr(view.c_chordable.fg, 'c', QColor('#123456'))
+    view.themeUpdate()
+
+    assert view.display.toPlainText() == 'onXe two tail'
     controller.console.setText('one ')
     assert view.display.toPlainText() == 'one two tail'
     assert _format(view, 0).underlineColor() == view.c_case_mistake.bg()

@@ -16,6 +16,7 @@ class ChordHighlighting:
     def __init__(self, document):
         # type: (QTextDocument) -> None
         self.document = document
+        self.document.contentsChange.connect(self._documentChanged)
         self.text = document.toPlainText()
         self.words = {match.start(): match for match in
                       WORD_RE.finditer(self.text)}
@@ -38,6 +39,16 @@ class ChordHighlighting:
         self.colors = None  # type: tuple[QColor, QColor] | None
         self.line_start = None  # type: int | None
         self.cursor = None  # type: int | None
+
+    def _documentChanged(self, position, chars_removed, chars_added):
+        # type: (int, int, int) -> None
+        delta = chars_added - chars_removed
+        if not delta:
+            return
+        boundary = position + chars_removed
+        for start, qt_start in self.qt_starts.items():
+            if qt_start >= boundary:
+                self.qt_starts[start] = qt_start + delta
 
     def refresh(self, chords, green, yellow):
         # type: (dict[str, object], QColor, QColor) -> None
