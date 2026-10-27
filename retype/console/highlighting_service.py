@@ -143,12 +143,18 @@ class HighlightingService(object):
         # type: (HighlightingService, BookView, int, str) -> None
         v.mistake_cursor.setPosition(pre_pos, v.mistake_cursor.MoveAnchor)
         v.mistake_cursor.insertText(text, v.mistake_format)
+        highlighting = getattr(v, 'chord_highlighting', None)
+        if highlighting is not None:
+            highlighting.documentChanged(pre_pos, 0, len(text))
 
     def _removeWrongText(self, v, start, end):
         # type: (HighlightingService, BookView, int, int) -> None
         v.mistake_cursor.setPosition(start, v.mistake_cursor.MoveAnchor)
         v.mistake_cursor.setPosition(end, v.mistake_cursor.KeepAnchor)
         v.mistake_cursor.removeSelectedText()
+        highlighting = getattr(v, 'chord_highlighting', None)
+        if highlighting is not None:
+            highlighting.documentChanged(start, end - start, 0)
 
     def advanceLine(self):
         # type: (HighlightingService) -> None

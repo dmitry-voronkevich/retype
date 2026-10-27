@@ -16,7 +16,6 @@ class ChordHighlighting:
     def __init__(self, document):
         # type: (QTextDocument) -> None
         self.document = document
-        self.document.contentsChange.connect(self._documentChanged)
         self.text = document.toPlainText()
         self.words = {match.start(): match for match in
                       WORD_RE.finditer(self.text)}
@@ -43,11 +42,15 @@ class ChordHighlighting:
         self.cursor = None  # type: int | None
         self.temporary = None  # type: tuple[int, int] | None
 
-    def _documentChanged(self, position, chars_removed, chars_added):
+    def documentChanged(self, position, chars_removed, chars_added):
         # type: (int, int, int) -> None
+        """Track the mistake edit without treating format edits as text."""
         if chars_removed:
             self.temporary = None
-        if chars_added:
+            for start in self.original:
+                self._capture(start)
+                self._paint(start)
+        elif chars_added:
             self.temporary = (position, position + chars_added)
 
     def refresh(self, chords, green, yellow):
@@ -105,37 +108,65 @@ class ChordHighlighting:
         cursor.setPosition(end, QTextCursor.KeepAnchor)
         return cursor
 
-    def _spans(self, start):
+    def _source_positions(self, start):
         # type: (int) -> list[tuple[int, int]]
         token = self.ranges[start]
         token_start, token_end = token.selectionStart(), token.selectionEnd()
-        if self.temporary is None:
-            return [(token_start, token_end)]
-        temporary_start, temporary_end = self.temporary
-        if temporary_end <= token_start or temporary_start >= token_end:
-            return [(token_start, token_end)]
+        temporary = self.temporary
+        positions = []
+        overlaps = temporary is not None and \
+            temporary[0] < token_end and temporary[1] > token_start
+        for position in range(token_start, token_end):
+            if overlaps:
+                temporary_start, temporary_end = temporary
+                if temporary_start <= position < temporary_end:
+                    continue
+                if position >= temporary_end:
+                    offset = position - token_start - (temporary_end -
+                                                        temporary_start)
+                else:
+                    offset = position - token_start
+            else:
+                offset = position - token_start
+            if 0 <= offset < len(self.words[start].group()):
+                positions.append((offset, position))
+        return positions
+
+    def _spans(self, start):
+        # type: (int) -> list[tuple[int, int]]
+        positions = [position for _, position in self._source_positions(start)]
+        if not positions:
+            return []
         spans = []
-        if token_start < temporary_start:
-            spans.append((token_start, temporary_start))
-        if temporary_end < token_end:
-            spans.append((temporary_end, token_end))
+        span_start = previous = positions[0]
+        for position in positions[1:]:
+            if position != previous + 1:
+                spans.append((span_start, previous + 1))
+                span_start = position
+            previous = position
+        spans.append((span_start, previous + 1))
         return spans
 
     def _positions(self, start):
         # type: (int) -> list[int]
-        return [position for span_start, span_end in self._spans(start)
-                for position in range(span_start, span_end)]
+        return [position for _, position in self._source_positions(start)]
 
     def _capture(self, start):
         # type: (int) -> None
-        self.original[start] = [
-            self._selection(position, position + 1).charFormat()
-            for position in self._positions(start)]
+        formats = self.original.setdefault(
+            start, [None] * len(self.words[start].group()))
+        for offset, position in self._source_positions(start):
+            if formats[offset] is None:
+                formats[offset] = self._selection(
+                    position, position + 1).charFormat()
 
     def _restore(self, start):
         # type: (int) -> None
-        for position, source in zip(self._positions(start),
-                                    self.original.pop(start)):
+        formats = self.original.pop(start)
+        for offset, position in self._source_positions(start):
+            source = formats[offset]
+            if source is None:
+                continue
             cursor = self._selection(position, position + 1)
             current = cursor.charFormat()
             for prop in (QTextFormat.TextUnderlineStyle,
