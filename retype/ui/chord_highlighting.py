@@ -36,8 +36,9 @@ class ChordHighlighting:
             self.by_key.setdefault(match.group().lower(), []).append(start)
         self.active_keys = set()  # type: set[str]
         self.original = {}  # type: dict[int, list[QTextCharFormat]]
+        self.success_backgrounds = {}  # type: dict[int, list[QTextCharFormat]]
         self.outcomes = {}  # type: dict[int, bool]
-        self.colors = None  # type: tuple[QColor, QColor] | None
+        self.colors = None  # type: tuple[QColor, QColor, QColor] | None
         self.line_start = None  # type: int | None
         self.cursor = None  # type: int | None
         self.temporary = None  # type: tuple[int, int] | None
@@ -53,10 +54,10 @@ class ChordHighlighting:
         elif chars_added:
             self.temporary = (position, position + chars_added)
 
-    def refresh(self, chords, green, yellow):
-        # type: (dict[str, object], QColor, QColor) -> None
+    def refresh(self, chords, green, yellow, success_background):
+        # type: (dict[str, object], QColor, QColor, QColor) -> None
         keys = set(chords)
-        colors = (green, yellow)
+        colors = (green, yellow, success_background)
         removed = self.active_keys - keys
         added = keys - self.active_keys
         recolor = self.active_keys & keys if colors != self.colors else set()
@@ -162,6 +163,7 @@ class ChordHighlighting:
 
     def _restore(self, start):
         # type: (int) -> None
+        self._restore_success_background(start)
         formats = self.original.pop(start)
         for offset, position in self._source_positions(start):
             source = formats[offset]
@@ -176,6 +178,33 @@ class ChordHighlighting:
                     current.setProperty(prop, source.property(prop))
             cursor.setCharFormat(current)
 
+    def _capture_success_background(self, start):
+        # type: (int) -> None
+        formats = self.success_backgrounds.setdefault(
+            start, [None] * len(self.words[start].group()))
+        for offset, position in self._source_positions(start):
+            if formats[offset] is None:
+                formats[offset] = self._selection(
+                    position, position + 1).charFormat()
+
+    def _restore_success_background(self, start):
+        # type: (int) -> None
+        formats = self.success_backgrounds.pop(start, None)
+        if formats is None:
+            return
+        for offset, position in self._source_positions(start):
+            source = formats[offset]
+            if source is None:
+                continue
+            cursor = self._selection(position, position + 1)
+            current = cursor.charFormat()
+            current.clearProperty(QTextFormat.BackgroundBrush)
+            if source.hasProperty(QTextFormat.BackgroundBrush):
+                current.setProperty(
+                    QTextFormat.BackgroundBrush,
+                    source.property(QTextFormat.BackgroundBrush))
+            cursor.setCharFormat(current)
+
     def _paint(self, start):
         # type: (int) -> None
         if start not in self.original or self.colors is None:
@@ -186,5 +215,10 @@ class ChordHighlighting:
         # completed non-chorded token uses the capitalization-mistake token.
         overlay.setUnderlineColor(self.colors[
             1 if self.outcomes.get(start) is False else 0])
+        if self.outcomes.get(start) is True:
+            self._capture_success_background(start)
+            overlay.setBackground(self.colors[2])
+        else:
+            self._restore_success_background(start)
         for span_start, span_end in self._spans(start):
             self._selection(span_start, span_end).mergeCharFormat(overlay)

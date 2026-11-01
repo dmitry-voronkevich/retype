@@ -179,6 +179,7 @@ class BookDisplay(QTextBrowser):
 @theme('BookView.Highlighting.Mistake', C(fg='white', bg='red'))
 @theme('BookView.Highlighting.CaseMistake', C(fg='black', bg='#ffd580'))
 @theme('BookView.Highlighting.Chordable', C(fg='#1a7f37'))
+@theme('BookView.Highlighting.ChordSuccess', C(bg='#b7e4c7'))
 class BookView(QWidget):
     def __init__(
             self,  # type: BookView
@@ -216,7 +217,7 @@ class BookView(QWidget):
             self.chord_progress, self.adaptive_chord_lesson_limit)
 
         (self.c_highlight, self.c_mistake, self.c_case_mistake,
-         self.c_chordable) = self._loadTheme()
+         self.c_chordable, self.c_chord_success) = self._loadTheme()
 
         bookview_settings = bookview_settings or {}
         self.display = BookDisplay(
@@ -251,6 +252,7 @@ class BookView(QWidget):
         self.c_mistake.changed.connect(self.themeUpdate)
         self.c_case_mistake.changed.connect(self.themeUpdate)
         self.c_chordable.changed.connect(self.themeUpdate)
+        self.c_chord_success.changed.connect(self.themeUpdate)
         self.themeUpdate()
 
         Keymap.notifier.changed.connect(
@@ -261,7 +263,8 @@ class BookView(QWidget):
         return (Theme.get('BookView.Highlighting.Highlight'),
                 Theme.get('BookView.Highlighting.Mistake'),
                 Theme.get('BookView.Highlighting.CaseMistake'),
-                Theme.get('BookView.Highlighting.Chordable'))
+                Theme.get('BookView.Highlighting.Chordable'),
+                Theme.get('BookView.Highlighting.ChordSuccess'))
 
     def themeUpdate(self):
         # type: (BookView) -> None
@@ -269,11 +272,6 @@ class BookView(QWidget):
         self.mistake_format.setBackground(self.c_mistake.bg())
         self.case_mistake_format.setForeground(self.c_case_mistake.fg())
         self.case_mistake_format.setBackground(self.c_case_mistake.bg())
-        for position in self._case_mistake_formats:
-            cursor = QTextCursor(self.display.document())
-            cursor.setPosition(position)
-            cursor.setPosition(position + 1, QTextCursor.KeepAnchor)
-            cursor.mergeCharFormat(self.case_mistake_format)
         # Re-apply to the currently displayed chapter so a live theme change
         #  (or chord reload) is reflected immediately.
         self.applyChordHighlighting()
@@ -520,6 +518,15 @@ class BookView(QWidget):
                     cursor.charFormat())
                 cursor.mergeCharFormat(self.case_mistake_format)
 
+    def _reapplyCaseMistakeFormats(self):
+        # type: (BookView) -> None
+        """Restore case feedback after a chord-format refresh."""
+        for position in self._case_mistake_formats:
+            cursor = QTextCursor(self.display.document())
+            cursor.setPosition(position)
+            cursor.setPosition(position + 1, QTextCursor.KeepAnchor)
+            cursor.mergeCharFormat(self.case_mistake_format)
+
     def updateChordOutcomes(self):
         # type: (BookView) -> None
         if self.persistent_pos is not None and self.cursor_pos is not None:
@@ -693,7 +700,9 @@ class BookView(QWidget):
         # type: (BookView) -> None
         """Diff lesson/theme changes; retain all unaffected token formats."""
         self.chord_highlighting.refresh(
-            self.chords, self.c_chordable.fg(), self.c_case_mistake.bg())
+            self.chords, self.c_chordable.fg(), self.c_case_mistake.bg(),
+            self.c_chord_success.bg())
+        self._reapplyCaseMistakeFormats()
 
     def anchorClicked(self, link):
         # type: (BookView, QUrl) -> None

@@ -235,6 +235,8 @@ def test_completed_word_underline_uses_validated_outcome(
         '<p><b>one</b> two <i>plain</i> tail</p>')
     future = _format(view, 4)
     plain = _format(view, 8)
+    source_backgrounds = [_format(view, position).background()
+                          for position in range(3)]
     text = view.display.toPlainText()
     _type_at_speed(qtbot, monkeypatch, controller, view, 'one ', gap)
 
@@ -243,11 +245,29 @@ def test_completed_word_underline_uses_validated_outcome(
         result = _format(view, position)
         assert result.underlineColor() == expected
         assert result.underlineStyle() == QTextCharFormat.DotLine
+        if chorded:
+            assert result.background().color() == view.c_chord_success.bg()
+        else:
+            assert result.background() == source_backgrounds[position]
         assert result.fontWeight() > QFont.Normal
     assert view.stats_dock.successful_chords == int(chorded)
     assert _format(view, 4) == future
     assert _format(view, 8) == plain
     assert view.display.toPlainText() == text
+
+
+def test_removing_successful_chord_restores_source_background(
+        make_controller, qtbot, monkeypatch):
+    controller, view = _prepare_outcomes(
+        make_controller, qtbot, 'one two',
+        '<p><span style="background-color: #123456">one</span> two</p>')
+    _type_at_speed(qtbot, monkeypatch, controller, view, 'one ', 10)
+    assert _format(view, 0).background().color() == view.c_chord_success.bg()
+
+    view.setChords({'two': '2'})
+    for position in range(3):
+        assert _format(view, position).background().color() == \
+            QColor('#123456')
 
 
 def test_outcome_changes_only_affected_span_in_large_chapter(
