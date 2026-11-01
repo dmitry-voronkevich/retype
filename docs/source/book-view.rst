@@ -105,11 +105,11 @@ IME-like or programmatic edits, ambiguous timing resets, and uncorrected
 prefixes fail closed.
 
 Chordable words in the active lesson keep their dotted underlines. A validated
-chord success also receives a light-green background. A completed word without
-such a success uses the capitalization-mistake yellow underline. Untyped words
-retain their ambient green hint; non-chordable text is unchanged. Red typo and
-amber capitalization-mismatch feedback take precedence over the chord-success
-background. Case-tolerant typing may advance past a capitalization mismatch,
+chord success also receives a light-green background. A completed active-lesson
+word without such a success uses the capitalization-mistake yellow underline.
+Untyped words retain their ambient green hint; non-chordable text is unchanged.
+Red typo and amber capitalization-mismatch feedback take precedence over the
+chord-success background. Case-tolerant typing may advance past a capitalization mismatch,
 but it cannot turn that mismatch into a chord success. Backtracking into a
 word clears its previous outcome so retyping can establish a new one.
 Outcomes are local to the displayed chapter and are not saved or inferred
