@@ -350,8 +350,8 @@ class BookView(QWidget):
                 'tooltip': f'Go to the cursor position. Hold {platform_policy.shortcut_modifier_label} to move\
  cursor to your current position',
                 'icon': 'cursor',
-                'widget': self.toolbar,
-                'widget_ui': self,
+                'widget': self,
+                'widget_ui': self.toolbar,
                 'args_regex': '(m|move)',
                 'args_func': lambda m: self.gotoCursorPosition(move=True),
             },
@@ -966,6 +966,7 @@ class BookView(QWidget):
         # type: (BookView) -> None
         cs = self._controller.console.command_service
         if cs is not None:
+            self._controller.console.clear()
             cs.advanceLine()
 
     def setSdict(self, sdict):
@@ -1022,8 +1023,8 @@ class BookView(QWidget):
             self.setChapter(self.viewed_chapter_pos, True)
             self.updateProgress()
         else:
-            self.setChapter(self.chapter_pos)
-            self.setCursor()
+            if self.viewed_chapter_pos != self.chapter_pos:
+                self.setChapter(self.chapter_pos)
             self.display.centreAroundCursor()
 
     def gotoCursorPositionAction(self):
