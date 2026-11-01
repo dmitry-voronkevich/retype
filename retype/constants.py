@@ -8,7 +8,8 @@ from qt import QT_VERSION_STR, PYQT_VERSION_STR, QT_WRAPPER, sip
 
 from typing import TYPE_CHECKING
 
-from retype.resource_handler import root_path, getLibraryPath, getIncludePath
+from retype.resource_handler import (root_path, getApplicationDataPath,
+                                     getLibraryPath, getIncludePath)
 from retype import __version__
 
 logger = logging.getLogger(__name__)
@@ -29,7 +30,7 @@ default_font_family = 'Georgia'
 default_font_size = 16
 
 default_config = {
-    "user_dir": root_path,
+    "user_dir": getApplicationDataPath(),
     "library_paths": [getLibraryPath()],
     "icon_set": "0_default",
     "prompt": ">",

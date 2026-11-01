@@ -16,11 +16,17 @@ logger = logging.getLogger(__name__)
 
 
 class LibraryController(object):
-    def __init__(self, user_dir, library_paths):
-        # type: (LibraryController, str, list[str]) -> None
+    def __init__(self, user_dir, library_paths, managed_library_path=None,
+                 on_save=None):
+        # type: (LibraryController, str, list[str], str | None, object | None) -> None
         self.user_dir = user_dir
-        self.library_paths = library_paths
-        self._library_items = self.indexLibrary(library_paths)
+        self.library_paths = list(library_paths)
+        self.managed_library_path = managed_library_path
+        self.on_save = on_save
+        indexed_paths = list(library_paths)
+        if managed_library_path and managed_library_path not in indexed_paths:
+            indexed_paths.append(managed_library_path)
+        self._library_items = self.indexLibrary(indexed_paths)
         self.books = None  # type: dict[int, BookWrapper] | None
         self.save_file_contents = None  # type: Save | None
 
@@ -109,7 +115,7 @@ class LibraryController(object):
         try:
             with open(self.save_abs_path, 'w', encoding='utf-8') as f:
                 json.dump(save, f, indent=2)
-        except OSError as e:
+        except (OSError, ValueError, TypeError) as e:
             s = 'Unable to save progress to disk.'
             if e is FileNotFoundError:
                 s += f' Unable to find user_dir {self._user_dir}.'
@@ -119,6 +125,8 @@ class LibraryController(object):
                                 f'{traceback.format_exc()}')
             msg.exec()
             return False
+        if callable(self.on_save):
+            self.on_save(key, dict(data))
         return True
 
     def migrateV1Save(self, save):
@@ -166,13 +174,16 @@ class LibraryController(object):
             try:
                 with open(self.save_abs_path, 'r') as f:
                     save = json.load(f)  # type: Save
-            except OSError as e:
+            except (OSError, ValueError, TypeError) as e:
                 s = 'Unable to read save file.'
                 logger.error(f"{s}\n{e}", exc_info=True)
                 msg = QMessageBox(QMessageBox.Icon.Warning, 'retype', s)
                 msg.setDetailedText(f'Path: {self.save_abs_path}\n\n'
                                     f'{traceback.format_exc()}')
                 msg.exec()
+                # Keep the unreadable legacy copy for recovery; callers can
+                # continue with an empty in-memory library state.
+                save = {}
         else:
             logger.debug(
                 f'Save path {self.save_abs_path} not found.\n'
