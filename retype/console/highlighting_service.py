@@ -110,6 +110,9 @@ class HighlightingService(object):
         #  entirely removed, then readded as necessary.
         if self.wrong_start is not None and self.wrong_end is not None:
             self._removeWrongText(v, self.wrong_start, self.wrong_end)
+        # The chapter is in source coordinates here: old mistake text is gone
+        # and new mistake text has not yet shifted any future word spans.
+        v.updateChordOutcomes()
         self.wrong_start = v.persistent_pos + end_correctness_index
 
         self.wrong_text = text[end_correctness_index:]
@@ -140,12 +143,18 @@ class HighlightingService(object):
         # type: (HighlightingService, BookView, int, str) -> None
         v.mistake_cursor.setPosition(pre_pos, v.mistake_cursor.MoveAnchor)
         v.mistake_cursor.insertText(text, v.mistake_format)
+        highlighting = getattr(v, 'chord_highlighting', None)
+        if highlighting is not None:
+            highlighting.documentChanged(pre_pos, 0, len(text))
 
     def _removeWrongText(self, v, start, end):
         # type: (HighlightingService, BookView, int, int) -> None
         v.mistake_cursor.setPosition(start, v.mistake_cursor.MoveAnchor)
         v.mistake_cursor.setPosition(end, v.mistake_cursor.KeepAnchor)
         v.mistake_cursor.removeSelectedText()
+        highlighting = getattr(v, 'chord_highlighting', None)
+        if highlighting is not None:
+            highlighting.documentChanged(start, end - start, 0)
 
     def advanceLine(self):
         # type: (HighlightingService) -> None
