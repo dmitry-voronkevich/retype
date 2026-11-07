@@ -77,7 +77,7 @@ class StatsDock(QWidget):
         # type: (StatsDock) -> None
         self.setAccessibleDescription(
             "Typing statistics. Chords: {}. Green chart segments mark "
-            "validated rapid correct known words; timing cannot identify a "
+            "validated rapid correct words; timing cannot identify a "
             "device.".format(self.successful_chords))
 
     def connectConsole(self, console):

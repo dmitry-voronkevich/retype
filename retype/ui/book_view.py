@@ -507,7 +507,12 @@ class BookView(QWidget):
     def setCaseMistakeSpans(self, spans):
         # type: (BookView, list[tuple[int, int]]) -> None
         """Apply the minor-mistake format without changing typed progress."""
+        positions = {position for start, end in spans
+                     for position in range(start, end)}
+        if positions == self._case_mistake_formats.keys():
+            return
         cursor = QTextCursor(self.display.document())
+        cursor.beginEditBlock()
         for position, source_format in self._case_mistake_formats.items():
             cursor.setPosition(position)
             cursor.setPosition(position + 1, QTextCursor.KeepAnchor)
@@ -528,6 +533,7 @@ class BookView(QWidget):
                 self._case_mistake_formats[position] = QTextCharFormat(
                     cursor.charFormat())
                 cursor.mergeCharFormat(self.case_mistake_format)
+        cursor.endEditBlock()
 
     def updateCursorPosition(self, to_pos=None):
         # type: (BookView, int | None) -> None
@@ -570,14 +576,12 @@ class BookView(QWidget):
 
     def isSuccessfulChordOutput(self, output, cursor_pos):
         # type: (BookView, str, int | None) -> bool
-        """Validate a completed token against the loaded map and book cursor.
+        """Validate a completed token exactly against the word at the cursor.
 
-        Dictionary lookup keeps chord-map normalization (lowercase), while the
-        actual output must exactly equal the word at this cursor, including
-        case. WORD_RE supplies the same word-boundary semantics used by hints.
+        WORD_RE supplies the same word-boundary semantics used by hints; the
+        lesson list does not restrict which correct rapid outputs can succeed.
         """
-        if not isinstance(output, str) or cursor_pos is None or \
-           output.lower() not in self.chords or not isinstance(
+        if not isinstance(output, str) or cursor_pos is None or not isinstance(
                getattr(self, 'tobetyped', None), str):
             return False
         for match in WORD_RE.finditer(self.tobetyped):
