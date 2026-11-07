@@ -97,8 +97,9 @@ After a word delimiter (including punctuation or Return), or when automatic
 line completion survives the edit, a validated rapid, correct word
 at the current book cursor is announced in the application status bar as
 ``Chord detected: WORD``. The word must match the book word exactly, regardless
-of the learning list or loaded dictionary, and each surviving character must be no more than 35 milliseconds apart
-with a total span no greater than 120 milliseconds. CharaChorder-style
+of the learning list or loaded dictionary. Each surviving character must be no
+more than 35 milliseconds apart, with a total span no greater than 120
+milliseconds. CharaChorder-style
 incorrect prefixes followed by Backspace cleanup are accepted only when the
 final surviving word meets those conditions. Pastes, selection replacement,
 IME-like or programmatic edits, ambiguous timing resets, and uncorrected
