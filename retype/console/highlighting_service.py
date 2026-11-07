@@ -106,8 +106,13 @@ class HighlightingService(object):
             logger.error('_handleMistakes: Unexpected None. cursor_pos: '
                          f'{v.cursor_pos}, persistent_pos: {v.persistent_pos}')
             return
-        new_start = v.persistent_pos + end_correctness_index
-        new_text = text[end_correctness_index:]
+        # The way this works is if there’s any previous wrong_text it gets
+        #  entirely removed, then readded as necessary.
+        if self.wrong_start is not None and self.wrong_end is not None:
+            self._removeWrongText(v, self.wrong_start, self.wrong_end)
+        self.wrong_start = v.persistent_pos + end_correctness_index
+
+        self.wrong_text = text[end_correctness_index:]
         case_mismatch_spans = [
             (v.persistent_pos + index, v.persistent_pos + index + 1)
             for index, (typed, expected) in enumerate(
@@ -115,27 +120,7 @@ class HighlightingService(object):
             if classifyCharacter(typed, expected,
                                  self.ignore_capital_letters) == \
             CharacterMatch.CASE_ONLY]
-        # Keep the common prefix in the document. Batch the replacement so Qt
-        # lays out the chapter once, rather than once per removal and insertion.
-        common = 0
-        if self.wrong_start == new_start:
-            for old, new in zip(self.wrong_text, new_text):
-                if old != new:
-                    break
-                common += 1
-        v.mistake_cursor.beginEditBlock()
-        try:
-            if self.wrong_start is not None and self.wrong_end is not None \
-               and self.wrong_start + common < self.wrong_end:
-                self._removeWrongText(v, self.wrong_start + common,
-                                      self.wrong_end)
-            v.setCaseMistakeSpans(case_mismatch_spans)
-            if new_text[common:]:
-                self._insertWrongText(v, new_start + common, new_text[common:])
-        finally:
-            v.mistake_cursor.endEditBlock()
-        self.wrong_start = new_start
-        self.wrong_text = new_text
+        v.setCaseMistakeSpans(case_mismatch_spans)
 
         # If not (or no longer) wrong, reset wrong-tracking variables and
         #  silently follow the cursor pos.
@@ -147,8 +132,9 @@ class HighlightingService(object):
             return
 
         self.wrong = True
+        v.mistake_cursor.setPosition(self.wrong_start)
+        self._insertWrongText(v, v.mistake_cursor.position(), self.wrong_text)
         self.wrong_end = self.wrong_start + len(self.wrong_text)
-        v.mistake_cursor.setPosition(self.wrong_end)
 
     def _insertWrongText(self, v, pre_pos, text):
         # type: (HighlightingService, BookView, int, str) -> None

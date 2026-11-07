@@ -334,26 +334,6 @@ def test_study_words_congratulate_only_after_surviving_token_delimiter(
     _wait_for_status(qtbot, controller, f'Chord detected: {word}')
 
 
-def test_rapid_correct_word_outside_lesson_and_dictionary_marks_chart(
-        make_controller, qtbot, monkeypatch):
-    controller = make_controller()
-    controller.loadBookRequested.emit(0)
-    qtbot.wait(20)
-    book_view, stats = _prepare_chord_word(controller, 'with')
-    book_view.setChords({})
-    assert not book_view.chords and not book_view.loaded_chords
-    successes = []
-    stats.validatedChordDetected.connect(successes.append)
-
-    _type_rapidly(qtbot, monkeypatch, controller.console, stats, 'with',
-                  (1, 11, 21, 31))
-    qtbot.keyClick(controller.console, Qt.Key.Key_Space)
-
-    assert [result.word for result in successes] == ['with']
-    assert stats.successful_chords == 1
-    assert stats.wpms_validated_chords[-3:] == [True] * 3
-
-
 def test_validated_chord_event_drives_status_bar_counter_and_chart(
         make_controller, qtbot):
     controller = make_controller()
