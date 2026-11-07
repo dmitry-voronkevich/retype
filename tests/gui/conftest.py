@@ -61,6 +61,10 @@ def make_controller(qapp, qtbot, tmp_path):
             timer = getattr(signal, 'timer', None)
             if timer is not None:
                 timer.stop()
+        # Top-level windows are not QApplication children, so stopping only
+        # timers found from qapp below misses status-bar and game timers.
+        for timer in controller._window.findChildren(QTimer):
+            timer.stop()
         # MainController.quit() intentionally exits the application on
         # macOS.  Fixture cleanup must only close this controller so later
         # tests can continue using the shared QApplication.

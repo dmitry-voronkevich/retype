@@ -81,7 +81,7 @@ The Stats Dock is the graph above the Modeline. It can be resized or collapsed u
 #. Dashed lines
     Dashed lines appear every 50 WPM and are there to help gauge the WPM each rectangle represents. For example, a rectangle whose height matches the first dashed line from the bottom represents 50 WPM.
 #. Chords
-    The ``Chords: N`` label and green chart segments represent validated rapid, correct known words at the book cursor. Timing-only observations are retained only as internal diagnostics and never affect this user-facing count.
+    The ``Chords: N`` label and green chart segments represent validated rapid, correct words at the book cursor. Timing-only observations are retained only as internal diagnostics and never affect this user-facing count.
 
 The Stats Dock updates on every letter typed correctly.
 
@@ -94,11 +94,12 @@ not displayed as chord successes and never affect the ``Chords`` count or green
 chart segments.
 
 After a word delimiter (including punctuation or Return), or when automatic
-line completion survives the edit, a validated rapid, correct known chord word
+line completion survives the edit, a validated rapid, correct word
 at the current book cursor is announced in the application status bar as
-``Chord detected: WORD``. The word must match the loaded dictionary and book
-word, and each surviving character must be no more than 35 milliseconds apart
-with a total span no greater than 120 milliseconds. CharaChorder-style
+``Chord detected: WORD``. The word must match the book word exactly, regardless
+of the learning list or loaded dictionary. Each surviving character must be no
+more than 35 milliseconds apart, with a total span no greater than 120
+milliseconds. CharaChorder-style
 incorrect prefixes followed by Backspace cleanup are accepted only when the
 final surviving word meets those conditions. Pastes, selection replacement,
 IME-like or programmatic edits, ambiguous timing resets, and uncorrected
@@ -117,7 +118,7 @@ and statistics resets do not control this feedback.
 
 This is a bounded timing heuristic for the observed study conditions, not a
 device detector or attribution claim. A fast ordinary typist or macro can
-receive the same feedback, notably for a valid short known word such as ``at``;
+receive the same feedback, notably for a valid short word such as ``at``;
 slower, interrupted, or mixed output can miss it. The detector uses no USB,
 serial, HID, Web Serial, raw-device, or device-companion live-key access. A
 device snapshot read may provide its chord dictionary, either at startup or on

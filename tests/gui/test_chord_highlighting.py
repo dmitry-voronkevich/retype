@@ -124,6 +124,67 @@ def test_replacing_chords_and_chapters_refreshes_active_highlights(
     assert _hinted_words(book_view, second['plain'])[0] == 'two'
 
 
+def test_incorrect_text_edits_are_local_and_preserve_source_formatting(
+        make_controller, qtbot, monkeypatch):
+    controller = make_controller()
+    controller.loadBookRequested.emit(0)
+    qtbot.wait(20)
+    view = controller.view()
+    text = 'one ' * 3000
+    view.setChords({'one': '1'})
+    _show_chapter(view, _chapter(text, '<p><u>one</u> ' + 'one ' * 2999 + '</p>'))
+    view.setMistakeCursor()
+    service = controller.console.highlighting_service
+    removed, inserted = [], []
+    remove, insert = service._removeWrongText, service._insertWrongText
+    monkeypatch.setattr(service, '_removeWrongText',
+                        lambda v, start, end: (removed.append(end - start),
+                                               remove(v, start, end)))
+    monkeypatch.setattr(service, '_insertWrongText',
+                        lambda v, pos, value: (inserted.append(value),
+                                               insert(v, pos, value)))
+
+    controller.console.setText('xxxx')
+    controller.console.setText('xxxxx')
+    controller.console.setText('xxxx')
+    assert inserted == ['xxxx', 'x']
+    assert removed == [1]
+    document = view.display.document()
+    assert document.toPlainText().startswith('xxxxone ')
+    cursor = QTextCursor(document)
+    cursor.setPosition(0)
+    cursor.setPosition(1, QTextCursor.KeepAnchor)
+    assert cursor.charFormat().background() == view.mistake_format.background()
+    cursor.setPosition(4)
+    cursor.setPosition(5, QTextCursor.KeepAnchor)
+    assert cursor.charFormat().underlineStyle() == QTextCharFormat.DotLine
+    controller.console.setText('')
+    view.setChords({})
+    cursor.setPosition(0)
+    cursor.setPosition(1, QTextCursor.KeepAnchor)
+    assert cursor.charFormat().underlineStyle() == QTextCharFormat.SingleUnderline
+
+
+def test_moving_mistake_boundary_restores_case_format_before_insertion(
+        make_controller, qtbot):
+    controller = make_controller()
+    controller.loadBookRequested.emit(0)
+    qtbot.wait(20)
+    view = controller.view()
+    view.setChords({})
+    _show_chapter(view, _chapter('one two', '<p>on<u>e</u> two</p>'))
+    view.setMistakeCursor()
+    controller.console.highlighting_service.setIgnoreCapitalLetters(True)
+    controller.console.setText('onE')
+    controller.console.setText('ox')
+    controller.console.setText('')
+    cursor = QTextCursor(view.display.document())
+    cursor.setPosition(2)
+    cursor.setPosition(3, QTextCursor.KeepAnchor)
+    assert cursor.charFormat().underlineStyle() == QTextCharFormat.SingleUnderline
+    assert cursor.charFormat().background() != view.case_mistake_format.background()
+
+
 def test_case_mistake_removal_preserves_chord_highlight(
         make_controller, qtbot):
     controller = make_controller()
