@@ -294,6 +294,42 @@ def test_outcome_changes_only_affected_span_in_large_chapter(
     assert changes == []
 
 
+def test_large_lesson_refresh_batches_document_changes(make_controller, qtbot):
+    controller, view = _prepare_outcomes(
+        make_controller, qtbot, 'one two plain ' * 300)
+    view.setChords({})
+    changes = []
+    view.display.document().contentsChange.connect(
+        lambda position, removed, added: changes.append(position))
+    view.setChords({'one': '1', 'two': '2'})
+    assert len(changes) <= 2
+    assert _format(view, 0).underlineStyle() == QTextCharFormat.DotLine
+    assert _format(view, 4).underlineStyle() == QTextCharFormat.DotLine
+
+
+def test_mistake_edits_only_repaint_the_touched_word(
+        make_controller, qtbot, monkeypatch):
+    controller, view = _prepare_outcomes(
+        make_controller, qtbot, 'one two plain ' * 300)
+    painted = []
+    original = view.chord_highlighting._paint
+
+    def track(start):
+        painted.append(start)
+        original(start)
+
+    monkeypatch.setattr(view.chord_highlighting, '_paint', track)
+    controller.console.setText('onX')
+    painted.clear()
+    controller.console.setText('onXY')
+    controller.console.setText('onX')
+    controller.console.setText('on')
+    assert painted
+    assert set(painted) == {0}
+    assert _format(view, 2).underlineColor() == view.c_chordable.fg()
+    assert _format(view, 4).underlineColor() == view.c_chordable.fg()
+
+
 def test_backtracking_and_wrong_text_do_not_damage_other_underlines(
         make_controller, qtbot, monkeypatch):
     controller, view = _prepare_outcomes(

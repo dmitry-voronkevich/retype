@@ -48,9 +48,22 @@ class ChordHighlighting:
         """Track the mistake edit without treating format edits as text."""
         if chars_removed:
             self.temporary = None
-            for start in self.original:
-                self._capture(start)
-                self._paint(start)
+            # Only a word touching the removed insertion can have acquired
+            # temporary formatting. Anchored ranges after it already moved.
+            low, high = 0, len(self.starts)
+            while low < high:
+                middle = (low + high) // 2
+                if self.ranges[self.starts[middle]].selectionStart() <= position:
+                    low = middle + 1
+                else:
+                    high = middle
+            for index in range(max(0, low - 1), min(len(self.starts), low + 1)):
+                start = self.starts[index]
+                token = self.ranges[start]
+                if start in self.original and token.selectionStart() <= position <= \
+                   token.selectionEnd():
+                    self._capture(start)
+                    self._paint(start)
         elif chars_added:
             self.temporary = (position, position + chars_added)
 
@@ -62,17 +75,22 @@ class ChordHighlighting:
         added = keys - self.active_keys
         recolor = self.active_keys & keys if colors != self.colors else set()
         self.colors = colors
-        for key in removed:
-            for start in self.by_key.get(key, ()):
-                self._restore(start)
-        self.active_keys = keys
-        for key in added:
-            for start in self.by_key.get(key, ()):
-                self._capture(start)
-                self._paint(start)
-        for key in recolor:
-            for start in self.by_key.get(key, ()):
-                self._paint(start)
+        cursor = QTextCursor(self.document)
+        cursor.beginEditBlock()
+        try:
+            for key in removed:
+                for start in self.by_key.get(key, ()):
+                    self._restore(start)
+            self.active_keys = keys
+            for key in added:
+                for start in self.by_key.get(key, ()):
+                    self._capture(start)
+                    self._paint(start)
+            for key in recolor:
+                for start in self.by_key.get(key, ()):
+                    self._paint(start)
+        finally:
+            cursor.endEditBlock()
 
     def updateCursor(self, line_start, end):
         # type: (int, int) -> None
