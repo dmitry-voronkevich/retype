@@ -166,10 +166,6 @@ class ChordHighlighting:
         spans.append((span_start, previous + 1))
         return spans
 
-    def _positions(self, start):
-        # type: (int) -> list[int]
-        return [position for _, position in self._source_positions(start)]
-
     def _capture(self, start):
         # type: (int) -> None
         formats = self.original.setdefault(
