@@ -97,6 +97,9 @@ class FakeBookView(QObject):
     def onLastChapter(self):
         return False
 
+    def updateChordOutcomes(self):
+        pass
+
     def setCaseMistakeSpans(self, spans):
         cursor = QTextCursor(self.display.document())
         for position, source_format in self._case_mistake_formats.items():

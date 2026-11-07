@@ -11,6 +11,7 @@ class FakeBook:
 
 
 class PartiallyFakeBookView(BookView):
+    @patch('retype.ui.book_view.ChordHighlighting')
     @patch('retype.ui.book_view.BookDisplay')
     @patch('retype.ui.book_view.QTextCursor')
     @patch('retype.ui.book_view.keymapUpdate')

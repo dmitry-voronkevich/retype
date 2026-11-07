@@ -97,6 +97,9 @@ class FakeBookView(QObject):
     def setCaseMistakeSpans(self, spans):
         pass
 
+    def updateChordOutcomes(self):
+        pass
+
 
 def _setup(book_view_content=SAMPLE_CONTENT):
     console = Console('>')

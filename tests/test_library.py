@@ -196,8 +196,10 @@ class FakeImage:
 
 
 # This is here just to be able to use QTextBrowser, as without a
-#  QApplication Qt doesn’t let you instantiate QWidgets.
-app = QApplication(sys.argv)
+#  QApplication Qt doesn’t let you instantiate QWidgets. Reuse pytest-qt's
+#  application when GUI tests have already created one; Qt supports only one
+#  QApplication per process.
+app = QApplication.instance() or QApplication(sys.argv)
 
 
 class TestBookWrapper:
