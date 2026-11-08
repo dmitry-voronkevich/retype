@@ -197,7 +197,7 @@ class ChordHighlighting:
         overlay = QTextCharFormat()
         overlay.setUnderlineStyle(QTextCharFormat.DotLine)
         # Untyped words retain the existing ambient green chord hint. Only a
-        # completed non-chorded token uses the capitalization-mistake token.
+        # completed non-chorded token uses its dedicated theme color.
         overlay.setUnderlineColor(self.colors[
             1 if self.outcomes.get(start) is False else 0])
         for span_start, span_end in self._spans(start):

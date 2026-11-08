@@ -240,7 +240,9 @@ def test_completed_word_underline_uses_validated_outcome(
     text = view.display.toPlainText()
     _type_at_speed(qtbot, monkeypatch, controller, view, 'one ', gap)
 
-    expected = view.c_chordable.fg() if chorded else view.c_case_mistake.bg()
+    assert view.c_not_chorded.fg() == QColor('red')
+    assert view.c_not_chorded.fg() != view.c_case_mistake.bg()
+    expected = view.c_chordable.fg() if chorded else view.c_not_chorded.fg()
     for position in range(3):
         result = _format(view, position)
         assert result.underlineColor() == expected
@@ -340,7 +342,7 @@ def test_backtracking_and_wrong_text_do_not_damage_other_underlines(
     assert _format(view, 5).underlineColor() == view.c_chordable.fg()
     controller.console.setText('one ')
     assert view.display.toPlainText() == 'one two tail'
-    assert _format(view, 0).underlineColor() == view.c_case_mistake.bg()
+    assert _format(view, 0).underlineColor() == view.c_not_chorded.fg()
     assert _format(view, 4).underlineColor() == view.c_chordable.fg()
 
 
@@ -361,7 +363,7 @@ def test_refreshes_rebase_underlines_around_wrong_text(
     assert view.display.toPlainText() == 'onXe two tail'
     controller.console.setText('one ')
     assert view.display.toPlainText() == 'one two tail'
-    assert _format(view, 0).underlineColor() == view.c_case_mistake.bg()
+    assert _format(view, 0).underlineColor() == view.c_not_chorded.fg()
     assert _format(view, 4).underlineColor() == view.c_chordable.fg()
 
 
@@ -378,11 +380,11 @@ def test_refresh_inside_wrong_word_preserves_tail_and_removal(
     assert view.display.toPlainText() == 'onXe two tail'
     for position in (0, 1, 3):
         assert _format(view, position).underlineColor() == \
-            view.c_case_mistake.bg()
+            view.c_not_chorded.fg()
 
     controller.console.setText('on')
     assert view.display.toPlainText() == 'one two tail'
-    assert _format(view, 2).underlineColor() == view.c_case_mistake.bg()
+    assert _format(view, 2).underlineColor() == view.c_not_chorded.fg()
 
 
 @pytest.mark.parametrize('ignore_case,expected_position', [(True, 4), (False, 0)])
@@ -395,7 +397,7 @@ def test_case_only_input_never_becomes_a_green_success(
     assert view.cursor_pos == expected_position
     assert view.stats_dock.successful_chords == 0
     if ignore_case:
-        assert _format(view, 0).underlineColor() == view.c_case_mistake.bg()
+        assert _format(view, 0).underlineColor() == view.c_not_chorded.fg()
         assert _format(view, 0).background().color() == view.c_case_mistake.bg()
 
 
@@ -416,13 +418,13 @@ def test_chapter_and_lesson_refresh_preserve_or_reset_outcomes(
         make_controller, qtbot, 'one two tail',
         '<p><u>one</u> two tail</p>')
     controller.console.setText('one ')
-    assert _format(view, 0).underlineColor() == view.c_case_mistake.bg()
+    assert _format(view, 0).underlineColor() == view.c_not_chorded.fg()
     view.setChords({'two': '2'})
     assert _format(view, 0).underlineStyle() == QTextCharFormat.SingleUnderline
     view.setChords({'one': '1', 'two': '2'})
-    assert _format(view, 0).underlineColor() == view.c_case_mistake.bg()
+    assert _format(view, 0).underlineColor() == view.c_not_chorded.fg()
     view.themeUpdate()
-    assert _format(view, 0).underlineColor() == view.c_case_mistake.bg()
+    assert _format(view, 0).underlineColor() == view.c_not_chorded.fg()
     _show_chapter(view, _chapter('one two tail'))
     assert _format(view, 0).underlineColor() == view.c_chordable.fg()
 
@@ -437,7 +439,7 @@ def test_unicode_prose_and_non_chordable_spans_remain_unchanged(
     controller.console.setText('\U0001f642 one ')
     for position in (3, 4, 5):
         assert _format(view, position).underlineColor() == \
-            view.c_case_mistake.bg()
+            view.c_not_chorded.fg()
     for position, source in before.items():
         assert _format(view, position) == source
 

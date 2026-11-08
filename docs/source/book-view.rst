@@ -106,7 +106,8 @@ prefixes fail closed.
 
 Chordable words in the active lesson keep their dotted underlines. A validated
 success retains the green underline. A completed active-lesson word without
-such a success uses the capitalization-mistake yellow underline. Untyped
+such a success uses a red underline (the separate ``BookView.Highlighting.NotChorded``
+theme color). Untyped
 words retain their ambient green hint; non-chordable text is unchanged.
 Case-tolerant
 typing may advance past a capitalization mismatch, but it cannot turn that
