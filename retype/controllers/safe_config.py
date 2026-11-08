@@ -1,14 +1,18 @@
 import os
 import json
 import logging
+import shutil
 import traceback
 from copy import deepcopy
+from pathlib import Path
 from qt import QMessageBox
 
 from typing import TYPE_CHECKING
 
 from retype.extras.dict import SafeDict
 from retype.constants import default_config
+from retype.resource_handler import root_path
+from retype.services.sync import atomic_write_json
 
 logger = logging.getLogger(__name__)
 
@@ -17,6 +21,7 @@ class _SafeConfig:
     def __init__(self, default_user_dir=None, library_paths=None):
         # type: (_SafeConfig, str | None, list[str] | None) -> None
         self.config_rel_path = 'config.json'
+        self._explicit_default_user_dir = default_user_dir is not None
         self.default_user_dir = default_user_dir or default_config['user_dir']
         self.defaults = deepcopy(default_config)
         self.defaults['user_dir'] = self.default_user_dir
@@ -24,7 +29,12 @@ class _SafeConfig:
             self.defaults['library_paths'] = list(library_paths)
         self.base_config_abs_path = os.path.join(
             self.default_user_dir, self.config_rel_path)
+        self._migrateLegacyBundleData()
         self.config = self.raw = self.load(self.base_config_abs_path)
+        try:
+            os.makedirs(self.config['user_dir'], exist_ok=True)
+        except OSError as error:
+            logger.warning('Could not create user data directory: %s', error)
         self.safe_dict = SafeDict(
             self.config, self.defaults,
             ['rdict', 'sdict', 'kdict'])
@@ -33,6 +43,43 @@ class _SafeConfig:
         # type: (_SafeConfig, str) -> bool
         return os.path.abspath(path) == \
             os.path.abspath(self.default_user_dir)
+
+    def _migrateLegacyBundleData(self):
+        # type: (_SafeConfig) -> None
+        """Copy, never move, old bundle-root state into the writable root.
+
+        Frozen releases previously used the executable directory as ``user_dir``.
+        A first launch after this change keeps the legacy files intact and only
+        imports the two learning-state files when the legacy config used that
+        old default.  A deliberately selected external user directory remains
+        selected and is referenced by the new local bootstrap config.
+        """
+        if self._explicit_default_user_dir or os.path.exists(self.base_config_abs_path):
+            return
+        legacy_path = os.path.join(root_path, self.config_rel_path)
+        if os.path.abspath(legacy_path) == os.path.abspath(
+                self.base_config_abs_path) or not os.path.exists(legacy_path):
+            return
+        legacy = self._load(legacy_path)
+        if not isinstance(legacy, dict):
+            return
+        migrated = deepcopy(legacy)
+        legacy_user_dir = migrated.get('user_dir')
+        if not isinstance(legacy_user_dir, str) or not legacy_user_dir:
+            legacy_user_dir = root_path
+        if os.path.abspath(legacy_user_dir) == os.path.abspath(root_path):
+            migrated['user_dir'] = self.default_user_dir
+            try:
+                os.makedirs(self.default_user_dir, exist_ok=True)
+                for filename in ('save.json', 'chord-mastery.json'):
+                    source = os.path.join(root_path, filename)
+                    destination = os.path.join(self.default_user_dir, filename)
+                    if os.path.exists(source) and not os.path.exists(destination):
+                        shutil.copy2(source, destination)
+            except OSError as error:
+                logger.warning('Could not copy legacy local learning data: %s',
+                               error)
+        self._save(self.base_config_abs_path, migrated)
 
     def load(self, path):
         # type: (_SafeConfig, str) -> Config
@@ -62,10 +109,10 @@ Attempting to load config from: {}".format(user_dir, custom_path))
         if os.path.exists(path):
             logger.info(f'Read config: {path}')
             try:
-                with open(path, 'r') as f:
+                with open(path, 'r', encoding='utf-8') as f:
                     config = json.load(f)  # type: Config
                     return config
-            except OSError as e:
+            except (OSError, ValueError, TypeError) as e:
                 s = 'Unable to read config file.'
                 logger.error(f"{s}\n{e}", exc_info=True)
                 msg = QMessageBox(QMessageBox.Icon.Warning, 'retype', s)
@@ -91,18 +138,20 @@ Attempting to load config from: {}".format(user_dir, custom_path))
             return
 
         if not self.isPathDefaultUserDir(user_dir):
-            dconfig = self.loadDconfig()
-            if dconfig is not None:
-                dconfig['user_dir'] = user_dir
-                self._save(path, dconfig)
+            dconfig = self.loadDconfig() if os.path.exists(
+                self.base_config_abs_path) else None
+            dconfig = dconfig or deepcopy(self.defaults)
+            dconfig['user_dir'] = user_dir
+            # Keep the bootstrap at the application-data root.  The previous
+            # code accidentally wrote this second copy to ``path`` again.
+            self._save(self.base_config_abs_path, dconfig)
 
     def _save(self, path, data):
         # type: (_SafeConfig, str, Config) -> bool
         try:
-            with open(path, 'w') as f:
-                logger.debug(f'Saving config: {path}')
-                json.dump(data, f, indent=2)
-        except OSError as e:
+            logger.debug(f'Saving config: {path}')
+            atomic_write_json(Path(path), data)
+        except (OSError, TypeError, ValueError) as e:
             s = 'Unable to save config file.'
             logger.error(f"{s}\n{e}", exc_info=True)
             msg = QMessageBox(QMessageBox.Icon.Warning, 'retype', s)
@@ -117,9 +166,9 @@ Attempting to load config from: {}".format(user_dir, custom_path))
         dconfig = None
         path = os.path.join(self.default_user_dir, self.config_rel_path)
         try:
-            with open(path, 'r') as f:
+            with open(path, 'r', encoding='utf-8') as f:
                 dconfig = json.load(f)  # type: Config
-        except OSError as e:
+        except (OSError, ValueError, TypeError) as e:
             s = 'Unable to load dconfig file.'
             logger.error(f"{s}\n{e}", exc_info=True)
             msg = QMessageBox(QMessageBox.Icon.Warning, 'retype', s)

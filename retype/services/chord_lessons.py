@@ -33,10 +33,13 @@ class ChordMasteryStorage:
     to interpret.
     """
 
-    def __init__(self, user_dir=None):
-        # type: (str | None) -> None
+    def __init__(self, user_dir=None, on_change=None):
+        # type: (str | None, object | None) -> None
         self.path = os.path.join(user_dir, MASTERY_PROGRESS_FILENAME) \
             if user_dir else None
+        # A sync adapter receives already-persisted, local legacy state.  It
+        # never participates in lesson selection and can queue its own work.
+        self.on_change = on_change
         self._raw_data = {}  # type: dict[str, object]
         self._raw_progress = {}  # type: dict[object, object]
         self._raw_overrides = {}  # type: dict[str, bool]
@@ -112,6 +115,8 @@ class ChordMasteryStorage:
             return False
         self._raw_progress = merged
         self._raw_overrides = merged_overrides
+        if callable(self.on_change):
+            self.on_change(dict(merged), dict(merged_overrides))
         return True
 
 

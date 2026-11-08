@@ -1,5 +1,6 @@
 import os
 import sys
+from pathlib import Path
 from qt import QIcon
 
 from retype.services.icon_set import Icons
@@ -26,6 +27,25 @@ def __getRoot():
 
 root_path = __getRoot()
 temp_path_or_none = str(_meipass) if _meipass else None  # type: ignore[misc]
+
+
+def getApplicationDataPath():
+    # type: () -> str
+    """Return a writable, per-user root independent of the app bundle.
+
+    In a frozen macOS app ``sys.executable`` is inside ``.app/Contents`` and
+    is not a reliable place for saves.  Keep this small platform helper free
+    of QApplication lifetime/order requirements so it is also safe during
+    early configuration imports.
+    """
+    home = Path.home()
+    if sys.platform.lower().startswith('darwin'):
+        return str(home / 'Library' / 'Application Support' / 'retype')
+    if sys.platform.lower().startswith('win'):
+        base = os.environ.get('LOCALAPPDATA') or os.environ.get('APPDATA')
+        return str(Path(base) / 'retype') if base else str(home / 'AppData' / 'Local' / 'retype')
+    base = os.environ.get('XDG_DATA_HOME')
+    return str(Path(base) / 'retype') if base else str(home / '.local' / 'share' / 'retype')
 
 
 def getLibraryPath():
