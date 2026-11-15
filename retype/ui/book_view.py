@@ -905,7 +905,16 @@ class BookView(QWidget):
 
             if isspaceorempty(self.current_line):
                 logger.debug("Skipping empty line")
-                self.advanceLine()
+                cs = self._controller.console.command_service
+                if cs is not None:
+                    position = (self.book, self.chapter_pos, self.line_pos,
+                                self.progress)
+                    # Clearing removes wrong input, but its synchronous signal
+                    # can itself advance this empty line (or several of them).
+                    self._controller.console.clear()
+                    if position == (self.book, self.chapter_pos, self.line_pos,
+                                    self.progress):
+                        cs.advanceLine()
             else:
                 self.updateChordHints()
         else:
