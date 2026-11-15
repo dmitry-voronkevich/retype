@@ -1,16 +1,21 @@
 """High-value GUI wiring checks; service and pure tests remain separate."""
 
 from copy import deepcopy
+from hashlib import sha256
+import json
+from pathlib import Path
 from threading import Event
 from types import SimpleNamespace
+import zipfile
 
 import pytest
-from qt import Qt, QWidget
+from qt import QFileDialog, Qt, QWidget
 
 from retype.controllers.main_controller import View
 from retype.constants import default_config
 from retype.services import (
-    AdaptiveChordExposure, MIN_SUCCESSFUL_USES_FOR_MASTERY,
+    AdaptiveChordExposure, MIN_SUCCESSFUL_USES_FOR_MASTERY, SyncResult,
+    SyncStatus,
 )
 from retype.services.chord_detection import BACKSPACE_KEY, ValidatedChord
 from retype.ui import CustomisationDialog
@@ -72,6 +77,140 @@ def test_opens_customisation_dialog_without_blocking(controller, qtbot):
     dialog.reject()
     qtbot.wait(20)
     assert not dialog.isVisible()
+
+
+def test_learning_sync_is_opt_in_and_disables_without_deleting_folder(
+        controller, qtbot, tmp_path):
+    folder = tmp_path / 'sync-folder'
+    status = controller.enableSync(str(folder))
+    assert status.state == 'ready'
+    qtbot.waitUntil(
+        lambda: controller.learning_sync.status.state == 'synced', timeout=5000)
+
+    panel = controller.customisation_dialog.sync_settings
+    assert panel.sync_button.isEnabled()
+    assert (folder / 'retype-sync.json').exists()
+    assert list((folder / 'replicas').glob('*.json'))
+
+    controller.disableSync()
+    assert controller.learning_sync.enabled is False
+    assert (folder / 'retype-sync.json').exists()
+    assert panel.disable_button.isEnabled() is False
+
+
+def test_importing_selected_epub_creates_managed_record_and_keeps_source(
+        controller, qtbot, tmp_path, monkeypatch):
+    sync_folder = tmp_path / 'sync-folder'
+    controller.enableSync(str(sync_folder), managed_library_consent=True)
+    qtbot.waitUntil(
+        lambda: controller.learning_sync.status.state == 'synced', timeout=5000)
+
+    panel = controller.customisation_dialog.sync_settings
+    source = Path(__file__).parents[2] / 'library' / 'Flatland.epub'
+    source_bytes = source.read_bytes()
+    digest = sha256(source_bytes).hexdigest()
+    object_path = sync_folder / 'books' / 'sha256' / (digest + '.epub')
+    metadata_path = sync_folder / 'books' / 'sha256' / (digest + '.json')
+
+    # Closing the chooser leaves the selected-sync collection untouched.
+    monkeypatch.setattr(QFileDialog, 'getOpenFileName',
+                        lambda *_: ('', ''))
+    qtbot.mouseClick(panel.import_button, Qt.MouseButton.LeftButton)
+    assert not object_path.exists()
+    assert not metadata_path.exists()
+
+    # An explicit selection is the sole upload trigger. In particular, it
+    # must work for a valid EPUB a source-run user keeps in its local library.
+    monkeypatch.setattr(QFileDialog, 'getOpenFileName',
+                        lambda *_: (str(source), 'EPUB books (*.epub)'))
+    qtbot.mouseClick(panel.import_button, Qt.MouseButton.LeftButton)
+
+    qtbot.waitUntil(object_path.exists, timeout=5000)
+    qtbot.waitUntil(metadata_path.exists, timeout=5000)
+    qtbot.waitUntil(
+        lambda: any(
+            digest in json.loads(replica.read_text(encoding='utf-8'))[
+                'payload']['managed_books']
+            for replica in (sync_folder / 'replicas').glob('*.json')),
+        timeout=5000)
+    assert object_path.read_bytes() == source_bytes
+    assert json.loads(metadata_path.read_text(encoding='utf-8')) == {
+        'schema': 1,
+        'digest': digest,
+        'original_filename': source.name,
+        'title': source.stem,
+        'size': len(source_bytes),
+    }
+    # Import is a copy; selecting a source must never move or alter it.
+    assert source.read_bytes() == source_bytes
+
+    invalid = tmp_path / 'not-an-epub.epub'
+    invalid.write_bytes(b'not an EPUB')
+    monkeypatch.setattr(QFileDialog, 'getOpenFileName',
+                        lambda *_: (str(invalid), 'EPUB books (*.epub)'))
+    qtbot.mouseClick(panel.import_button, Qt.MouseButton.LeftButton)
+
+    assert invalid.read_bytes() == b'not an EPUB'
+    assert 'corrupt or unsupported' in panel.status.label.text()
+
+
+def test_remote_managed_book_is_indexed_after_sync_completion(
+        make_controller, qtbot, tmp_path):
+    first = make_controller()
+    second = make_controller()
+    sync_folder = tmp_path / 'sync-folder'
+    first.enableSync(str(sync_folder), managed_library_consent=True)
+    qtbot.waitUntil(
+        lambda: first.learning_sync.status.state == 'synced', timeout=5000)
+
+    source = tmp_path / 'remote.epub'
+    bundled = Path(__file__).parents[2] / 'library' / 'Flatland.epub'
+    source.write_bytes(bundled.read_bytes())
+    with zipfile.ZipFile(source, 'a') as archive:
+        archive.writestr('remote-marker.txt', 'remote')
+    digest = sha256(source.read_bytes()).hexdigest()
+    first.importManagedBook(str(source))
+    qtbot.waitUntil(
+        lambda: any(
+            digest in json.loads(replica.read_text(encoding='utf-8'))[
+                'payload']['managed_books']
+            for replica in (sync_folder / 'replicas').glob('*.json')),
+        timeout=5000)
+
+    second.enableSync(str(sync_folder), managed_library_consent=True)
+    qtbot.waitUntil(
+        lambda: second.learning_sync.status.state == 'synced', timeout=5000)
+
+    managed_path = next(
+        second.learning_sync.managed_library_dir.glob('*.epub'))
+    assert managed_path.name == digest + '.epub'
+    assert managed_path.exists()
+    assert any(book.path == str(managed_path)
+               for book in second.library.books.values())
+
+
+def test_sync_settings_are_applied_to_runtime_consumers(controller, qtbot):
+    assert controller.console.highlighting_service.auto_newline is True
+
+    controller._syncCompleted(SyncResult(
+        status=SyncStatus(), settings={'auto_newline': False}))
+
+    assert controller.config['auto_newline'] is False
+    assert controller.console.highlighting_service.auto_newline is False
+
+
+def test_sync_materialization_preserves_legacy_save_entries(controller):
+    legacy_entry = {'persistent_pos': 1, 'chapter_pos': 0, 'progress': 5}
+    synced_entry = {'persistent_pos': 2, 'chapter_pos': 0, 'progress': 10}
+    controller.library.save_file_contents = {'/old/book.epub': legacy_entry}
+
+    controller._syncCompleted(SyncResult(
+        status=SyncStatus(), save={'a' * 32: synced_entry}))
+
+    assert controller.library.save_file_contents == {
+        '/old/book.epub': legacy_entry,
+        'a' * 32: synced_entry,
+    }
 
 
 def test_customisation_dialog_refreshes_mastery_on_reopen(

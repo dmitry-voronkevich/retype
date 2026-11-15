@@ -22,6 +22,7 @@ Contents
    build-docs
    dependencies
    device-startup
+   learning-sync
    features
 
 .. toctree::
